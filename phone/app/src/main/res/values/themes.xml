@@ -1,0 +1,17 @@
+<resources>
+    <!-- DayNight so isLightTheme follows the phone, which is what the
+         WebView's prefers-color-scheme reads from at targetSdk 33 and up. -->
+    <style name="Theme.Lab" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@drawable/window_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowSplashScreenBackground">@color/lab_head</item>
+        <item name="android:windowLightNavigationBar">@bool/lab_light</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">always</item>
+    </style>
+</resources>

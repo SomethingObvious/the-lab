@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Lab Looks</title>
+<style>
+  :root { color-scheme: dark; --bg: #0d0d0e; --ink: #e9e9e6; --dim: #8b8b86; --line: #26262a; --hi: #ffffff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; padding: 18px 28px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 12px 0 0; }
+  nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  button { font: inherit; color: var(--ink); background: none; border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer; }
+  button:hover { border-color: var(--dim); }
+  button[aria-pressed="true"] { background: var(--hi); color: #000; border-color: var(--hi); }
+  .tools { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+  .palettes { display: flex; gap: 4px; margin-right: 14px; }
+  .palettes[hidden] { display: none; }
+  main { padding: 28px; }
+  .about { max-width: 70ch; color: var(--dim); margin: 0 0 24px; }
+  .about strong { color: var(--ink); font-weight: 600; }
+  .stage { display: flex; gap: 40px; align-items: flex-start; flex-wrap: wrap; }
+  figure { margin: 0; }
+  figcaption { color: var(--dim); font-size: 13px; margin-bottom: 10px; }
+  .device { border: 10px solid #1d1d20; border-radius: 34px; overflow: hidden; background: #000; box-shadow: 0 30px 60px -20px rgba(0,0,0,.6); }
+  iframe { display: block; border: 0; }
+  .folded iframe { width: 412px; height: 900px; }
+  .open iframe { width: 852px; height: 884px; }
+  .open .device { border-radius: 26px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>The Lab</h1>
+  <nav id="tabs"></nav>
+  <div class="tools">
+    <span class="palettes" id="palettes">
+      <button type="button" data-palette="cobalt" aria-pressed="true">Cobalt</button>
+      <button type="button" data-palette="grape">Grape</button>
+      <button type="button" data-palette="berry">Berry</button>
+    </span>
+    <button id="theme" type="button">Dark</button>
+    <button id="replay" type="button">Replay</button>
+  </div>
+</header>
+<main>
+  <p class="about" id="about"></p>
+  <div class="stage">
+    <figure class="folded"><figcaption>Folded, outer screen</figcaption><div class="device"><iframe id="a" title="Folded"></iframe></div></figure>
+    <figure class="open"><figcaption>Unfolded, inner screen</figcaption><div class="device"><iframe id="b" title="Unfolded"></iframe></div></figure>
+  </div>
+</main>
+<script>
+  const looks = [
+    { slug: 'launcher', name: 'Launcher', about: '<strong>Launcher.</strong> The app works like Spotlight or Raycast for his Mac. One bar to ask, shortcuts as coloured command tiles above it, and every step a tile coloured by what it touched. The request in progress sits forward while finished ones settle behind it.' },
+    { slug: 'expressive', src: '/app/index.html', name: 'Material Expressive', about: '<strong>Material Expressive.</strong> Pixel\'s own newest design language at full volume: big shape-morphing containers, saturated colour blocks that own whole regions, and springy motion. The Mac glance lives in a tall coloured header.' },
+    { slug: 'tiles', name: 'Live Tiles', about: '<strong>Live Tiles.</strong> Windows Phone\'s Metro language. Flat colour tiles and giant lowercase headers, with the Mac\'s battery, disk and current task as live tiles that flip when they change. Swipe across panes, with the conversation always one tap away.' },
+    { slug: 'everyday', name: 'Everyday', about: '<strong>Everyday.</strong> A plain messaging app in one strong colour. The Mac\'s battery and disk sit in the top bar, shortcuts sit over the message box, and photos and files go both ways. Search from the top bar, or from the request list when unfolded.' },
+    { slug: 'tracking-slip', name: 'Tracking Slip', about: '<strong>Tracking Slip.</strong> Each request ships like a parcel: your words on the label, a big status word, and a scan log underneath that opens to the exact command.' },
+    { slug: 'ticket-rail', name: 'Ticket Rail', about: '<strong>Ticket Rail.</strong> Each request is an order ticket on the pass, steps struck through as they are done, and Order Up when the reply lands.' },
+    { slug: 'gamecast', name: 'Gamecast', about: '<strong>Gamecast.</strong> Each request plays like a live game: play-by-play steps, a running clock in the score bug, and the reply as the result.' },
+    { slug: 'standard', name: 'Standard', about: '<strong>Standard.</strong> A Material 3 chat thread with a collapsible list of steps under each reply. The familiar way.' },
+  ];
+  const tabs = document.getElementById('tabs');
+  let current = looks[0];
+  let theme = 'dark';
+  let palette = 'cobalt';
+  const palettes = document.getElementById('palettes');
+  palettes.onclick = (ev) => {
+    const b = ev.target.closest('[data-palette]');
+    if (!b) return;
+    palette = b.dataset.palette;
+    for (const x of palettes.children) x.setAttribute('aria-pressed', String(x === b));
+    show(current);
+  };
+  function show(look) {
+    current = look;
+    for (const b of tabs.children) b.setAttribute('aria-pressed', String(b.dataset.slug === look.slug));
+    document.getElementById('about').innerHTML = look.about;
+    palettes.hidden = look.slug !== 'everyday';
+    const q = `?theme=${theme}&palette=${palette}&t=${Date.now()}`;
+    const src = look.src ?? `${look.slug}/index.html`;
+    document.getElementById('a').src = `${src}${q}`;
+    document.getElementById('b').src = `${src}${q}&bottom=0`;
+    history.replaceState(null, '', `#${look.slug}`);
+  }
+  for (const look of looks) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = look.name; b.dataset.slug = look.slug;
+    b.onclick = () => show(look);
+    tabs.append(b);
+  }
+  document.getElementById('replay').onclick = () => show(current);
+  const themeBtn = document.getElementById('theme');
+  themeBtn.onclick = () => { theme = theme === 'dark' ? 'light' : 'dark'; themeBtn.textContent = theme === 'dark' ? 'Dark' : 'Light'; show(current); };
+  show(looks.find((l) => `#${l.slug}` === location.hash) ?? looks[0]);
+</script>
+</body>
+</html>

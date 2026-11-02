@@ -1,0 +1,9 @@
+.impeccable/questions/
+.impeccable/decision/
+.impeccable/config.local.json
+node_modules/
+phone/.gradle/
+phone/build/
+phone/app/build/
+phone/local.properties
+phone/.kotlin/

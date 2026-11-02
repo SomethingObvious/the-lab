@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="safe"
+        android:enabled="true"
+        android:icon="@drawable/ic_status"
+        android:shortcutShortLabel="@string/safe_short"
+        android:shortcutLongLabel="@string/safe_long">
+        <intent
+            android:action="com.somethingobvious.thelab.SAFE"
+            android:targetPackage="com.somethingobvious.thelab"
+            android:targetClass="com.somethingobvious.thelab.MainActivity" />
+    </shortcut>
+</shortcuts>

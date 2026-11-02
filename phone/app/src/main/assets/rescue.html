@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Lab</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    /* The app's own colours, kept by hand so this screen still works when the design doesn't. */
+    --bg: light-dark(#f5f1ff, #100c1e); --card: light-dark(#ffffff, #1a1530); --ink: light-dark(#1a1530, #f0ebff);
+    --dim: light-dark(#4f4869, #bdb4da); --line: light-dark(#d9d0f5, #372d5a);
+    --primary: light-dark(#5a2ee6, #6b45f0); --on-primary: #ffffff; --focus: light-dark(#5a2ee6, #c4b2ff);
+    --done: light-dark(#1d8a3c, #6fdd8b); --ask-ink: light-dark(#4a3000, #ffe4a3); --alert: light-dark(#c62828, #ff8a80); --on-alert: light-dark(#ffffff, #3a0000);
+    font: 16px/1.45 system-ui, -apple-system, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
+  body { display: flex; flex-direction: column; padding: var(--lab-inset-top, 24px) var(--lab-inset-right, 0) var(--lab-inset-bottom, 0) var(--lab-inset-left, 0); }
+  ::selection { background: var(--primary); color: var(--on-primary); }
+  header { padding: 20px 20px 12px; border-bottom: 1px solid var(--line); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  h1 { font-size: 22px; margin: 0 0 4px; font-weight: 650; letter-spacing: -0.01em; }
+  .why { margin: 0; color: var(--dim); }
+  .link { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  .online .dot { background: var(--done); }
+  .offline .dot, .unpaired .dot { background: var(--alert); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  button { font: inherit; font-weight: 600; min-height: 48px; padding: 0 20px; border-radius: 24px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+  button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+  button.alert { background: var(--alert); color: var(--on-alert); border-color: var(--alert); }
+  button:focus-visible, textarea:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  button[hidden] { display: none; }
+  ol { list-style: none; margin: 0; padding: 12px 20px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+  li { max-width: 65ch; overflow-wrap: anywhere; white-space: pre-wrap; }
+  li.you { align-self: flex-end; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; }
+  li.step, li.done { color: var(--dim); font-size: 14px; }
+  li.ask, li.failed, li.notice { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--card); }
+  li.failed strong { color: var(--alert); }
+  li.ask strong { color: var(--ask-ink); }
+  textarea::placeholder { color: var(--dim); }
+  li .row { display: flex; gap: 8px; margin-top: 10px; }
+  li.queued { opacity: .6; }
+  form { display: flex; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--line); background: var(--bg); }
+  textarea { flex: 1; font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; resize: none; min-height: 48px; max-height: 160px; }
+  .empty { color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>The Lab</h1>
+  <p class="why" id="why">Safe screen</p>
+  <div class="link" id="link"><span class="dot"></span><span id="linkText">Reaching the Mac</span></div>
+</header>
+<div class="actions">
+  <button type="button" id="design" class="primary" hidden>Back to My Design</button>
+  <button type="button" id="undo" hidden>Undo Last Design Change</button>
+  <button type="button" id="fix" hidden>Open Tailscale</button>
+  <button type="button" id="retry">Try Again</button>
+  <button type="button" id="stop" class="alert" hidden>Stop</button>
+</div>
+<ol id="log"><li class="empty">Nothing here yet.</li></ol>
+<p class="sr" id="sr" role="status"></p>
+<form id="form">
+  <textarea id="text" rows="1" placeholder="Message the Mac" aria-label="Message the Mac"></textarea>
+  <button type="submit" class="primary">Send</button>
+</form>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const log = $('log');
+  const items = [];
+  let outbox = [];
+  const asks = new Map();
+  const add = (cls, text, extra) => {
+    const li = document.createElement('li');
+    li.className = cls;
+    li.textContent = text;
+    if (extra) extra(li);
+    items.push(li);
+    if (items.length > 80) items.shift();
+    return li;
+  };
+  // The history arrives as one batch of up to 2,000 events, so the list is
+  // drawn once per frame rather than once per event.
+  let queued = false;
+  const draw = () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(paint);
+  };
+  const paint = () => {
+    queued = false;
+    const pending = outbox.map((m) => { const li = document.createElement('li'); li.className = 'you queued'; li.textContent = `${m.text}\n(waiting to send)`; return li; });
+    log.replaceChildren(...(items.length || pending.length ? [...items, ...pending] : [Object.assign(document.createElement('li'), { className: 'empty', textContent: 'Nothing here yet.' })]));
+    log.scrollTop = log.scrollHeight;
+  };
+  // Only lines from the last half minute are read out, so the history
+  // arriving all at once stays quiet.
+  const say = (e, text) => {
+    if (text && e.at && Date.now() - Date.parse(e.at) < 30000) $('sr').textContent = text;
+  };
+  lab.subscribe((e) => {
+    if (e.kind === 'reply') say(e, `The Mac replied: ${e.text.slice(0, 160)}`);
+    if (e.kind === 'ask') say(e, `Needs your OK: ${e.title}`);
+    if (e.kind === 'failed') say(e, `A step failed: ${e.text}`);
+    switch (e.kind) {
+      case 'rescue':
+        $('why').textContent = e.reason;
+        $('design').hidden = !e.hasDesign;
+        $('undo').hidden = !e.hasDesign;
+        return;
+      case 'link': {
+        $('link').className = `link ${e.state}`;
+        $('linkText').textContent = e.detail || e.state;
+        $('fix').hidden = e.fix !== 'tailscale';
+        if (e.state === 'unpaired') $('why').textContent = 'This phone is not paired with a Mac yet.';
+        return;
+      }
+      case 'status': $('stop').hidden = !e.working; return;
+      case 'outbox': outbox = e.items; break;
+      case 'you': add('you', [e.text, ...(e.files || []).map((f) => `Attached ${f.name}`)].filter(Boolean).join('\n')); break;
+      case 'reply': add('reply', e.text); break;
+      case 'step': add('step', e.title); break;
+      case 'failed': add('failed', '', (li) => { li.innerHTML = '<strong>Step failed</strong>\n'; li.append(e.text); }); break;
+      case 'notice': add('notice', e.text); break;
+      case 'file': add('step', `Sent you ${e.name}`); break;
+      case 'done': add('done', e.stopped ? 'Stopped' : e.ok ? 'Done' : `Finished with a problem: ${e.error || ''}`); break;
+      case 'ask': {
+        const li = add('ask', '', (li) => {
+          li.innerHTML = '<strong></strong>\n<span></span><div class="row"><button type="button">Deny</button><button type="button" class="primary">Allow</button></div>';
+          li.querySelector('strong').textContent = e.title;
+          li.querySelector('span').textContent = e.detail || '';
+          const [no, yes] = li.querySelectorAll('button');
+          yes.onclick = () => lab.answer(e.ref, true);
+          no.onclick = () => lab.answer(e.ref, false);
+        });
+        asks.set(e.ref, li);
+        break;
+      }
+      case 'answered': {
+        const li = asks.get(e.ref);
+        if (li) li.querySelector('.row')?.replaceChildren(document.createTextNode(e.allow ? 'Allowed' : 'Denied'));
+        break;
+      }
+      case 'undone':
+        $('why').textContent = e.ok ? 'Undid the last design change.' : 'There is no earlier design to go back to.';
+        return;
+      default: return;
+    }
+    draw();
+  });
+  $('design').onclick = () => lab.leaveSafeMode();
+  $('undo').onclick = () => lab.undoDesign();
+  $('fix').onclick = () => lab.fix('tailscale');
+  $('retry').onclick = () => lab.retry();
+  $('stop').onclick = () => lab.stop();
+  const text = $('text');
+  text.oninput = () => { text.style.height = 'auto'; text.style.height = `${text.scrollHeight}px`; };
+  $('form').onsubmit = (ev) => {
+    ev.preventDefault();
+    const t = text.value.trim();
+    if (!t) return;
+    lab.send(t);
+    text.value = '';
+    text.oninput();
+  };
+  lab.ready();
+</script>
+</body>
+</html>

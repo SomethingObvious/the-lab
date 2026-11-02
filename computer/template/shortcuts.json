@@ -1,0 +1,5 @@
+[
+  { "id": "space", "label": "Free Space", "text": "How much free space is left on my Mac, and what's the biggest thing I could clear?" },
+  { "id": "screenshot", "label": "Latest Screenshot", "text": "Send me my most recent screenshot." },
+  { "id": "slow", "label": "Why Is It Slow", "text": "Is anything using a lot of CPU or memory right now? Tell me what and whether it's safe to quit." }
+]

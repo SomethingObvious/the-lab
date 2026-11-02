@@ -1,0 +1,6 @@
+<resources>
+    <color name="lab_bg">#f5f1ff</color>
+    <color name="lab_head">#5a2ee6</color>
+    <color name="lab_icon_bg">#5a2ee6</color>
+    <bool name="lab_light">true</bool>
+</resources>

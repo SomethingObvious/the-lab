@@ -1,0 +1,999 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-02T21:09:23.665Z",
+  "title": "Design System: The Lab",
+  "extensions": {
+    "colorMeta": {
+      "head": {
+        "role": "primary",
+        "displayName": "Header Violet",
+        "canonical": "light-dark(#5a2ee6, #4b1fd4)",
+        "tonalRamp": [
+          "#19005b",
+          "#280080",
+          "#3e1aa5",
+          "#5844cc",
+          "#7769f4",
+          "#978eff",
+          "#b9b4ff",
+          "#dddaff"
+        ]
+      },
+      "head-deep": {
+        "role": "primary",
+        "displayName": "Header Violet Deep",
+        "canonical": "light-dark(#4419c9, #3a12b0)",
+        "tonalRamp": [
+          "#18005c",
+          "#240081",
+          "#391da7",
+          "#5346cd",
+          "#706bf5",
+          "#9190ff",
+          "#b3b6ff",
+          "#d6dcff"
+        ]
+      },
+      "on-head": {
+        "role": "primary",
+        "displayName": "On Head",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "on-head-dim": {
+        "role": "primary",
+        "displayName": "On Head Dim",
+        "canonical": "rgb(255 255 255 / 0.82)"
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "Lab Violet",
+        "canonical": "light-dark(#5a2ee6, #6b45f0)",
+        "tonalRamp": [
+          "#19005b",
+          "#280080",
+          "#3e1aa5",
+          "#5844cc",
+          "#7769f4",
+          "#978eff",
+          "#b9b4ff",
+          "#dddaff"
+        ]
+      },
+      "on-primary": {
+        "role": "primary",
+        "displayName": "On Primary",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "primary-c": {
+        "role": "primary",
+        "displayName": "Violet Container",
+        "canonical": "light-dark(#ddd2ff, #3b2891)",
+        "tonalRamp": [
+          "#0f0422",
+          "#281e3f",
+          "#453b5f",
+          "#645a81",
+          "#857ba4",
+          "#a89dc8",
+          "#ccc1ee",
+          "#f2e7ff"
+        ]
+      },
+      "on-primary-c": {
+        "role": "primary",
+        "displayName": "On Primary C",
+        "canonical": "light-dark(#26106e, #e6ddff)",
+        "tonalRamp": [
+          "#100045",
+          "#220768",
+          "#3b2f8c",
+          "#5851b1",
+          "#7774d7",
+          "#9897fe",
+          "#bbbcff",
+          "#e0e2ff"
+        ]
+      },
+      "link": {
+        "role": "primary",
+        "displayName": "Link Violet",
+        "canonical": "light-dark(#4a20d6, #c4b2ff)",
+        "tonalRamp": [
+          "#18005c",
+          "#240081",
+          "#391da7",
+          "#5346cd",
+          "#716bf5",
+          "#9190ff",
+          "#b3b6ff",
+          "#d7dcff"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Focus",
+        "canonical": "light-dark(#5a2ee6, #c4b2ff)",
+        "tonalRamp": [
+          "#19005b",
+          "#280080",
+          "#3e1aa5",
+          "#5844cc",
+          "#7769f4",
+          "#978eff",
+          "#b9b4ff",
+          "#dddaff"
+        ]
+      },
+      "pink": {
+        "role": "secondary",
+        "displayName": "Pink",
+        "canonical": "#ffc4ea",
+        "tonalRamp": [
+          "#1e0015",
+          "#3e1131",
+          "#5e2f50",
+          "#804e70",
+          "#a46f92",
+          "#c991b5",
+          "#efb5da",
+          "#ffd9ff"
+        ]
+      },
+      "on-pink": {
+        "role": "secondary",
+        "displayName": "On Pink",
+        "canonical": "#5c0a45",
+        "tonalRamp": [
+          "#270018",
+          "#4a0035",
+          "#6d1d54",
+          "#913f74",
+          "#b66197",
+          "#dc83ba",
+          "#ffa7df",
+          "#ffccff"
+        ]
+      },
+      "mint": {
+        "role": "secondary",
+        "displayName": "Mint",
+        "canonical": "#9ff0d3",
+        "tonalRamp": [
+          "#001505",
+          "#00321e",
+          "#00513a",
+          "#197159",
+          "#43947a",
+          "#67b79c",
+          "#8cdcc0",
+          "#b1ffe5"
+        ]
+      },
+      "on-mint": {
+        "role": "secondary",
+        "displayName": "On Mint",
+        "canonical": "#00382a",
+        "tonalRamp": [
+          "#001207",
+          "#002e21",
+          "#1a4c3d",
+          "#3c6c5c",
+          "#5d8e7d",
+          "#7fb29f",
+          "#a3d6c3",
+          "#c7fce8"
+        ]
+      },
+      "sun": {
+        "role": "secondary",
+        "displayName": "Sun",
+        "canonical": "#ffd23f",
+        "tonalRamp": [
+          "#220000",
+          "#421800",
+          "#623800",
+          "#835900",
+          "#a77c00",
+          "#cb9f00",
+          "#f1c429",
+          "#ffea5c"
+        ]
+      },
+      "on-sun": {
+        "role": "secondary",
+        "displayName": "On Sun",
+        "canonical": "#3a2700",
+        "tonalRamp": [
+          "#170700",
+          "#342100",
+          "#523e19",
+          "#735e39",
+          "#957f59",
+          "#b9a27b",
+          "#dec69e",
+          "#ffebc2"
+        ]
+      },
+      "lilac": {
+        "role": "secondary",
+        "displayName": "Lilac",
+        "canonical": "#ddd2ff",
+        "tonalRamp": [
+          "#0f0422",
+          "#281e3f",
+          "#453b5f",
+          "#645a81",
+          "#857ba4",
+          "#a89dc8",
+          "#ccc1ee",
+          "#f2e7ff"
+        ]
+      },
+      "on-lilac": {
+        "role": "secondary",
+        "displayName": "On Lilac",
+        "canonical": "#26106e",
+        "tonalRamp": [
+          "#100045",
+          "#220768",
+          "#3b2f8c",
+          "#5851b1",
+          "#7774d7",
+          "#9897fe",
+          "#bbbcff",
+          "#e0e2ff"
+        ]
+      },
+      "work": {
+        "role": "tertiary",
+        "displayName": "Work Green",
+        "canonical": "light-dark(#00795b, #55dcae)",
+        "tonalRamp": [
+          "#001603",
+          "#00331b",
+          "#005237",
+          "#007356",
+          "#339676",
+          "#5bba99",
+          "#81dfbc",
+          "#a7ffe1"
+        ]
+      },
+      "work-c": {
+        "role": "tertiary",
+        "displayName": "Work C",
+        "canonical": "light-dark(#b4f1da, #0d3d30)",
+        "tonalRamp": [
+          "#001306",
+          "#002f1f",
+          "#0d4e3c",
+          "#346e5b",
+          "#56907c",
+          "#78b39e",
+          "#9cd8c2",
+          "#c1fee7"
+        ]
+      },
+      "on-work-c": {
+        "role": "tertiary",
+        "displayName": "On Work C",
+        "canonical": "light-dark(#00382a, #b4f1da)",
+        "tonalRamp": [
+          "#001207",
+          "#002e21",
+          "#1a4c3d",
+          "#3c6c5c",
+          "#5d8e7d",
+          "#7fb29f",
+          "#a3d6c3",
+          "#c7fce8"
+        ]
+      },
+      "ask": {
+        "role": "tertiary",
+        "displayName": "Ask Amber",
+        "canonical": "light-dark(#f0a400, #ffc84a)",
+        "tonalRamp": [
+          "#2b0000",
+          "#4d0400",
+          "#702b00",
+          "#944d00",
+          "#b97000",
+          "#de9300",
+          "#ffb831",
+          "#ffde61"
+        ]
+      },
+      "on-ask": {
+        "role": "tertiary",
+        "displayName": "On Ask",
+        "canonical": "#2b1c00",
+        "tonalRamp": [
+          "#150800",
+          "#312204",
+          "#503f22",
+          "#705e41",
+          "#928061",
+          "#b5a282",
+          "#dac6a5",
+          "#ffecca"
+        ]
+      },
+      "ask-hi": {
+        "role": "tertiary",
+        "displayName": "Ask Hi",
+        "canonical": "#ffe8ad",
+        "tonalRamp": [
+          "#180600",
+          "#342100",
+          "#533f00",
+          "#735f26",
+          "#958048",
+          "#b9a36a",
+          "#dec78d",
+          "#ffedb2"
+        ]
+      },
+      "ask-c": {
+        "role": "tertiary",
+        "displayName": "Ask C",
+        "canonical": "light-dark(#ffe8ad, #3d2c00)",
+        "tonalRamp": [
+          "#180600",
+          "#342100",
+          "#533f00",
+          "#735f26",
+          "#958048",
+          "#b9a36a",
+          "#dec78d",
+          "#ffedb2"
+        ]
+      },
+      "ask-ink": {
+        "role": "tertiary",
+        "displayName": "Ask Ink",
+        "canonical": "light-dark(#4a3000, #ffe4a3)",
+        "tonalRamp": [
+          "#1b0400",
+          "#381f00",
+          "#573c0f",
+          "#785c31",
+          "#9a7d52",
+          "#bea073",
+          "#e4c496",
+          "#ffe9bb"
+        ]
+      },
+      "wait-mark": {
+        "role": "tertiary",
+        "displayName": "Wait Mark",
+        "canonical": "light-dark(#2b1c00, #ffc84a)",
+        "tonalRamp": [
+          "#150800",
+          "#312204",
+          "#503f22",
+          "#705e41",
+          "#928061",
+          "#b5a282",
+          "#dac6a5",
+          "#ffecca"
+        ]
+      },
+      "on-wait-mark": {
+        "role": "tertiary",
+        "displayName": "On Wait Mark",
+        "canonical": "light-dark(#ffd23f, #2b1c00)",
+        "tonalRamp": [
+          "#220000",
+          "#421800",
+          "#623800",
+          "#835900",
+          "#a77c00",
+          "#cb9f00",
+          "#f1c429",
+          "#ffea5c"
+        ]
+      },
+      "done": {
+        "role": "tertiary",
+        "displayName": "Done Green",
+        "canonical": "light-dark(#1d8a3c, #6fdd8b)",
+        "tonalRamp": [
+          "#001600",
+          "#003500",
+          "#005500",
+          "#007729",
+          "#329a4b",
+          "#5abe6d",
+          "#80e490",
+          "#a6ffb5"
+        ]
+      },
+      "on-done": {
+        "role": "tertiary",
+        "displayName": "On Done",
+        "canonical": "light-dark(#ffffff, #00391a)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "fail": {
+        "role": "tertiary",
+        "displayName": "Fail Red",
+        "canonical": "light-dark(#c62828, #ff8a80)",
+        "tonalRamp": [
+          "#3e0000",
+          "#660000",
+          "#8d0000",
+          "#b60f19",
+          "#df433d",
+          "#ff6a60",
+          "#ff9083",
+          "#ffb6a7"
+        ]
+      },
+      "on-fail": {
+        "role": "tertiary",
+        "displayName": "On Fail",
+        "canonical": "light-dark(#ffffff, #3a0000)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "fail-c": {
+        "role": "tertiary",
+        "displayName": "Fail C",
+        "canonical": "light-dark(#ffdad6, #4d1613)",
+        "tonalRamp": [
+          "#190404",
+          "#371d1b",
+          "#563937",
+          "#775855",
+          "#9a7976",
+          "#be9b98",
+          "#e3bfbb",
+          "#ffe4e0"
+        ]
+      },
+      "on-fail-c": {
+        "role": "tertiary",
+        "displayName": "On Fail C",
+        "canonical": "light-dark(#5c0a07, #ffdad6)",
+        "tonalRamp": [
+          "#2c0000",
+          "#4f0000",
+          "#73221b",
+          "#97443a",
+          "#bd665a",
+          "#e4887c",
+          "#ffac9f",
+          "#ffd1c3"
+        ]
+      },
+      "off-c": {
+        "role": "tertiary",
+        "displayName": "Off C",
+        "canonical": "light-dark(#ffdad6, #ffb4ab)",
+        "tonalRamp": [
+          "#190404",
+          "#371d1b",
+          "#563937",
+          "#775855",
+          "#9a7976",
+          "#be9b98",
+          "#e3bfbb",
+          "#ffe4e0"
+        ]
+      },
+      "on-off-c": {
+        "role": "tertiary",
+        "displayName": "On Off C",
+        "canonical": "light-dark(#5c0a07, #690005)",
+        "tonalRamp": [
+          "#2c0000",
+          "#4f0000",
+          "#73221b",
+          "#97443a",
+          "#bd665a",
+          "#e4887c",
+          "#ffac9f",
+          "#ffd1c3"
+        ]
+      },
+      "bg": {
+        "role": "neutral",
+        "displayName": "Lilac Paper",
+        "canonical": "light-dark(#f5f1ff, #100c1e)",
+        "tonalRamp": [
+          "#0c0912",
+          "#26232d",
+          "#43404b",
+          "#625f6b",
+          "#84808c",
+          "#a6a3b0",
+          "#cbc7d4",
+          "#f0ecfa"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "canonical": "light-dark(#ffffff, #1a1530)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "surface-1": {
+        "role": "neutral",
+        "displayName": "Surface 1",
+        "canonical": "light-dark(#ece5ff, #241d3f)",
+        "tonalRamp": [
+          "#0d0718",
+          "#272134",
+          "#443e53",
+          "#635d73",
+          "#857e95",
+          "#a7a1b9",
+          "#cbc5de",
+          "#f1eaff"
+        ]
+      },
+      "surface-2": {
+        "role": "neutral",
+        "displayName": "Surface 2",
+        "canonical": "light-dark(#e0d6ff, #30274f)",
+        "tonalRamp": [
+          "#0e0520",
+          "#281f3d",
+          "#453c5d",
+          "#645b7e",
+          "#857ca1",
+          "#a89ec5",
+          "#ccc2ea",
+          "#f2e7ff"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "light-dark(#1a1530, #f0ebff)",
+        "tonalRamp": [
+          "#0c061f",
+          "#25203c",
+          "#413d5c",
+          "#605c7d",
+          "#817da0",
+          "#a4a0c4",
+          "#c8c4e9",
+          "#ede9ff"
+        ]
+      },
+      "dim": {
+        "role": "neutral",
+        "displayName": "Dim",
+        "canonical": "light-dark(#4f4869, #bdb4da)",
+        "tonalRamp": [
+          "#0d051f",
+          "#271f3d",
+          "#433c5c",
+          "#625b7e",
+          "#837ca1",
+          "#a69fc5",
+          "#cac3ea",
+          "#f0e8ff"
+        ]
+      },
+      "faint": {
+        "role": "neutral",
+        "displayName": "Faint",
+        "canonical": "light-dark(#6a6386, #9890b8)",
+        "tonalRamp": [
+          "#0d0520",
+          "#271f3d",
+          "#433c5d",
+          "#625b7e",
+          "#837ca1",
+          "#a69fc5",
+          "#cac3ea",
+          "#f0e8ff"
+        ]
+      },
+      "toolbar": {
+        "role": "neutral",
+        "displayName": "Night Toolbar",
+        "canonical": "light-dark(#1d1440, #e9e2ff)",
+        "tonalRamp": [
+          "#0c012a",
+          "#241c49",
+          "#403a6a",
+          "#5f5a8c",
+          "#807bb0",
+          "#a29dd5",
+          "#c6c2fb",
+          "#ebe7ff"
+        ]
+      },
+      "on-toolbar": {
+        "role": "neutral",
+        "displayName": "On Toolbar",
+        "canonical": "light-dark(#f1ecff, #1d1440)",
+        "tonalRamp": [
+          "#0c0915",
+          "#262230",
+          "#433f4e",
+          "#635e6e",
+          "#847f90",
+          "#a7a2b4",
+          "#cbc6d8",
+          "#f0ebfe"
+        ]
+      },
+      "loader-bg": {
+        "role": "neutral",
+        "displayName": "Loader Bg",
+        "canonical": "light-dark(rgb(255 255 255 / 0.12), rgb(29 20 64 / 0.1))"
+      },
+      "loader-fg": {
+        "role": "neutral",
+        "displayName": "Loader Fg",
+        "canonical": "light-dark(#9ff0d3, #6b45f0)",
+        "tonalRamp": [
+          "#001505",
+          "#00321e",
+          "#00513a",
+          "#197159",
+          "#43947a",
+          "#67b79c",
+          "#8cdcc0",
+          "#b1ffe5"
+        ]
+      },
+      "press": {
+        "role": "neutral",
+        "displayName": "Press",
+        "canonical": "rgb(127 127 127 / 0.22)"
+      },
+      "track": {
+        "role": "neutral",
+        "displayName": "Track",
+        "canonical": "rgb(0 56 42 / 0.18)"
+      },
+      "track-off": {
+        "role": "neutral",
+        "displayName": "Track Off",
+        "canonical": "rgb(38 16 110 / 0.16)"
+      },
+      "scrim": {
+        "role": "neutral",
+        "displayName": "Scrim",
+        "canonical": "rgb(16 8 40 / 0.5)"
+      },
+      "shade": {
+        "role": "neutral",
+        "displayName": "Shade",
+        "canonical": "light-dark(rgb(20 8 60), rgb(0 0 0))"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The Lab in the header."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Sheet and view titles, header stat numbers."
+      },
+      "title-large": {
+        "displayName": "Title Large",
+        "purpose": "The approval card's question."
+      },
+      "title-medium": {
+        "displayName": "Title Medium",
+        "purpose": "The toolbar's current step, Allow and Deny."
+      },
+      "title-small": {
+        "displayName": "Title Small",
+        "purpose": "Section headings in Files."
+      },
+      "body-large": {
+        "displayName": "Body Large",
+        "purpose": "Messages, replies, steps, the message field."
+      },
+      "body-medium": {
+        "displayName": "Body Medium",
+        "purpose": "Run summaries, notices, the snackbar."
+      },
+      "body-small": {
+        "displayName": "Body Small",
+        "purpose": "File sizes and photo captions."
+      },
+      "label-large": {
+        "displayName": "Label Large",
+        "purpose": "Buttons and chips."
+      },
+      "label-medium": {
+        "displayName": "Label Medium",
+        "purpose": "Times and day dividers."
+      },
+      "label-small": {
+        "displayName": "Label Small",
+        "purpose": "The link stat's second line."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Raw commands, approval detail, error lines."
+      }
+    },
+    "shadows": [
+      {
+        "name": "toolbar-float",
+        "value": "0 10px 28px -10px color-mix(in srgb, var(--shade) 55%, transparent), 0 2px 6px -2px color-mix(in srgb, var(--shade) 30%, transparent)",
+        "purpose": "The floating working toolbar. Dropped when it docks."
+      },
+      {
+        "name": "menu-float",
+        "value": "0 14px 34px -10px color-mix(in srgb, var(--shade) 45%, transparent)",
+        "purpose": "The attach menu."
+      },
+      {
+        "name": "snackbar-float",
+        "value": "0 12px 30px -10px color-mix(in srgb, var(--shade) 50%, transparent)",
+        "purpose": "The snackbar."
+      },
+      {
+        "name": "selected-ring",
+        "value": "0 0 0 3px var(--bg), 0 0 0 6px var(--primary-c)",
+        "purpose": "His message while its actions are open."
+      },
+      {
+        "name": "jump-flash",
+        "value": "0 0 0 4px var(--bg), 0 0 0 8px var(--sun)",
+        "purpose": "The card he jumped to, fading over 1.6 s."
+      },
+      {
+        "name": "focus-ring",
+        "value": "outline: 3px solid var(--focus); outline-offset: 2px",
+        "purpose": "Keyboard focus everywhere. Sun inside the header, an inset 2 px ring on fields."
+      }
+    ],
+    "motion": [
+      {
+        "name": "spring",
+        "value": "linear(0, 0.12 3%, 0.45 8%, 0.84 14.5%, 1.04 20%, 1.1 24.5%, 1.09 29.5%, 1.03 37%, 0.99 45%, 0.995 58%, 1)",
+        "purpose": "Shape morphs (0.65 s), corner changes (0.35 to 0.5 s) and entrances (0.4 to 0.55 s)."
+      },
+      {
+        "name": "ease",
+        "value": "cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "Colour changes, fades and 0.2 s exits."
+      },
+      {
+        "name": "working-cycle",
+        "value": "toolbar loader steps burst, cookie, pentagon, clover every 2s on a 0.65s spring, everything working spins at 3.2s linear",
+        "purpose": "Only while the Mac is working."
+      },
+      {
+        "name": "waiting-turn",
+        "value": "spin 14s linear infinite",
+        "purpose": "The waiting burst while a request waits on him."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion: reduce",
+        "purpose": "Colour, background and opacity transitions only, entrances fade in 0.2 s, loaders stop on a still pentagon (working) or burst (waiting)."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "folded",
+        "value": "max-width: 719px"
+      },
+      {
+        "name": "unfolded",
+        "value": "min-width: 720px"
+      },
+      {
+        "name": "tight",
+        "value": "height under 560px or html[data-keyboard]"
+      },
+      {
+        "name": "book",
+        "value": "html[data-fold=\"book\"] or horizontal-viewport-segments: 2"
+      },
+      {
+        "name": "tabletop",
+        "value": "html[data-fold=\"tabletop\"] or vertical-viewport-segments: 2"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Send Button",
+      "kind": "button",
+      "refersTo": "button-send",
+      "description": "A violet cookie with an up arrow when there is text, a pale circle when there is not.",
+      "html": "<button class=\"ds-send\" aria-label=\"Send\"><svg viewBox=\"0 0 100 100\" style=\"position:absolute;inset:0;width:100%;height:100%\"><path fill=\"currentColor\" d=\"M50.00 2.00L53.10 2.67L56.00 4.46L58.58 6.85L60.94 9.16L63.30 10.83L65.90 11.61L68.93 11.62L72.33 11.33L75.84 11.33L79.07 12.12L81.61 13.96L83.25 16.75L84.06 20.13L84.41 23.60L84.81 26.74L85.77 29.35L87.55 31.48L90.07 33.40L92.90 35.44L95.42 37.83L97.01 40.65L97.34 43.77L96.41 46.96L94.65 50.00L92.70 52.80L91.20 55.42L90.57 58.07L90.84 60.94L91.66 64.14L92.44 67.58L92.54 70.98L91.57 74.00L89.44 76.35L86.44 77.96L83.08 79.01L79.90 79.90L77.27 81.10L75.30 82.97L73.77 85.58L72.33 88.67L70.57 91.72L68.27 94.11L65.41 95.39L62.17 95.42L58.84 94.43L55.66 93.00L52.74 91.78L50.00 91.30L47.26 91.78L44.34 93.00L41.16 94.43L37.83 95.42L34.59 95.39L31.73 94.11L29.43 91.72L27.67 88.67L26.23 85.58L24.70 82.97L22.73 81.10L20.10 79.90L16.92 79.01L13.56 77.96L10.56 76.35L8.43 74.00L7.46 70.98L7.56 67.58L8.34 64.14L9.16 60.94L9.43 58.07L8.80 55.42L7.30 52.80L5.35 50.00L3.59 46.96L2.66 43.77L2.99 40.65L4.58 37.83L7.10 35.44L9.93 33.40L12.45 31.48L14.23 29.35L15.19 26.74L15.59 23.60L15.94 20.13L16.75 16.75L18.39 13.96L20.93 12.12L24.16 11.33L27.67 11.33L31.07 11.62L34.10 11.61L36.70 10.83L39.06 9.16L41.42 6.85L44.00 4.46L46.90 2.67Z\"/></svg><svg viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"position:relative\"><path d=\"M12 19V5M6 11l6-6 6 6\"/></svg></button>",
+      "css": ".ds-send{width:56px;height:56px;position:relative;border:0;background:none;padding:0;display:grid;place-items:center;color:var(--primary,#5a2ee6);cursor:pointer}.ds-send>svg:first-child{transform:rotate(40deg);transition:transform .65s cubic-bezier(.3,1.4,.5,1)}.ds-send>svg:last-child{color:var(--on-primary,#fff)}.ds-send:active>svg:first-child{transform:rotate(80deg) scale(.9)}.ds-send:focus-visible{outline:3px solid var(--focus,#5a2ee6);outline-offset:2px}"
+    },
+    {
+      "name": "Shortcut Chips",
+      "kind": "chip",
+      "refersTo": "chip-pink",
+      "description": "Pastel pills cycling pink, mint, sun and lilac along the top of the tray.",
+      "html": "<div class=\"ds-chips\"><button class=\"ds-chip\">Battery and Disk</button><button class=\"ds-chip\">Screenshot</button><button class=\"ds-chip\">Empty the Trash</button><button class=\"ds-chip\">Timers</button></div>",
+      "css": ".ds-chips{display:flex;gap:8px;flex-wrap:wrap}.ds-chip{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;min-height:40px;padding:4px 16px;border:0;border-radius:20px;font-size:14px;font-weight:650;font-stretch:102%;cursor:pointer;transition:border-radius .35s,transform .35s}.ds-chip:nth-child(4n+1){background:var(--pink,#ffc4ea);color:var(--on-pink,#5c0a45)}.ds-chip:nth-child(4n+2){background:var(--mint,#9ff0d3);color:var(--on-mint,#00382a)}.ds-chip:nth-child(4n+3){background:var(--sun,#ffd23f);color:var(--on-sun,#3a2700)}.ds-chip:nth-child(4n+4){background:var(--lilac,#ddd2ff);color:var(--on-lilac,#26106e)}.ds-chip:active{border-radius:10px;transform:scale(.96)}.ds-chip:focus-visible{outline:3px solid var(--focus,#5a2ee6);outline-offset:2px}"
+    },
+    {
+      "name": "Composer",
+      "kind": "input",
+      "refersTo": "composer-tray",
+      "description": "The tray with the round attach button, the pill message field and send.",
+      "html": "<div class=\"ds-tray\"><button class=\"ds-round\" aria-label=\"Attach\"><svg viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"position:relative\"><path d=\"M12 5v14M5 12h14\"/></svg></button><textarea class=\"ds-field\" rows=\"1\" placeholder=\"Message your Mac\"></textarea></div>",
+      "css": ".ds-tray{display:flex;gap:6px;align-items:flex-end;background:var(--surface-1,#ece5ff);border-radius:36px;padding:8px}.ds-round{width:52px;height:52px;flex:none;border:0;border-radius:26px;background:var(--surface,#fff);color:var(--ink,#1a1530);display:grid;place-items:center;cursor:pointer;transition:border-radius .35s}.ds-round:active{border-radius:16px}.ds-field{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;flex:1;min-width:0;resize:none;border:0;border-radius:26px;background:var(--surface,#fff);color:var(--ink,#1a1530);padding:14px 18px;min-height:52px;font-size:16px;line-height:1.45;outline:none}.ds-field::placeholder{color:var(--faint,#6a6386)}.ds-field:focus-visible{box-shadow:inset 0 0 0 2px var(--focus,#5a2ee6)}"
+    },
+    {
+      "name": "Approval Card",
+      "kind": "card",
+      "refersTo": "approval-card",
+      "description": "Amber card with the waiting burst, the agent's sentence and a connected Deny and Allow pair.",
+      "html": "<div class=\"ds-ask\"><div class=\"ds-ask-top\"><span class=\"ds-ask-mark\"><svg viewBox=\"0 0 100 100\" style=\"position:absolute;inset:0;width:100%;height:100%\"><path fill=\"currentColor\" d=\"M50.00 2.00L53.07 3.20L55.77 6.14L58.11 9.22L60.48 10.90L63.37 10.63L66.93 9.13L70.74 7.94L74.00 8.43L76.06 11.01L76.93 14.90L77.42 18.74L78.62 21.38L81.26 22.58L85.10 23.07L88.99 23.94L91.57 26.00L92.06 29.26L90.87 33.07L89.37 36.63L89.10 39.52L90.78 41.89L93.86 44.23L96.80 46.93L98.00 50.00L96.80 53.07L93.86 55.77L90.78 58.11L89.10 60.48L89.37 63.37L90.87 66.93L92.06 70.74L91.57 74.00L88.99 76.06L85.10 76.93L81.26 77.42L78.62 78.62L77.42 81.26L76.93 85.10L76.06 88.99L74.00 91.57L70.74 92.06L66.93 90.87L63.37 89.37L60.48 89.10L58.11 90.78L55.77 93.86L53.07 96.80L50.00 98.00L46.93 96.80L44.23 93.86L41.89 90.78L39.52 89.10L36.63 89.37L33.07 90.87L29.26 92.06L26.00 91.57L23.94 88.99L23.07 85.10L22.58 81.26L21.38 78.62L18.74 77.42L14.90 76.93L11.01 76.06L8.43 74.00L7.94 70.74L9.13 66.93L10.63 63.37L10.90 60.48L9.22 58.11L6.14 55.77L3.20 53.07L2.00 50.00L3.20 46.93L6.14 44.23L9.22 41.89L10.90 39.52L10.63 36.63L9.13 33.07L7.94 29.26L8.43 26.00L11.01 23.94L14.90 23.07L18.74 22.58L21.38 21.38L22.58 18.74L23.07 14.90L23.94 11.01L26.00 8.43L29.26 7.94L33.07 9.13L36.63 10.63L39.52 10.90L41.89 9.22L44.23 6.14L46.93 3.20Z\"/></svg><svg viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"position:relative\"><path d=\"M12 3.5 5 6.5v5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9v-5l-7-3z\"/><path d=\"M12 8v4.5M12 15.5v.5\"/></svg></span><h2>Wants to move 6 installers to the Trash</h2></div><div class=\"ds-ask-row\"><button class=\"ds-deny\">Deny</button><button class=\"ds-allow\">Allow</button></div></div>",
+      "css": ".ds-ask{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;background:var(--ask-c,#ffe8ad);color:var(--ink,#1a1530);border-radius:32px;padding:18px}.ds-ask-top{display:flex;gap:14px;align-items:center}.ds-ask-mark{width:56px;height:56px;flex:none;position:relative;display:grid;place-items:center;color:var(--wait-mark,#2b1c00)}.ds-ask-mark>svg:last-child{color:var(--on-wait-mark,#ffd23f)}.ds-ask h2{margin:0;font-size:22px;font-weight:750;font-stretch:104%;line-height:1.25;letter-spacing:-.01em}.ds-ask-row{display:flex;gap:3px;margin-top:14px}.ds-ask-row button{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;flex:1;min-height:60px;border:0;font-size:16px;font-weight:750;font-stretch:106%;cursor:pointer;transition:flex-grow .45s,border-radius .45s}.ds-deny{background:var(--surface,#fff);color:var(--ink,#1a1530);border-radius:30px 10px 10px 30px}.ds-allow{flex:1.5!important;background:var(--primary,#5a2ee6);color:var(--on-primary,#fff);border-radius:10px 30px 30px 10px}.ds-ask-row button:active{flex-grow:2;border-radius:16px}.ds-ask-row button:focus-visible{outline:3px solid var(--focus,#5a2ee6);outline-offset:2px}"
+    },
+    {
+      "name": "Working Toolbar",
+      "kind": "custom",
+      "refersTo": "toolbar",
+      "description": "The floating pill while the agent works, with the morphing loader and Stop.",
+      "html": "<div class=\"ds-now\"><span class=\"ds-loader\"><svg viewBox=\"0 0 100 100\" width=\"34\" height=\"34\"><path fill=\"currentColor\" d=\"M50.00 2.00L53.12 2.33L56.15 3.30L58.99 4.82L61.59 6.76L63.93 8.95L66.06 11.23L68.03 13.44L69.93 15.48L71.87 17.28L73.93 18.81L76.19 20.13L78.67 21.33L81.36 22.50L84.17 23.78L86.99 25.28L89.68 27.09L92.08 29.25L94.04 31.76L95.44 34.57L96.22 37.62L96.36 40.78L95.90 43.96L94.94 47.05L93.64 50.00L92.14 52.76L90.63 55.35L89.24 57.81L88.08 60.20L87.20 62.63L86.59 65.16L86.19 67.85L85.90 70.73L85.57 73.77L85.07 76.91L84.26 80.04L83.04 83.04L81.35 85.75L79.20 88.05L76.62 89.84L73.71 91.06L70.57 91.72L67.34 91.86L64.12 91.59L61.00 91.06L58.04 90.42L55.24 89.83L52.58 89.42L50.00 89.27L47.42 89.42L44.76 89.83L41.96 90.42L39.00 91.06L35.88 91.59L32.66 91.86L29.43 91.72L26.29 91.06L23.38 89.84L20.80 88.05L18.65 85.75L16.96 83.04L15.74 80.04L14.93 76.91L14.43 73.77L14.10 70.73L13.81 67.85L13.41 65.16L12.80 62.63L11.92 60.20L10.76 57.81L9.37 55.35L7.86 52.76L6.36 50.00L5.06 47.05L4.10 43.96L3.64 40.78L3.78 37.62L4.56 34.57L5.96 31.76L7.92 29.25L10.32 27.09L13.01 25.28L15.83 23.78L18.64 22.50L21.33 21.33L23.81 20.13L26.07 18.81L28.13 17.28L30.07 15.48L31.97 13.44L33.94 11.23L36.07 8.95L38.41 6.76L41.01 4.82L43.85 3.30L46.88 2.33Z\"/></svg></span><span class=\"ds-now-text\"><b>Check mounted disk images</b><small>Working for 0:07</small></span><button class=\"ds-stop\">Stop</button></div>",
+      "css": ".ds-now{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;display:flex;align-items:center;gap:12px;min-height:72px;padding:8px 8px 8px 10px;border-radius:36px;background:var(--toolbar,#1d1440);color:var(--on-toolbar,#f1ecff);box-shadow:0 10px 28px -10px rgb(20 8 60/.55),0 2px 6px -2px rgb(20 8 60/.3)}.ds-loader{width:52px;height:52px;flex:none;border-radius:50%;display:grid;place-items:center;background:var(--loader-bg,rgb(255 255 255/.12));color:var(--loader-fg,#9ff0d3)}.ds-now-text{flex:1;display:flex;flex-direction:column;line-height:1.2}.ds-now-text b{font-size:16px;font-weight:750;font-stretch:104%}.ds-now-text small{font-size:12px;font-weight:550;opacity:.78}.ds-stop{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;min-height:56px;padding:0 16px;border:0;border-radius:28px;background:var(--fail,#c62828);color:var(--on-fail,#fff);font-size:14px;font-weight:750;cursor:pointer;transition:border-radius .35s}.ds-stop:active{border-radius:14px}.ds-stop:focus-visible{outline:3px solid var(--focus,#5a2ee6);outline-offset:2px}"
+    },
+    {
+      "name": "Header Stats",
+      "kind": "custom",
+      "refersTo": "header",
+      "description": "The violet header with the battery burst, disk pill and link cookie.",
+      "html": "<div class=\"ds-head\"><h1>The Lab</h1><div class=\"ds-glance\"><span class=\"ds-stat ds-batt\"><svg viewBox=\"0 0 100 100\" style=\"position:absolute;inset:0;width:100%;height:100%\"><path fill=\"currentColor\" d=\"M50.00 2.00L53.07 3.20L55.77 6.14L58.11 9.22L60.48 10.90L63.37 10.63L66.93 9.13L70.74 7.94L74.00 8.43L76.06 11.01L76.93 14.90L77.42 18.74L78.62 21.38L81.26 22.58L85.10 23.07L88.99 23.94L91.57 26.00L92.06 29.26L90.87 33.07L89.37 36.63L89.10 39.52L90.78 41.89L93.86 44.23L96.80 46.93L98.00 50.00L96.80 53.07L93.86 55.77L90.78 58.11L89.10 60.48L89.37 63.37L90.87 66.93L92.06 70.74L91.57 74.00L88.99 76.06L85.10 76.93L81.26 77.42L78.62 78.62L77.42 81.26L76.93 85.10L76.06 88.99L74.00 91.57L70.74 92.06L66.93 90.87L63.37 89.37L60.48 89.10L58.11 90.78L55.77 93.86L53.07 96.80L50.00 98.00L46.93 96.80L44.23 93.86L41.89 90.78L39.52 89.10L36.63 89.37L33.07 90.87L29.26 92.06L26.00 91.57L23.94 88.99L23.07 85.10L22.58 81.26L21.38 78.62L18.74 77.42L14.90 76.93L11.01 76.06L8.43 74.00L7.94 70.74L9.13 66.93L10.63 63.37L10.90 60.48L9.22 58.11L6.14 55.77L3.20 53.07L2.00 50.00L3.20 46.93L6.14 44.23L9.22 41.89L10.90 39.52L10.63 36.63L9.13 33.07L7.94 29.26L8.43 26.00L11.01 23.94L14.90 23.07L18.74 22.58L21.38 21.38L22.58 18.74L23.07 14.90L23.94 11.01L26.00 8.43L29.26 7.94L33.07 9.13L36.63 10.63L39.52 10.90L41.89 9.22L44.23 6.14L46.93 3.20Z\"/></svg><span>82%<small>Charging</small></span></span><span class=\"ds-disk\"><b>214 GB free</b><small>of 995 GB</small><i><i></i></i></span><span class=\"ds-stat ds-link\"><svg viewBox=\"0 0 100 100\" style=\"position:absolute;inset:0;width:100%;height:100%\"><path fill=\"currentColor\" d=\"M50.00 2.00L53.10 2.67L56.00 4.46L58.58 6.85L60.94 9.16L63.30 10.83L65.90 11.61L68.93 11.62L72.33 11.33L75.84 11.33L79.07 12.12L81.61 13.96L83.25 16.75L84.06 20.13L84.41 23.60L84.81 26.74L85.77 29.35L87.55 31.48L90.07 33.40L92.90 35.44L95.42 37.83L97.01 40.65L97.34 43.77L96.41 46.96L94.65 50.00L92.70 52.80L91.20 55.42L90.57 58.07L90.84 60.94L91.66 64.14L92.44 67.58L92.54 70.98L91.57 74.00L89.44 76.35L86.44 77.96L83.08 79.01L79.90 79.90L77.27 81.10L75.30 82.97L73.77 85.58L72.33 88.67L70.57 91.72L68.27 94.11L65.41 95.39L62.17 95.42L58.84 94.43L55.66 93.00L52.74 91.78L50.00 91.30L47.26 91.78L44.34 93.00L41.16 94.43L37.83 95.42L34.59 95.39L31.73 94.11L29.43 91.72L27.67 88.67L26.23 85.58L24.70 82.97L22.73 81.10L20.10 79.90L16.92 79.01L13.56 77.96L10.56 76.35L8.43 74.00L7.46 70.98L7.56 67.58L8.34 64.14L9.16 60.94L9.43 58.07L8.80 55.42L7.30 52.80L5.35 50.00L3.59 46.96L2.66 43.77L2.99 40.65L4.58 37.83L7.10 35.44L9.93 33.40L12.45 31.48L14.23 29.35L15.19 26.74L15.59 23.60L15.94 20.13L16.75 16.75L18.39 13.96L20.93 12.12L24.16 11.33L27.67 11.33L31.07 11.62L34.10 11.61L36.70 10.83L39.06 9.16L41.42 6.85L44.00 4.46L46.90 2.67Z\"/></svg><span>Online<small>up 3 days</small></span></span></div></div>",
+      "css": ".ds-head{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;background:var(--head,#5a2ee6);color:var(--on-head,#fff);padding:20px 16px 18px 20px;border-radius:0 0 36px 36px}.ds-head h1{margin:0;font-size:36px;font-weight:860;font-stretch:116%;line-height:1;letter-spacing:-.02em}.ds-glance{display:flex;gap:8px;margin-top:12px}.ds-stat{min-width:84px;min-height:84px;position:relative;display:grid;place-items:center;text-align:center;padding:8px}.ds-stat>span{position:relative;display:flex;flex-direction:column;line-height:1.05;font-weight:820}.ds-stat small,.ds-disk small{font-size:12px;font-weight:650}.ds-batt{color:var(--sun,#ffd23f)}.ds-batt>span{color:var(--on-sun,#3a2700);font-size:22px;font-stretch:84%}.ds-link{color:var(--pink,#ffc4ea)}.ds-link>span{color:var(--on-pink,#5c0a45);font-size:12px;font-weight:750}.ds-disk{flex:1;display:flex;flex-direction:column;justify-content:center;background:var(--mint,#9ff0d3);color:var(--on-mint,#00382a);border-radius:42px;padding:8px 22px;line-height:1.05}.ds-disk b{font-size:24px;font-weight:820;font-stretch:92%}.ds-disk>i{display:block;height:8px;margin-top:7px;border-radius:4px;background:rgb(0 56 42/.18);overflow:hidden}.ds-disk>i>i{display:block;width:78%;height:100%;background:var(--on-mint,#00382a);border-radius:4px}"
+    },
+    {
+      "name": "Message Bubbles",
+      "kind": "card",
+      "refersTo": "bubble-mine",
+      "description": "His violet message with the bottom-right tail, the Mac's surface reply with the top-left tail.",
+      "html": "<div class=\"ds-thread\"><div class=\"ds-mine\">Clean up my Downloads.</div><div class=\"ds-reply\">Moved 6 installers to the Trash, 3.2 GB in all.</div></div>",
+      "css": ".ds-thread{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;display:flex;flex-direction:column;gap:8px;background:var(--bg,#f5f1ff);padding:14px;font-size:16px;font-weight:450;line-height:1.45}.ds-mine{align-self:flex-end;max-width:86%;background:var(--primary,#5a2ee6);color:var(--on-primary,#fff);padding:12px 18px;border-radius:28px 28px 8px 28px;transition:border-radius .4s,transform .4s}.ds-mine:active{transform:scale(.98);border-radius:20px 20px 8px 20px}.ds-reply{align-self:flex-start;max-width:92%;background:var(--surface,#fff);color:var(--ink,#1a1530);padding:14px 18px;border-radius:8px 28px 28px 28px}"
+    },
+    {
+      "name": "Offline Banner",
+      "kind": "custom",
+      "refersTo": "banner-offline",
+      "description": "Red container with a clover mark, the reason, and Open Tailscale and Try Again.",
+      "html": "<div class=\"ds-banner\"><span class=\"ds-mark\"><svg viewBox=\"0 0 100 100\" style=\"position:absolute;inset:0;width:100%;height:100%\"><path fill=\"currentColor\" d=\"M50.00 2.00L53.12 2.34L56.14 3.34L58.97 4.93L61.52 7.00L63.77 9.44L65.70 12.10L67.35 14.82L68.77 17.49L70.05 19.99L71.30 22.24L72.61 24.22L74.08 25.92L75.78 27.39L77.76 28.70L80.01 29.95L82.51 31.23L85.18 32.65L87.90 34.30L90.56 36.23L93.00 38.48L95.07 41.03L96.66 43.86L97.66 46.88L98.00 50.00L97.66 53.12L96.66 56.14L95.07 58.97L93.00 61.52L90.56 63.77L87.90 65.70L85.18 67.35L82.51 68.77L80.01 70.05L77.76 71.30L75.78 72.61L74.08 74.08L72.61 75.78L71.30 77.76L70.05 80.01L68.77 82.51L67.35 85.18L65.70 87.90L63.77 90.56L61.52 93.00L58.97 95.07L56.14 96.66L53.12 97.66L50.00 98.00L46.88 97.66L43.86 96.66L41.03 95.07L38.48 93.00L36.23 90.56L34.30 87.90L32.65 85.18L31.23 82.51L29.95 80.01L28.70 77.76L27.39 75.78L25.92 74.08L24.22 72.61L22.24 71.30L19.99 70.05L17.49 68.77L14.82 67.35L12.10 65.70L9.44 63.77L7.00 61.52L4.93 58.97L3.34 56.14L2.34 53.12L2.00 50.00L2.34 46.88L3.34 43.86L4.93 41.03L7.00 38.48L9.44 36.23L12.10 34.30L14.82 32.65L17.49 31.23L19.99 29.95L22.24 28.70L24.22 27.39L25.92 25.92L27.39 24.22L28.70 22.24L29.95 19.99L31.23 17.49L32.65 14.82L34.30 12.10L36.23 9.44L38.48 7.00L41.03 4.93L43.86 3.34L46.88 2.34Z\"/></svg><svg viewBox=\"0 0 24 24\" width=\"24\" height=\"24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" style=\"position:relative\"><path d=\"M3 9.5a13 13 0 0 1 18 0M6 13a8.5 8.5 0 0 1 12 0M9 16.5a4 4 0 0 1 6 0\"/></svg></span><p>Can't reach the Mac.</p><button class=\"ds-btn ds-filled\">Open Tailscale</button><button class=\"ds-btn ds-tonal\">Try Again</button></div>",
+      "css": ".ds-banner{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:14px 16px;border-radius:28px;background:var(--fail-c,#ffdad6);color:var(--on-fail-c,#5c0a07)}.ds-mark{position:relative;width:44px;height:44px;display:grid;place-items:center;color:var(--fail,#c62828)}.ds-mark>svg:last-child{color:var(--on-fail,#fff);width:22px;height:22px}.ds-banner p{margin:0;flex:1 1 180px;font-size:16px}.ds-btn{font-family:\"Roboto Flex\",Roboto,system-ui,sans-serif;min-height:48px;padding:0 20px;border:0;border-radius:24px;font-size:14px;font-weight:650;cursor:pointer;transition:border-radius .35s}.ds-btn:active{border-radius:12px}.ds-btn:focus-visible{outline:3px solid var(--focus,#5a2ee6);outline-offset:2px}.ds-filled{background:var(--fail,#c62828);color:var(--on-fail,#fff)}.ds-tonal{background:var(--surface,#fff);color:var(--ink,#1a1530)}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Loudest Native App on the Phone",
+    "overview": "The page is Pixel's own Material 3 Expressive with the volume turned all the way up. It should feel like it shipped with the Fold, and still carry more colour and more shape than anything else on the phone. A tall violet header owns the top, pastel containers carry the Mac's numbers and the shortcuts, and every state the agent can be in has its own shape and colour, so he can read the screen from arm's length without reading a word.\n\nIt's a working tool he uses all day, one-handed on the outer screen. Density is moderate: big type and big targets, but no decorative space. Colour always means something. Violet is him and the app, green is work going on, amber is waiting on him, red is broken or stopping, and the four pastels are the Mac's figures and his shortcuts. The grey chat with one blue accent is the thing this refuses.\n\nMotion is springy and short, and it's tied to state. Shapes morph when the state behind them changes, corners tighten under a finger, and nothing loops unless the Mac is actually busy or waiting on him.",
+    "keyCharacteristics": [
+      "Violet header block with The Lab in heavy, wide Roboto Flex and three stat shapes",
+      "Tonal cards with 28 px corners, no borders, depth from tone rather than shadow",
+      "One morphing shape library where each shape names a state",
+      "Fat pill composer with colour-cycled shortcut chips riding on top",
+      "Spring timing on shape and corner changes, still shapes under reduced motion",
+      "Light and dark from one set of `light-dark()` tokens"
+    ],
+    "rules": [
+      {
+        "name": "The Paired Ink Rule",
+        "body": "Every fill has its own ink token (`mint` with `on-mint`, `head` with `on-head`). Changing a fill means checking its ink at 4.5:1 for text, and changing both if it falls short. \"Make the header green\" is a change to `head`, `head-deep` and maybe `on-head`, nothing else.",
+        "section": "colors"
+      },
+      {
+        "name": "The State Colour Rule",
+        "body": "Green, amber and red say what the agent is doing. Don't use them for decoration, and don't use the pastels or violet for a state.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Token Rule",
+        "body": "Colours are written once as `light-dark(light, dark)` in `:root`. Never hard-code a colour in a rule, and never add a `prefers-color-scheme` block. `html[data-theme]` forces one theme for testing.",
+        "section": "colors"
+      },
+      {
+        "name": "The Role Token Rule",
+        "body": "Sizes and weights come from `--fs-*` and `--fw-*`. Reach for a role, not a number, and keep weights on the six steps (450, 550, 650, 750, 820, 860).",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Numbers Rule",
+        "body": "Every changing number (battery, disk, times, durations) sets `font-variant-numeric: tabular-nums` so it doesn't jiggle as it counts.",
+        "section": "typography"
+      },
+      {
+        "name": "The Always There Rule",
+        "body": "The message box, Stop while working, Allow and Deny on every request, the offline banner and messages still waiting to send must stay on screen and usable in every one of these layouts, with the keyboard up, at large text, folded, unfolded, book and tabletop.",
+        "section": "layout"
+      },
+      {
+        "name": "The Hinge Rule",
+        "body": "Nothing he reads or taps crosses `--lab-hinge-*`. A new fixed or absolute element has to have a book and a tabletop answer.",
+        "section": "layout"
+      },
+      {
+        "name": "The Only Floaters Rule",
+        "body": "A shadow means it floats over scrolling content. Cards in the conversation never get one.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Shape Means State Rule",
+        "body": "Don't give a state's shape to something that isn't that state. A new state picks an unused shape or reuses its nearest meaning.",
+        "section": "shapes"
+      },
+      {
+        "name": "The Morph Not Swap Rule",
+        "body": "When a state changes, change the shape's class (`s-cookie` to `s-clover`) on the same path so it morphs. Don't replace the element.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "**Do** keep every control at least 48 px in both directions. Things drawn at 40 px get a `::before` that extends the hit area to 48.",
+      "**Do** keep text at 4.5:1 on its fill in both themes. The shipped pairs run from 5.1:1 (`faint` on `bg`, light) to 14.8:1.",
+      "**Do** call `lab.ready()` in the first animation frame after the first draw, as `app.js` does now. Never wait for the network, the history or fonts first. Past 8 seconds the phone shows its safe screen.",
+      "**Do** pad anything pinned to the bottom with `--lab-inset-bottom` and let it move with the keyboard, without a transition of its own.",
+      "**Do** give anything new a folded, unfolded, keyboard, book and tabletop answer before calling it done, and check both themes with `?theme=light` and `?theme=dark`.",
+      "**Do** keep the Review and Stop pair, Allow and Deny, and the send button in the bottom half of the folded screen, where the thumb is.",
+      "**Do** add icons as stroked 24 px symbols in the sprite in `index.html`.",
+      "**Do** keep fonts, images and icons inside `app/`."
+    ],
+    "donts": [
+      "**Don't** put the message box, Stop, or Allow and Deny anywhere they can scroll away, hide behind the keyboard or sit under the toolbar.",
+      "**Don't** add an animation that runs while nothing is happening. The only loops are the working loaders and the slow waiting burst.",
+      "**Don't** animate layout (height, padding, grid) on the header or composer. Snap the layout and animate shape, colour or opacity.",
+      "**Don't** add shadows to cards, borders to containers, or square corners.",
+      "**Don't** use green, amber or red outside the state they mean, or use a state's shape for something else.",
+      "**Don't** reach for a grey chat with one blue accent. Restyle within the colour, shape and type roles above.",
+      "**Don't** load anything from the internet. A CDN script or a Google Fonts link won't load on the phone."
+    ]
+  }
+}

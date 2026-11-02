@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>The Lab</title>
+<script>
+  // Set before paint so the page never flashes the wrong theme.
+  (() => {
+    const t = new URLSearchParams(location.search).get('theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  })();
+</script>
+<link rel="stylesheet" href="app.css">
+<script src="../mock-bridge.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="bug" id="bug" aria-live="polite">
+  <div class="bug-state" id="bug-state">Final</div>
+  <div class="bug-clock" id="bug-clock">0:00</div>
+  <div class="bug-play"><span id="bug-play">Ready</span></div>
+  <div class="bug-link" id="bug-link" title="Connection to the Mac">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="4"/></svg>
+    <span id="bug-link-text">Mac</span>
+  </div>
+</header>
+
+<div class="banner" id="banner" hidden>
+  <p id="banner-text"></p>
+  <div class="banner-actions">
+    <button type="button" class="btn btn-quiet" id="banner-fix" hidden>Open Tailscale</button>
+    <button type="button" class="btn btn-quiet" id="banner-retry">Try Again</button>
+  </div>
+</div>
+
+<div class="layout">
+  <nav class="rail" id="rail" aria-label="Requests">
+    <h2 class="rail-title">Requests</h2>
+    <ol class="rail-list" id="rail-list"></ol>
+  </nav>
+  <main class="game" id="game" tabindex="-1">
+    <div class="feed" id="feed"></div>
+  </main>
+</div>
+
+<form class="composer" id="composer" autocomplete="off">
+  <label class="sr" for="input">Message to the Mac</label>
+  <textarea id="input" rows="1" placeholder="Ask the Mac to do something" enterkeyhint="send"></textarea>
+  <button type="button" class="btn btn-stop" id="stop" hidden>
+    <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/></svg>
+    <span>Stop</span>
+  </button>
+  <button type="submit" class="btn btn-send" id="send" aria-label="Send">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h11M10 5l5 5-5 5"/></svg>
+  </button>
+</form>
+</body>
+</html>

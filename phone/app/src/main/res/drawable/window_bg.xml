@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The stock design's page and header, for the moment before a first run's page draws. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/lab_bg" />
+    <item android:gravity="top|fill_horizontal" android:height="@dimen/lab_head">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/lab_head" />
+            <corners android:bottomLeftRadius="36dp" android:bottomRightRadius="36dp" />
+        </shape>
+    </item>
+</layer-list>

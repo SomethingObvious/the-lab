@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="color-scheme" content="light dark">
+<title>The Lab</title>
+<link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="app.css">
+<script>
+  const t = new URLSearchParams(location.search).get('theme');
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+</script>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1 class="mark">The Lab</h1>
+    <p class="link" id="link" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="link-text">Reaching the Mac</span></p>
+  </header>
+
+  <div class="banner" id="banner" hidden role="alert">
+    <p id="banner-text"></p>
+    <button type="button" class="btn line" id="banner-btn">Try Again</button>
+  </div>
+
+  <nav class="manifest" id="manifest" aria-label="Requests"></nav>
+
+  <main class="feed" id="feed" tabindex="-1">
+    <div id="slips"></div>
+    <p class="empty" id="empty" hidden>Nothing has shipped yet. Ask the Mac to do something below.</p>
+  </main>
+
+  <form class="composer" id="composer" autocomplete="off">
+    <label class="sr" for="msg">Message to the Mac</label>
+    <textarea id="msg" rows="1" placeholder="Ask the Mac to do something" enterkeyhint="send"></textarea>
+    <button type="button" class="btn line stop" id="stop" hidden>Stop</button>
+    <button type="submit" class="btn send" id="send" aria-label="Send" disabled>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M4 12h14M12 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="square"/></svg>
+    </button>
+  </form>
+</div>
+<script src="../mock-bridge.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

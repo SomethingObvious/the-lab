@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>The Lab</title>
+<link rel="preload" href="fonts/selawik-light.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/selawik.woff2" as="font" type="font/woff2" crossorigin>
+<script>
+  (() => {
+    const t = new URLSearchParams(location.search).get('theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  })();
+</script>
+<link rel="stylesheet" href="app.css">
+<script src="../mock-bridge.js"></script>
+<script src="app.js" defer></script>
+</head>
+<body class="enter">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M13 6.5l5.5 5.5-5.5 5.5"/></symbol>
+    <symbol id="i-attach" viewBox="0 0 24 24"><path d="M16.5 7.5 9 15a1.8 1.8 0 0 0 2.5 2.5l8-8a3.6 3.6 0 0 0-5-5l-8 8a5.4 5.4 0 0 0 7.6 7.6l6.4-6.4"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="8" y="8" width="8" height="8" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5.5 5.5"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5.5 12.5 4 4 9-9"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.5 2.5 5.5 13.5h5.5l-1 8 8-11h-5.5z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6.5 3h7.5l4 4v14h-11.5z"/><path d="M13.5 3v4.5h4.5M9.5 12h5M9.5 15.5h5"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14"/><circle cx="9" cy="10" r="1.6"/><path d="m4 17.5 5-4.5 4 3.5 2.5-2 4.5 3.5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V4.5h4V7M7 7l1 13h8l1-13"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12"/><path d="M16 8V4H4v12h4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5.5c0 4.2 2.9 7.6 7 9.5 4.1-1.9 7-5.3 7-9.5V6z"/><path d="M12 8v5M12 15.8v.4"/></symbol>
+    <symbol id="i-go" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 9.5a13 13 0 0 1 18 0M6 13a8.5 8.5 0 0 1 12 0M9 16.5a4 4 0 0 1 6 0"/><path d="M12 19.5v.5"/></symbol>
+  </defs>
+</svg>
+
+<div class="app" id="app">
+  <header class="band" id="band">
+    <div class="title-wrap"><div class="title" id="title" aria-hidden="true">the lab</div></div>
+    <nav class="pivots" id="pivots" aria-label="Sections">
+      <div class="pivot-row" id="pivot-row">
+        <button type="button" class="pivot" data-go="start" aria-label="Start">start</button>
+        <button type="button" class="pivot" data-go="chat" aria-label="Chat">chat<span class="pip" id="chat-pip" hidden></span></button>
+        <button type="button" class="pivot" data-go="files" aria-label="Files">files</button>
+        <button type="button" class="pivot" data-go="history" aria-label="History">history</button>
+      </div>
+    </nav>
+  </header>
+
+  <div class="strip" id="banner" role="status" hidden>
+    <svg class="ic"><use href="#i-wifi"/></svg>
+    <p id="banner-text"></p>
+    <div class="strip-actions">
+      <button type="button" class="flat-btn" id="banner-fix" hidden>Open Tailscale</button>
+      <button type="button" class="flat-btn" id="banner-retry">Try Again</button>
+    </div>
+  </div>
+
+  <main class="pano" id="pano">
+    <section class="pane start" id="p-start" data-pane="start" aria-label="Start">
+      <p class="machine" id="machine"></p>
+      <div class="grid" id="grid">
+        <div class="tile wide t-now" id="t-now" role="button" tabindex="0" aria-label="Open the conversation"></div>
+        <div class="tile med t-batt" id="t-batt"></div>
+        <div class="tile med t-disk" id="t-disk"></div>
+        <div class="tile wide t-file" id="t-file" role="button" tabindex="0"></div>
+        <div class="sc-tiles" id="sc-tiles"></div>
+      </div>
+    </section>
+    <div class="track" id="track">
+      <section class="pane chat" id="p-chat" data-pane="chat" aria-label="Chat">
+        <div class="thread" id="thread" aria-live="polite"></div>
+      </section>
+      <section class="pane files" id="p-files" data-pane="files" aria-label="Files and photos">
+        <div id="files-body"></div>
+      </section>
+      <section class="pane history" id="p-history" data-pane="history" aria-label="History">
+        <form class="field-wrap" id="search-form" role="search">
+          <svg class="ic"><use href="#i-search"/></svg>
+          <input type="search" id="search" class="field" placeholder="Search requests and replies" aria-label="Search requests and replies" autocomplete="off" enterkeyhint="search">
+        </form>
+        <div id="results"></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="appbar" id="appbar">
+    <div class="attach-menu" id="attach-menu" hidden>
+      <button type="button" data-attach="photos"><svg class="ic"><use href="#i-image"/></svg>Photos</button>
+      <button type="button" data-attach="files"><svg class="ic"><use href="#i-doc"/></svg>Files</button>
+    </div>
+    <div class="pending" id="pending" hidden></div>
+    <form class="compose" id="form">
+      <textarea id="text" class="field" rows="1" placeholder="Ask the Mac" aria-label="Ask the Mac" enterkeyhint="send"></textarea>
+      <button type="button" class="circ" id="attach" aria-label="Attach a Photo or File" aria-expanded="false" aria-controls="attach-menu"><svg class="ic"><use href="#i-attach"/></svg></button>
+      <button type="button" class="circ stop" id="stop" aria-label="Stop" hidden><svg class="ic"><use href="#i-stop"/></svg></button>
+      <button type="submit" class="circ send" id="send" aria-label="Send" disabled><svg class="ic"><use href="#i-send"/></svg></button>
+    </form>
+  </footer>
+</div>
+
+<section class="page" id="page" hidden role="dialog" aria-modal="true" aria-labelledby="page-title">
+  <p class="page-app">THE LAB</p>
+  <h2 class="page-title" id="page-title"></h2>
+  <div class="page-body" id="page-body"></div>
+  <div class="page-bar" id="page-bar"></div>
+</section>
+<div class="toast" id="toast" role="alert" hidden></div>
+</body>
+</html>
