@@ -7,7 +7,8 @@
 //   node setup.ts computer     workspace, server, start at login
 //   node setup.ts workspace    copy the template into the workspace, without touching login items
 //   node setup.ts selftest     send a real message through the server and wait for the reply
-//   node setup.ts tailscale    HTTPS address for the phone through tailscale serve
+//   node setup.ts relay        put up the relay on Cloudflare, or --url to use one that's already up
+//   node setup.ts tailscale    HTTPS address for the phone through tailscale serve, if he has Tailscale
 //   node setup.ts phone        build the app, install it over USB and pair it
 //   node setup.ts pair         open a QR code on the Mac that pairs the phone again
 //   node setup.ts bundle       build the app as an .aab for Play Console internal testing
@@ -20,10 +21,11 @@ import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config, home, labDir, words } from './config.ts';
+import { config, home, labDir, setConfig, words } from './config.ts';
 import { codexBin } from './codex.ts';
 import { launchers } from './trash.ts';
 import { agentBin, claudeSignedIn as signedIn, codexSignedIn, run, tailscaleState } from './checks.ts';
+import { keys, lanAddresses, specOf } from './tunnel.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(HERE);
@@ -41,6 +43,15 @@ const flag = (name: string) => { const i = args.indexOf(`--${name}`); return i >
 
 const say = (s: string) => console.log(s);
 const fail = (s: string): never => { console.error(s); process.exit(1); };
+// The running server only reads its config and code when it starts.
+async function restart() {
+  const { port, token } = config();
+  if (!(await health())) return;
+  await fetch(`http://127.0.0.1:${port}/restart`, { method: 'POST', headers: { authorization: `Bearer ${token}` } }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 1500));
+  if (!(await health(30_000))) fail(`The server didn't come back within 30 seconds. Its log is ${join(LAB, 'server.log')}.`);
+}
+
 async function health(timeoutMs = 0): Promise<boolean> {
   const { port } = config();
   const until = Date.now() + timeoutMs;
@@ -198,18 +209,50 @@ async function computer() {
     run('launchctl', ['kickstart', '-k', `gui/${uid}/${LABEL}`]);
   } else if (WIN) {
     // A Run entry starts it at sign-in with no admin rights. conhost --headless
-    // keeps the console window from ever showing.
+    // keeps the console window from ever showing. cmd reads a batch file in
+    // the console's code page, so chcp comes first for a profile like José.
     const start = join(LAB, 'start.cmd');
-    writeFileSync(start, `@echo off\r\nset "LAB_HOME=${HOME}"\r\ncd /d "${HERE}"\r\n"${process.execPath}" "${join(HERE, 'server.ts')}" >> "${join(LAB, 'server.log')}" 2>&1\r\n`);
+    writeFileSync(start, `@chcp 65001 >nul\r\n@echo off\r\nset "LAB_HOME=${HOME}"\r\ncd /d "${HERE}"\r\n"${process.execPath}" "${join(HERE, 'server.ts')}" >> "${join(LAB, 'server.log')}" 2>&1\r\n`);
     const line = `conhost.exe --headless cmd.exe /c "${start}"`;
     const reg = run('reg', ['add', RUN_KEY, '/v', 'TheLab', '/t', 'REG_SZ', '/d', line, '/f']);
     if (!reg.ok) fail(`Couldn't add The Lab to the sign-in items: ${reg.out}`);
-    if (!(await health())) spawn('conhost.exe', ['--headless', 'cmd.exe', '/c', start], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    // Spawned straight from node, conhost --headless exits before running
+    // start.cmd, so it goes through Start-Process the way the Run entry does.
+    if (!(await health())) run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Start-Process conhost.exe -ArgumentList '--headless','cmd.exe','/c','"${start.replace(/'/g, "''")}"' -WindowStyle Hidden`]);
+    else await restart();
   } else {
     say(`Start at login is only set up on a Mac or Windows. Run the server by hand with: node ${join(HERE, 'server.ts')}`);
   }
   if (!(await health(30_000))) fail(`The server didn't come up within 30 seconds. Its log is ${join(LAB, 'server.log')}.`);
   say(`The server is running and starts at login. Workspace: ${HOME}`);
+}
+
+// ---------- relay ----------
+
+// The relay is a Cloudflare Worker, so it costs nothing at this size and
+// needs a free Cloudflare account. One relay can serve any number of
+// computers, so a second install can be pointed at the first one's.
+async function relay() {
+  let url = flag('url') ?? '';
+  if (!url) {
+    const dir = join(REPO, 'relay');
+    say('Installing the relay tools');
+    const ci = spawnSync('npm', ['ci', '--no-fund', '--no-audit'], { cwd: dir, stdio: 'inherit', shell: WIN });
+    if (ci.status !== 0) fail('npm ci failed in relay/. The output above says why.');
+    say('Putting up the relay. If a Cloudflare page opens, he signs in (or makes a free account) and clicks Allow.');
+    const r = spawnSync('npx', ['wrangler', 'deploy'], { cwd: dir, encoding: 'utf8', shell: WIN, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }, stdio: ['inherit', 'pipe', 'pipe'] });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    console.log(out);
+    url = /https:\/\/[\w.-]+\.workers\.dev/.exec(out)?.[0] ?? '';
+    if (r.status !== 0 || !url) fail('The relay didn\'t go up. The wrangler output above says why.');
+  }
+  if (!/^https:\/\/[\w.-]+(:\d+)?\/?$/.test(url)) fail(`The relay address should look like https://the-lab-relay.name.workers.dev, not ${url}.`);
+  url = url.replace(/\/+$/, '');
+  const res = await fetch(url).then((x) => x.text()).catch((e) => `unreachable: ${e.message}`);
+  if (!res.startsWith('The Lab relay')) fail(`${url} doesn't answer like a relay (${res.slice(0, 80)}).`);
+  setConfig({ relay: url });
+  await restart();
+  say(`The relay is ${url}. Pair the phone again (node setup.ts phone, or node setup.ts pair) so it knows the relay.`);
 }
 
 // ---------- tailscale ----------
@@ -323,7 +366,8 @@ function adbDevice(adb: string): string {
 }
 
 async function phone() {
-  const url = flag('url') ?? (existsSync(join(LAB, 'url')) ? readFileSync(join(LAB, 'url'), 'utf8').trim() : fail('Run `node setup.ts tailscale` first, so the phone knows where to reach this Mac.'));
+  const url = flag('url') ?? (existsSync(join(LAB, 'url')) ? readFileSync(join(LAB, 'url'), 'utf8').trim() : undefined);
+  const { relay: relayUrl, port } = config();
   const javaHome = await jdk();
   const sdk = await androidSdk(javaHome);
   const adb = join(sdk, 'platform-tools', WIN ? 'adb.exe' : 'adb');
@@ -359,17 +403,15 @@ async function phone() {
   // Keeps the link to the Mac alive through Doze.
   sh('dumpsys', 'deviceidle', 'whitelist', `+${PKG}`);
   const { token } = config();
-  const pair = sh('am', 'broadcast', '-n', `${PKG}/.PairReceiver`, '--es', 'url', url, '--es', 'token', token);
+  // Every value here is base64url, an address or a comma list, so none of
+  // them needs quoting through adb's shell.
+  const s = specOf(keys(LAB), relayUrl, lanAddresses(port + 1));
+  const extras = ['--es', 'room', s.room, '--es', 'key', s.key, '--es', 'pass', s.pass, ...(s.relay ? ['--es', 'relay', s.relay] : []), ...(s.lan.length ? ['--es', 'lan', s.lan.join(',')] : [])];
+  const pair = sh('am', 'broadcast', '-n', `${PKG}/.PairReceiver`, ...extras, ...(url ? ['--es', 'url', url] : []), '--es', 'token', token);
   if (!/result=0/.test(pair.out)) fail(`Pairing didn't take: ${pair.out}`);
   sh('am', 'start', '-n', `${PKG}/.MainActivity`);
-
-  const hasTailscale = sh('pm', 'list', 'packages', 'com.tailscale.ipn').out.includes('com.tailscale.ipn');
-  if (!hasTailscale && !url.startsWith('http://localhost')) {
-    sh('am', 'start', '-a', 'android.intent.action.VIEW', '-d', 'market://details?id=com.tailscale.ipn');
-    say('The app is installed and paired. Tailscale is not on the phone yet, so its Play Store page is open: tap Install, open it, and sign in with the same account as the Mac. Then run `node setup.ts phone-vpn`.');
-    return;
-  }
-  say('The app is installed, paired and open on the phone.');
+  say(relayUrl ? 'The app is installed, paired and open on the phone. It reaches this Mac straight over Wi-Fi at home and through the relay everywhere else.'
+    : 'The app is installed, paired and open on the phone. Without a relay it only reaches this Mac on the same Wi-Fi, so run `node setup.ts relay` next.');
 }
 
 // Keeps Tailscale's VPN on at all times on the phone, so The Lab can always reach the Mac.
@@ -394,6 +436,7 @@ async function check() {
     serverRunning: await health(),
     engine: engine(),
     agentSignedIn: engine() === 'codex' ? codexSignedIn() : signedIn().loggedIn,
+    relay: config().relay ?? null,
     tailscale: ts.installed ? ('running' in ts && ts.running ? 'signed in' : 'not signed in') : 'not installed',
     phoneUrl: existsSync(join(LAB, 'url')) ? readFileSync(join(LAB, 'url'), 'utf8').trim() : null,
     phoneKeystore: existsSync(join(LAB, 'phone.jks')),
@@ -406,12 +449,13 @@ async function check() {
 async function pair() {
   const { port, token } = config();
   if (!(await health())) fail('The server is not running. Run `node setup.ts computer` first.');
-  if (!existsSync(join(LAB, 'url'))) fail('Run `node setup.ts tailscale` first, so the code can point at this Mac.');
+  if (!config().relay && !existsSync(join(LAB, 'url'))) fail('Run `node setup.ts relay` first, so the code can point at this Mac.');
   const link = `http://127.0.0.1:${port}/pair?t=${encodeURIComponent(token)}&next=/pair-phone`;
   if (MAC) run('open', [link]);
   else if (WIN) run('explorer.exe', [link]);
   else say(`Open this on the Mac: ${link}`);
-  say('The pairing code is open in the browser. On the phone, turn Tailscale on, then point the camera at the code and tap the link. It works once and lasts 10 minutes.');
+  say(config().relay ? 'The pairing code is open in the browser. On the phone, point the camera at the code, open the link it finds and tap Open The Lab. It works once and lasts 10 minutes.'
+    : 'The pairing code is open in the browser. On the phone, turn Tailscale on, then point the camera at the code and tap the link. It works once and lasts 10 minutes.');
 }
 
 // An .aab for Play Console internal testing. Play re-signs it with its own
@@ -430,7 +474,7 @@ async function bundle() {
   say(join(project, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab'));
 }
 
-const steps: Record<string, () => Promise<void>> = { check, auth, computer, workspace: async () => workspace(), selftest, tailscale, phone, pair, bundle, 'phone-vpn': phoneVpn };
+const steps: Record<string, () => Promise<void>> = { check, auth, computer, workspace: async () => workspace(), selftest, relay, tailscale, phone, pair, bundle, 'phone-vpn': phoneVpn };
 const step = steps[process.argv[2] ?? ''];
 if (!step) fail(`Usage: node setup.ts ${Object.keys(steps).join('|')}`);
 await step();

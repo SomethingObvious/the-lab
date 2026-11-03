@@ -82,8 +82,13 @@ class MainActivity : Activity() {
     private var pageError: String? = null
     private val onDesign = {
         if (autoRescue) { autoRescue = false; rescueReason = null }
-        if (rescueReason == null) load()
+        if (rescueReason == null) { if (visible) load() else stale = true }
     }
+    // A hidden WebView never runs requestAnimationFrame, so the page can't
+    // call lab.ready() and the watchdog only counts while it's on screen.
+    private var visible = false
+    private var stale = false
+    private var showingApp = false
     private var backRegistered = false
     // Only registered while the page has something to close, so otherwise the
     // system plays its own back-to-home preview. On 14 and up the page also
@@ -189,17 +194,24 @@ class MainActivity : Activity() {
 
     // A pairing link only counts once he has said yes to the address in it.
     private fun pairFrom(uri: Uri) {
-        val base = uri.getQueryParameter("u")?.trimEnd('/') ?: return
         val code = uri.getQueryParameter("c") ?: return
-        val host = Uri.parse(base).host ?: return
-        if (Uri.parse(base).scheme != "https") return Toast.makeText(this, "That pairing link isn't for a ${PC} on Tailscale.", Toast.LENGTH_LONG).show()
+        val tunnel = uri.getQueryParameter("o")?.let { room ->
+            Tunnel.Spec.parse(JSONObject().put("relay", uri.getQueryParameter("r") ?: "").put("room", room)
+                .put("key", uri.getQueryParameter("k") ?: "").put("pass", uri.getQueryParameter("p") ?: "")
+                .put("lan", JSONArray((uri.getQueryParameter("l") ?: "").split(',').filter { it.isNotBlank() })))
+                ?: return Toast.makeText(this, "That pairing link is damaged. Show a new code on the ${PC}.", Toast.LENGTH_LONG).show()
+        }
+        val base = uri.getQueryParameter("u")?.trimEnd('/')
+        if (tunnel == null && (base == null || Uri.parse(base).scheme != "https")) return Toast.makeText(this, "That pairing link isn't for a ${PC}.", Toast.LENGTH_LONG).show()
+        val host = tunnel?.let { t -> t.relay?.let { Uri.parse(it).host } ?: "your Wi-Fi" } ?: Uri.parse(base).host ?: return
         AlertDialog.Builder(this)
             .setTitle("Pair With This ${PC}?")
-            .setMessage("The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own ${PC}.")
+            .setMessage(if (tunnel != null) "The Lab will talk to the ${PC} that showed this code, straight over Wi-Fi when it can and through $host otherwise. Only say yes if you just scanned the code on your own ${PC}."
+                else "The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own ${PC}.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Pair") { _, _ ->
-                Hub.claim(base, code) { err ->
-                    Toast.makeText(this, err ?: "Paired with $host.", Toast.LENGTH_LONG).show()
+                Hub.claim(base, tunnel, code) { err ->
+                    Toast.makeText(this, err ?: "Paired with the ${PC}.", Toast.LENGTH_LONG).show()
                     if (err == null) { LinkService.start(this); rescueReason = null; load() }
                 }
             }
@@ -218,7 +230,11 @@ class MainActivity : Activity() {
             else items.put(JSONObject().put("ok", true).put("title", "This phone shows The Lab's notifications"))
             val cm = getSystemService(ConnectivityManager::class.java)
             val vpn = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-            if (vpn) items.put(JSONObject().put("ok", true).put("title", "Tailscale is running on this phone"))
+            if (Tunnel.spec != null) when (Tunnel.route) {
+                "direct" -> items.put(JSONObject().put("ok", true).put("title", "Connected straight to the ${PC} over this network"))
+                "relay" -> items.put(JSONObject().put("ok", true).put("title", "Connected to the ${PC} through the relay"))
+            }
+            else if (vpn) items.put(JSONObject().put("ok", true).put("title", "Tailscale is running on this phone"))
             else items.put(JSONObject().put("ok", false).put("title", "Tailscale is off on this phone").put("detail", "The phone can only reach the ${PC} through Tailscale.").put("fix", "tailscale"))
             answer(id, JSONObject().put("items", items).toString())
         }
@@ -227,9 +243,14 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         layout.addWindowLayoutInfoListener(this, mainExecutor, onLayout)
+        visible = true
+        if (stale) { stale = false; load() }
+        else if (showingApp && !ready) { frame.removeCallbacks(watchdog); frame.postDelayed(watchdog, 8000) }
     }
 
     override fun onStop() {
+        visible = false
+        frame.removeCallbacks(watchdog)
         layout.removeWindowLayoutInfoListener(onLayout)
         super.onStop()
     }
@@ -317,11 +338,12 @@ class MainActivity : Activity() {
         wantsBack(false)
         frame.removeCallbacks(watchdog)
         val hasDesign = Hub.designDir.resolve("index.html").exists()
-        if (rescueReason != null || !hasDesign || !Hub.paired) {
+        showingApp = !(rescueReason != null || !hasDesign || !Hub.paired)
+        if (!showingApp) {
             w.loadUrl("$ORIGIN/shell/rescue.html?pc=$PC")
         } else {
             w.loadUrl("$ORIGIN/app/index.html")
-            frame.postDelayed(watchdog, 8000)
+            if (visible) frame.postDelayed(watchdog, 8000)
         }
     }
 

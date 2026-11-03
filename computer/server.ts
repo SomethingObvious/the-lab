@@ -8,6 +8,7 @@ import { awake } from './mac.ts';
 import { launchers } from './trash.ts';
 import { cleanSettings, DEFAULTS, type Settings } from './settings.ts';
 import { cleanSchedules, due, GRACE, missed, next, type Schedule } from './schedule.ts';
+import { startTunnel } from './tunnel.ts';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -42,7 +43,9 @@ else supervise();
 // for as long as this process lives.
 function supervise() {
   const log = join(labDir(), 'server.log');
-  if (existsSync(log) && statSync(log).size > 5 * 1024 * 1024) truncateSync(log, 0);
+  // On Windows cmd.exe holds the log open for its redirect, so cutting it
+  // can fail. The next start that isn't redirected trims it instead.
+  try { if (existsSync(log) && statSync(log).size > 5 * 1024 * 1024) truncateSync(log, 0); } catch (e) { console.error(`${new Date().toISOString()} couldn't trim the log: ${(e as Error).message}`); }
   awake(true);
 
   let child: ReturnType<typeof spawn> | null = null;
@@ -69,14 +72,16 @@ async function serve() {
   const { Lab } = await import('./lab.ts');
   const { Design } = await import('./design.ts');
   const { mac, idle } = await import('./mac.ts');
-  const { token, port, engine } = config();
+  const { token, port, engine, relay } = config();
   const HOME = home();
   const DIR = labDir();
   const appDir = join(HOME, 'app');
   const settingsFile = join(HOME, 'settings.json');
   const readSettings = () => { try { return cleanSettings(JSON.parse(readFileSync(settingsFile, 'utf8'))); } catch { return null; } };
   let settings: Settings = readSettings() ?? { ...DEFAULTS };
-  const picked = () => (typeof settings.model === 'string' && settings.model) || process.env.LAB_MODEL || undefined;
+  // A model picked under Claude means nothing to Codex, so it only counts for
+  // the engine it was picked on.
+  const picked = () => (typeof settings.model === 'string' && settings.model && (!settings.modelEngine || settings.modelEngine === engine) && settings.model) || process.env.LAB_MODEL || undefined;
   const lab = new Lab({ home: HOME, dir: DIR, model: picked(), engine });
 
   // The agent deletes with this, which moves files to the Trash.
@@ -114,19 +119,29 @@ async function serve() {
   // A change to app/ that can't run stays on the Mac. The agent hears why,
   // and he hears about it once the turn is over.
   let told = '';
-  const design = new Design(appDir, join(DIR, 'design-history'), (version) => lab.store.live({ kind: 'design', version }),
-    (problem) => lab.note(`Your last change to app/ was held back from the phone because ${problem} Fix that first.`));
+  const HELD = 'Your last change to app/ was held back';
+  const design = new Design(appDir, join(DIR, 'design-history'), (version) => { lab.unnote(HELD); lab.store.live({ kind: 'design', version }); },
+    (problem) => lab.note(`${HELD} from the phone because ${problem} Fix that first.`));
   lab.store.listen((e) => {
     if (e.kind !== 'done' || !design.broken || told === design.broken) return;
     told = design.broken;
-    lab.store.add({ kind: 'notice', text: 'The last change to this app had a mistake in it, so your phone kept the version before. Ask for it again, or tap Fix It.', action: { label: 'Fix It', send: 'Your last change to the app had a mistake in it, so my phone kept the version before. Fix it and tell me what was wrong.' } });
+    // After this done has reached every listener, so it keeps the lower id.
+    setImmediate(() => lab.store.add({ kind: 'notice', text: 'The last change to this app had a mistake in it, so your phone kept the version before. Ask for it again, or tap Fix It.', action: { label: 'Fix It', send: 'Your last change to the app had a mistake in it, so my phone kept the version before. Fix it and tell me what was wrong.' } }));
   });
 
   // What the page on the phone reports going wrong, for the agent to fix.
   const errorsFile = join(DIR, 'app-errors.log');
+  let undoneTo: string | null = null;
   const reported = new Set<string>();
   const bridge = readFileSync(new URL('./web-bridge.js', import.meta.url));
   const want = Buffer.from(token);
+  // The agent can't read the token, so it checks a design change through
+  // this link instead. It only reads, and never reaches the pairing QR, so it
+  // can't answer its own Allow cards or pair a phone.
+  const previewFile = join(DIR, 'preview-link');
+  const preview = Buffer.from(randomBytes(24).toString('base64url'));
+  writeFileSync(previewFile, `http://127.0.0.1:${port}/pair?p=${preview}
+`, { mode: 0o600 });
 
   let macNow = await mac().catch(() => null);
   setInterval(async () => {
@@ -263,6 +278,16 @@ async function serve() {
   };
   const urlFile = join(DIR, 'url');
 
+  const tunnel = startTunnel({ dir: DIR, port, relay, lanPort: port + 1, lanHost: process.env.LAB_LAN_HOST });
+  const reach = () => ({ kind: 'reach' as const, lan: tunnel.spec().lan, relay: relay ?? null });
+  // Everything the phone needs to find and trust this computer, in the
+  // fragment of the relay's pairing page, which browsers never send to it.
+  const pairLink = (claim: string) => {
+    const s = tunnel.spec();
+    const q = new URLSearchParams({ r: s.relay ?? '', o: s.room, k: s.key, p: s.pass, l: s.lan.join(','), c: claim });
+    return `${(s.relay ?? '').replace(/^ws/, 'http').replace(/\/+$/, '')}/p#${q}`;
+  };
+
   // Behind tailscale serve every request carries the Tailscale login it came
   // from. The phone's is kept at the first visit, and a request from any
   // other login is turned away even with the right token.
@@ -279,6 +304,10 @@ async function serve() {
     const cookie = /(?:^|;\s*)lab=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? '';
     const got = Buffer.from(h.startsWith('Bearer ') ? h.slice(7) : decodeURIComponent(cookie));
     return got.length === want.length && timingSafeEqual(got, want) && sameLogin(req);
+  };
+  const previewing = (req: IncomingMessage, path: string) => {
+    const got = Buffer.from(decodeURIComponent(/(?:^|;\s*)labp=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? ''));
+    return req.method === 'GET' && path !== '/pair-phone' && got.length === preview.length && timingSafeEqual(got, preview);
   };
 
   const json = (res: ServerResponse, status: number, body: any) => {
@@ -312,7 +341,7 @@ async function serve() {
     const raw = req.headers['last-event-id'] ?? url.searchParams.get('after');
     const after = raw === undefined || raw === null || raw === '' ? null : Number(raw);
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
-    res.write(`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, mac: macNow, shortcuts, live: [{ kind: 'settings', values: settings }] })}\n\n`);
+    res.write(`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, mac: macNow, shortcuts, live: [{ kind: 'settings', values: settings }, reach()] })}\n\n`);
     // Replay and subscribe in the same tick, so nothing can land in between.
     for (const e of lab.store.since(Number.isFinite(after) ? after : null)) res.write(`id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`);
     res.write('event: loaded\ndata: {}\n\n');
@@ -328,8 +357,15 @@ async function serve() {
     const signed = engine === 'codex' ? codexSignedIn() : claudeSignedIn().loggedIn;
     out.push(signed ? { ok: true, title: `Signed in to ${engine === 'codex' ? 'ChatGPT' : 'Claude'}` }
       : { ok: false, title: `Signed out of ${engine === 'codex' ? 'ChatGPT' : 'Claude'}`, detail: `Open the ${engine === 'codex' ? 'Codex' : 'Claude'} app on the Mac and ask it to sign The Lab back in.` });
-    const ts = tailscaleState();
-    out.push(ts.installed && 'running' in ts && ts.running ? { ok: true, title: 'Tailscale is running on the Mac' } : { ok: false, title: 'Tailscale is off on the Mac', detail: 'Open Tailscale on the Mac and sign in.' });
+    const t = tunnel.state;
+    if (t.relay === 'connected') out.push({ ok: true, title: 'Connected to the relay, so the phone can reach the Mac from anywhere' });
+    else if (t.relay === 'off') out.push({ ok: false, title: 'No relay is set up', detail: existsSync(urlFile) ? 'The phone reaches the Mac on the same Wi-Fi or through Tailscale. Ask the agent on the Mac to set up the relay so it works everywhere.' : 'The phone only reaches the Mac on the same Wi-Fi. Ask the agent on the Mac to set up the relay so it works everywhere.' });
+    else out.push({ ok: false, title: "Can't reach the relay", detail: `The phone can still reach the Mac on the same Wi-Fi. The relay link is ${t.relay}.` });
+    out.push(t.lan === 'on' ? { ok: true, title: 'Listening on the local network' } : { ok: false, title: "Not listening on the local network", detail: `The phone can't reach the Mac directly on the same Wi-Fi (${t.lan}).` });
+    if (existsSync(urlFile)) {
+      const ts = tailscaleState();
+      out.push(ts.installed && 'running' in ts && ts.running ? { ok: true, title: 'Tailscale is running on the Mac' } : { ok: false, title: 'Tailscale is off on the Mac', detail: 'The relay and the local network still work. Open Tailscale and sign in to use it too.' });
+    }
     const m = await mac().catch(() => null);
     if (m?.battery && !m.battery.charging) out.push({ ok: false, title: `The Mac is on battery (${m.battery.percent}%)`, detail: 'It will go to sleep when idle. Plug it in to keep The Lab going.' });
     if (m && m.disk.free < 5e9) out.push({ ok: false, title: 'The Mac is nearly out of space', detail: 'Ask the agent what is taking up room.' });
@@ -354,6 +390,12 @@ async function serve() {
           const intent = `intent://pair?u=${encodeURIComponent(base)}&c=${claim}#Intent;scheme=thelab;package=com.somethingobvious.thelab;end`;
           return html(res, 200, 'Pair The Lab', `<h1>Pair This Phone With the Mac</h1><p>Tap the button to open The Lab and finish pairing.</p><p><a class="btn" href="${intent}">Open The Lab</a></p>`);
         }
+        const pv = Buffer.from(url.searchParams.get('p') ?? '');
+        if (pv.length) {
+          if (pv.length !== preview.length || !timingSafeEqual(pv, preview)) return json(res, 401, { error: 'That preview link is from before a restart. Read preview-link again.' });
+          res.writeHead(303, { 'set-cookie': `labp=${preview}; HttpOnly; SameSite=Strict; Path=/`, location: '/' });
+          return res.end();
+        }
         const t = url.searchParams.get('t') ?? '';
         if (Buffer.from(t).length !== want.length || !timingSafeEqual(Buffer.from(t), want)) return json(res, 401, { error: 'That pairing link is not valid.' });
         const nextPath = url.searchParams.get('next') === '/pair-phone' ? '/pair-phone' : '/';
@@ -366,14 +408,14 @@ async function serve() {
         if (login(req)) { lab.state.login = login(req); lab.save(); }
         return json(res, 200, { token });
       }
-      if (!authed(req)) return json(res, 401, { error: 'Not paired with this computer.' });
+      if (!authed(req) && !previewing(req, path)) return json(res, 401, { error: req.method === 'GET' ? 'Not paired with this computer.' : 'The preview only looks. Send from the phone instead.' });
 
       if (req.method === 'GET' && path === '/pair-phone') {
-        if (!existsSync(urlFile)) return html(res, 409, 'Pair a Phone', '<h1>Tailscale Isn\'t Set Up Yet</h1><p>Finish setup first, so the code can point at this Mac.</p>');
+        if (!relay && !existsSync(urlFile)) return html(res, 409, 'Pair a Phone', '<h1>There Is No Relay Yet</h1><p>Pair the phone over its USB cable instead, or ask the agent on the Mac to set up the relay first.</p>');
         const { qrSvg } = await import('./qr.ts');
-        const link = `${readFileSync(urlFile, 'utf8').trim()}/pair?c=${code('scan', 10 * 60_000)}`;
+        const link = relay ? pairLink(code('claim', 10 * 60_000)) : `${readFileSync(urlFile, 'utf8').trim()}/pair?c=${code('scan', 10 * 60_000)}`;
         const img = `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString('base64')}`;
-        return html(res, 200, 'Pair a Phone', `<h1>Point the Phone's Camera at This</h1><p>Turn on Tailscale on the phone first. The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`);
+        return html(res, 200, 'Pair a Phone', `<h1>Point the Phone's Camera at This</h1><p>${relay ? 'Open the link the camera finds, then tap Open The Lab.' : 'Turn on Tailscale on the phone first.'} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`);
       }
       if (req.method === 'GET' && path === '/events') return events(req, res, url);
       if (req.method === 'POST' && path === '/send') {
@@ -398,6 +440,13 @@ async function serve() {
         return json(res, 200, { items });
       }
       if (req.method === 'POST' && path === '/stop') { await lab.stop(); return json(res, 202, {}); }
+      // Setup calls this after an update or a new relay. The supervisor
+      // starts a fresh child, which reads the new code and config.
+      if (req.method === 'POST' && path === '/restart') {
+        json(res, 202, {});
+        setTimeout(() => process.exit(0), 200);
+        return;
+      }
       if (req.method === 'POST' && path === '/answer') {
         const { ref, allow, always } = await body(req);
         return lab.answer(String(ref), allow === true, always === true) ? json(res, 200, {}) : json(res, 404, { error: 'That question was already answered or has expired.' });
@@ -442,7 +491,7 @@ async function serve() {
       if (req.method === 'POST' && path === '/model') {
         const { model } = await body(req);
         if (model !== null && (typeof model !== 'string' || !/^[\w.:/@\[\]-]{1,120}$/.test(model))) return json(res, 400, { error: `That isn't a model name: ${JSON.stringify(model)}.` });
-        settings = cleanSettings({ ...settings, model: model === 'default' ? null : model })!;
+        settings = cleanSettings({ ...settings, model: model === 'default' ? null : model, modelEngine: model && model !== 'default' ? engine : null })!;
         writeJson(settingsFile, settings);
         pushSettings();
         return json(res, 200, { chosen: settings.model });
@@ -454,7 +503,10 @@ async function serve() {
         if (!text || (version && version !== design.version)) return json(res, 200, {});
         appendFileSync(errorsFile, `${new Date().toISOString()} ${design.version} ${String(where ?? '').slice(0, 80)} ${text}\n`);
         if (statSync(errorsFile).size > 1024 * 1024) truncateSync(errorsFile, 0);
-        if (fatal === true && design.undo()) {
+        if (fatal === true && version === undoneTo) {
+          lab.note(`The phone still couldn't open the app after the server put the earlier version back (${text}), so it left it there. The cause may be on the phone, not in app/.`);
+        } else if (fatal === true && design.undo()) {
+          undoneTo = design.version;
           lab.store.add({ kind: 'notice', text: "The last change to this app didn't open on your phone, so the version before it is back." });
           lab.note(`Your last change to app/ stopped the phone app from opening (${text}), so the server put the version before it back. Find what broke before trying again.`);
         } else if (!reported.has(text) && reported.size < 20) {
@@ -507,4 +559,13 @@ async function serve() {
     }
   });
   server.listen(port, '127.0.0.1', () => console.log(`${new Date().toISOString()} The Lab ${pkg.version} on 127.0.0.1:${port}, home ${HOME}`));
+  // Addresses change when the computer moves networks, so the phone hears
+  // the new ones over whichever route still works.
+  let sentReach = JSON.stringify(reach());
+  setInterval(() => {
+    const now = reach();
+    if (JSON.stringify(now) === sentReach) return;
+    sentReach = JSON.stringify(now);
+    lab.store.live(now);
+  }, 60_000).unref();
 }

@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.util.UUID
@@ -336,14 +337,19 @@ class AnswerReceiver : BroadcastReceiver() {
 class PairReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Hub.init(context)
-        val url = intent.getStringExtra("url")
+        val url = intent.getStringExtra("url")?.takeIf { it.startsWith("http") }
+        val tunnel = intent.getStringExtra("room")?.let { room ->
+            Tunnel.Spec.parse(JSONObject().put("relay", intent.getStringExtra("relay") ?: "").put("room", room)
+                .put("key", intent.getStringExtra("key") ?: "").put("pass", intent.getStringExtra("pass") ?: "")
+                .put("lan", JSONArray((intent.getStringExtra("lan") ?: "").split(',').filter { it.isNotBlank() })))
+        }
         val token = intent.getStringExtra("token")
-        if (url.isNullOrBlank() || token.isNullOrBlank() || !url.startsWith("http")) {
-            Log.e("Lab", "pair: needs --es url https://... --es token ...")
+        if ((url == null && tunnel == null) || token.isNullOrBlank()) {
+            Log.e("Lab", "pair: needs --es token ... and --es room/key/pass, or --es url https://...")
             resultCode = 1
             return
         }
-        Hub.pair(url, token)
+        Hub.pair(url, tunnel, token)
         resultCode = 0
         resultData = "paired"
     }

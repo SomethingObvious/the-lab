@@ -1,0 +1,116 @@
+// The relay for computer/tunnel.ts. One Durable Object per room passes
+// sealed frames between a computer and its phones. It holds no keys, so it
+// can't read or change what it passes, only drop it.
+//
+// The computer proves it owns the room by sending the secret that hashes to
+// the room's name. Phones only know the name, so they can't take its place.
+import { DurableObject } from 'cloudflare:workers';
+
+const ROOM = /^[A-Za-z0-9_-]{43}$/;
+const DATA = 0, LEAVE = 2;
+const PHONES = 8;
+
+const sha = async (s) => {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+  return btoa(String.fromCharCode(...d)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+
+const header = (peer, type) => {
+  const h = new Uint8Array(5);
+  new DataView(h.buffer).setUint32(0, peer);
+  h[4] = type;
+  return h;
+};
+
+export class Room extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+  }
+
+  async fetch(req) {
+    const room = new URL(req.url).pathname.split('/')[2];
+    const offered = (req.headers.get('sec-websocket-protocol') ?? '').split(',').map((s) => s.trim());
+    const [client, server] = Object.values(new WebSocketPair());
+    if (offered[0] === 'lab' && offered[1]) {
+      if ((await sha(offered[1])) !== room) return new Response('Not the owner of this room.', { status: 403 });
+      for (const old of this.ctx.getWebSockets('pc')) old.close(4001, 'Another copy of the server took over.');
+      this.ctx.acceptWebSocket(server, ['pc']);
+      return new Response(null, { status: 101, webSocket: client, headers: { 'sec-websocket-protocol': 'lab' } });
+    }
+    const phones = this.ctx.getWebSockets('phone');
+    if (phones.length >= PHONES) return new Response('Too many phones in this room.', { status: 429 });
+    let peer;
+    do peer = crypto.getRandomValues(new Uint32Array(1))[0]; while (this.ctx.getWebSockets(`p${peer}`).length);
+    this.ctx.acceptWebSocket(server, ['phone', `p${peer}`]);
+    server.serializeAttachment({ peer });
+    if (!this.ctx.getWebSockets('pc').length) {
+      server.send('away');
+      server.close(4004, 'The computer is not connected.');
+    }
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  webSocketMessage(ws, msg) {
+    if (typeof msg === 'string') return;
+    const body = new Uint8Array(msg);
+    const { peer } = ws.deserializeAttachment() ?? {};
+    if (peer === undefined) {
+      if (body.length < 5) return;
+      const to = new DataView(body.buffer, body.byteOffset).getUint32(0);
+      const phone = this.ctx.getWebSockets(`p${to}`)[0];
+      if (!phone) return;
+      if (body[4] === DATA) phone.send(body.subarray(5));
+      else if (body[4] === LEAVE) phone.close(4000, 'The computer ended this session.');
+      return;
+    }
+    const pc = this.ctx.getWebSockets('pc')[0];
+    if (!pc) {
+      ws.send('away');
+      ws.close(4004, 'The computer is not connected.');
+      return;
+    }
+    const out = new Uint8Array(5 + body.length);
+    out.set(header(peer, DATA));
+    out.set(body, 5);
+    pc.send(out);
+  }
+
+  webSocketClose(ws, code) { this.gone(ws, code); }
+  webSocketError(ws) { this.gone(ws, 1011); }
+
+  gone(ws, code) {
+    try { ws.close(code === 1005 || code === 1006 ? 1000 : code); } catch {}
+    const { peer } = ws.deserializeAttachment() ?? {};
+    if (peer === undefined) {
+      // The session keys went with the computer, so its phones start over.
+      for (const p of this.ctx.getWebSockets('phone')) p.close(4000, 'The computer went away.');
+      return;
+    }
+    const pc = this.ctx.getWebSockets('pc')[0];
+    if (pc) try { pc.send(header(peer, LEAVE)); } catch {}
+  }
+}
+
+const PAIR = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pair The Lab</title><style>body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:#1d1b20;background:#fdf7ff}
+h1{font-size:1.6rem;line-height:1.2}a{display:inline-block;background:#4419c9;color:#fff;padding:.9rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}
+@media (prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}}</style></head><body>
+<h1>Pair This Phone</h1><p>Tap the button to open The Lab and finish pairing. The code stays on this phone and never reaches this site.</p>
+<p><a id="go" href="#">Open The Lab</a></p>
+<script>document.getElementById('go').href = 'intent://pair?' + location.hash.slice(1) + '#Intent;scheme=thelab;package=com.somethingobvious.thelab;end';</script>
+</body></html>`;
+
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const [, kind, room] = url.pathname.split('/');
+    if (kind === 'r' && ROOM.test(room ?? '')) {
+      if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('Expected a WebSocket.', { status: 426 });
+      return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(req);
+    }
+    if (url.pathname === '/p') return new Response(PAIR, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
+    if (url.pathname === '/') return new Response('The Lab relay.\n');
+    return new Response('Not found.\n', { status: 404 });
+  },
+};

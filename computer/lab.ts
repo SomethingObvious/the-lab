@@ -16,7 +16,7 @@ export type Ev = { id: number; at: string; kind: string; [k: string]: unknown };
 type Listener = (e: Ev | Live) => void;
 // Live events go to whoever is connected and are never stored or replayed.
 // The phone keeps the newest of each kind and hands it to the page as it opens.
-export type Live = { kind: 'status' | 'design' | 'mac' | 'shortcuts' | 'settings'; [k: string]: unknown };
+export type Live = { kind: 'status' | 'design' | 'mac' | 'shortcuts' | 'settings' | 'reach'; [k: string]: unknown };
 export type Attached = { name: string; url: string; size: number; type: string };
 
 const KEEP = 5000;
@@ -173,7 +173,7 @@ export class Lab {
   private snapFailed = false;
   private memoryText = '';
   // Said to the agent at the top of its next message.
-  private nextNote = '';
+  private notes: string[] = [];
   // What the engine said it's running, which can differ from the one picked.
   modelInUse: string | null = null;
   rules: Rule[] = [];
@@ -242,9 +242,9 @@ export class Lab {
     const list = files.map((f) => `- ${join(this.filesDir, basename(decodeURIComponent(f.url)))} (${f.name}, ${f.type})`).join('\n');
     let content = files.length ? `${text}\n\nHe attached ${files.length === 1 ? 'a file' : `${files.length} files`} from his phone:\n${list}`.trim() : text;
     if (scheduled) content = `This is "${scheduled.label}", a scheduled message from schedules.json, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.${scheduled.quiet ? ' If there is nothing worth telling him, reply with exactly [SILENT] and he won\'t be notified.' : ''}\n\n${content}`;
-    const notes = [this.nextNote, this.memoryNote()].filter(Boolean).join(' ');
+    const notes = [...this.notes, this.memoryNote()].filter(Boolean).join(' ');
     if (notes) content = `(${notes})\n\n${content}`;
-    this.nextNote = '';
+    this.notes = [];
     this.setStatus(true, 'Reading your message');
     if (this.opts.engine === 'codex') {
       this.codex ??= new Codex(this, this.opts.home, PROMPT(this.trashCmd), this.opts.model);
@@ -397,7 +397,12 @@ export class Lab {
   // email a request came up in.
   // Adds to what the agent hears at the top of its next message.
   note(text: string) {
-    if (!this.nextNote.includes(text)) this.nextNote = [this.nextNote, text].filter(Boolean).join(' ');
+    if (!this.notes.includes(text)) this.notes.push(text);
+  }
+
+  // Takes back a note that stopped being true before he sent anything.
+  unnote(start: string) {
+    this.notes = this.notes.filter((n) => !n.startsWith(start));
   }
 
   private after(input: any): HookJSONOutput {
@@ -493,7 +498,7 @@ export class Lab {
     const planted = added.map((l) => ({ l, why: suspect(l) })).filter((x) => x.why && (this.taint || /hidden|password/.test(x.why)));
     const undo = (note: string, phone: string) => {
       this.writeMemory(this.memoryText);
-      this.nextNote = note;
+      this.note(note);
       this.store.add({ kind: 'notice', text: phone });
     };
     if (this.state.memoryPaused) return undo('Your last change to memory.md was undone because he has paused memory.', 'Memory is paused, so a change the agent made to it was undone.');
@@ -501,7 +506,7 @@ export class Lab {
     if (planted.length) {
       const keep = render({ about: after.about.filter((l) => !planted.some((p) => p.l === l)), notes: after.notes.filter((l) => !planted.some((p) => p.l === l)) });
       this.writeMemory(keep);
-      this.nextNote = 'A line you added to memory.md was taken out because it read like an instruction from something you read rather than from him.';
+      this.note('A line you added to memory.md was taken out because it read like an instruction from something you read rather than from him.');
       this.store.add({ kind: 'notice', text: `Something tried to add this to memory, and it was taken out because ${planted[0].why}: "${clip(planted[0].l, 160)}"`, action: { label: 'Keep It Anyway', send: `Add this to memory.md, it's from me: ${planted[0].l}` } });
       return;
     }
@@ -586,8 +591,9 @@ export class Lab {
 
     // A resume that never got as far as init means the saved conversation
     // is gone (deleted, or from another machine), so start a fresh one with
-    // whatever was waiting.
-    if (!this.initSeen && this.state.sessionId) {
+    // whatever was waiting. With nothing sent (only the model list was asked
+    // for) init never comes anyway, so that says nothing about the session.
+    if (!this.initSeen && this.state.sessionId && this.unanswered.length) {
       this.state.sessionId = undefined;
       this.save();
       this.store.add({ kind: 'notice', text: 'The last conversation could not be reopened, so this is a fresh one.' });

@@ -60,6 +60,8 @@ object Hub {
         .build()
     // A notification button's receiver has about 10 s to finish.
     private val quick = client.newBuilder().callTimeout(8, TimeUnit.SECONDS).build()
+    // Listing Claude's models can take the server 20 s, on top of a relay dial.
+    private val slow = client.newBuilder().callTimeout(40, TimeUnit.SECONDS).build()
 
     val events = ArrayList<JSONObject>()
     private val outbox = JSONArray()
@@ -90,9 +92,12 @@ object Hub {
     private var connectWhenLoaded = false
     private val whenLoaded = ArrayList<() -> Unit>()
 
-    val url get() = prefs.getString("url", null)
+    // Through the tunnel once it's paired that way, or Tailscale's address
+    // for a phone paired before the tunnel existed.
+    val url: String? get() = if (Tunnel.spec != null) Tunnel.base() else prefs.getString("url", null)
     private val token get() = prefs.getString("token", null)
-    val paired get() = url != null && token != null
+    val paired get() = (Tunnel.spec != null || prefs.getString("url", null) != null) && token != null
+    private var network: Network? = null
     private var lastId
         get() = prefs.getLong("lastId", 0)
         set(v) = prefs.edit().putLong("lastId", v).apply()
@@ -109,12 +114,22 @@ object Hub {
         app = context.applicationContext
         prefs = app.getSharedPreferences("lab", Context.MODE_PRIVATE)
         loadEvents()
-        for ((k, v) in prefs.all) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") {
-            runCatching { JSONObject(v as String) }.getOrNull()?.let { live[it.optString("kind")] = it }
-        }
+        // The old "mac" and "shortcuts" keys go first, so a newer live: copy of
+        // the same kind always wins whatever order prefs hands them back in.
+        val saved = prefs.all.entries.filter { it.key.startsWith("live:") || it.key == "mac" || it.key == "shortcuts" }.sortedBy { it.key.startsWith("live:") }
+        for ((_, v) in saved) runCatching { JSONObject(v as String) }.getOrNull()?.let { live[it.optString("kind")] = it }
+        prefs.getString("tunnel", null)?.let { t -> Tunnel.spec = runCatching { Tunnel.Spec.parse(JSONObject(t)) }.getOrNull() }
+        live["reach"]?.let { reached(it) }
         if (outboxFile.exists()) runCatching { JSONArray(outboxFile.readText()) }.getOrNull()?.let { a -> for (i in 0 until a.length()) outbox.put(a.get(i)) }
         app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) { main.post { if (link.optString("state") != "online") reconnectNow() } }
+            override fun onAvailable(network: Network) {
+                main.post {
+                    // A new network can bring a direct route, or take the old one away.
+                    if (Hub.network != null && Hub.network != network && Tunnel.spec != null) Tunnel.drop()
+                    Hub.network = network
+                    if (link.optString("state") != "online") reconnectNow()
+                }
+            }
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                 // Tailscale coming up shows as a change to the default network.
                 main.post { if (link.optString("state") != "online") reconnectNow() }
@@ -165,9 +180,14 @@ object Hub {
         if (paired) connect()
     }
 
-    fun pair(newUrl: String, newToken: String) = onLoaded {
-        val changed = newUrl != url
-        prefs.edit().putString("url", newUrl.trimEnd('/')).putString("token", newToken).apply()
+    fun pair(newUrl: String?, tunnel: Tunnel.Spec?, newToken: String) = onLoaded {
+        val was = prefs.getString("tunnel", null)?.let { runCatching { JSONObject(it).optString("room") }.getOrNull() } ?: prefs.getString("url", null)
+        val changed = (tunnel?.room ?: newUrl) != was
+        prefs.edit().apply {
+            if (newUrl != null) putString("url", newUrl.trimEnd('/')) else remove("url")
+            if (tunnel != null) putString("tunnel", tunnel.json().toString()) else remove("tunnel")
+        }.putString("token", newToken).apply()
+        Tunnel.spec = tunnel
         if (changed) {
             events.clear()
             disk.execute { eventsFile.delete() }
@@ -177,7 +197,7 @@ object Hub {
             prefs.edit().apply { for (k in prefs.all.keys) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") remove(k) }.apply()
             File(app.filesDir, "design").deleteRecursively()
         }
-        Log.i(TAG, "paired with $newUrl")
+        Log.i(TAG, "paired with ${tunnel?.relay ?: tunnel?.lan?.firstOrNull() ?: newUrl}")
         reconnectNow()
     }
 
@@ -241,8 +261,14 @@ object Hub {
         }
     }
 
+    private fun reached(e: JSONObject) {
+        val a = e.optJSONArray("lan") ?: return
+        Tunnel.lan = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+    }
+
     private fun setLive(e: JSONObject) {
         val kind = e.optString("kind")
+        if (kind == "reach") reached(e)
         live[kind] = e
         prefs.edit().putString("live:$kind", e.toString()).apply()
         emit(e)
@@ -274,6 +300,13 @@ object Hub {
         when {
             code == 401 -> setLink("unpaired", "The ${PC} doesn't recognise this phone any more. Plug it into the ${PC} and let the agent pair it again.")
             caps == null -> setLink("offline", "This phone is offline.")
+            Tunnel.spec != null -> setLink("offline", when (Tunnel.why) {
+                "away" -> "The ${PC} isn't connected right now. It may be asleep, switched off or offline."
+                "relay" -> "Can't reach the relay, so the ${PC} is only reachable on the same Wi-Fi."
+                "key" -> "Something answered that isn't your ${PC}, so The Lab didn't trust it. Pair this phone again if it keeps happening."
+                "none" -> "Can't find the ${PC} on this network. Without a relay it's only reachable on the same Wi-Fi."
+                else -> "Can't reach the ${PC}. It may be asleep, switched off or offline."
+            })
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> setLink("offline", "Tailscale is off on this phone, so it can't reach the ${PC}.", "tailscale")
             code != null && code in 502..504 -> setLink("offline", "The ${PC} is on, but The Lab's server isn't answering. It restarts itself, so give it a minute.")
             t is UnknownHostException -> setLink("offline", "This phone can't find the ${PC} on Tailscale. Check Tailscale is connected.", "tailscale")
@@ -337,7 +370,7 @@ object Hub {
         if (!path.startsWith("/") || path.contains("..")) return done(null, "That isn't a route on the ${PC}.")
         val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
             .method(method, if (method == "GET") null else (body ?: "{}").toRequestBody(JSON_TYPE)).build()
-        quick.newCall(req).enqueue(object : Callback {
+        (if (path == "/models" || path == "/check") slow else quick).newCall(req).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) { main.post { done(null, "Couldn't reach the ${PC}. Try again once it's back.") } }
             override fun onResponse(call: Call, response: Response) {
                 val code = response.code
@@ -352,18 +385,27 @@ object Hub {
 
     // A QR code scanned on the Mac hands over a one-time code, which the Mac
     // swaps for the token here so the token never sits in a browser history.
-    fun claim(base: String, code: String, done: (String?) -> Unit) {
-        val req = Request.Builder().url("${base.trimEnd('/')}/pair/claim")
+    fun claim(base: String?, tunnel: Tunnel.Spec?, code: String, done: (String?) -> Unit) {
+        // The claim goes through the new route, and the old one comes back if it fails.
+        val before = Tunnel.spec
+        val to = if (tunnel != null) { Tunnel.spec = tunnel; Tunnel.base() } else base ?: return done("That pairing link is missing its address.")
+        val restore = { if (tunnel != null && Tunnel.spec === tunnel) Tunnel.spec = before }
+        val req = Request.Builder().url("${to.trimEnd('/')}/pair/claim")
             .post(JSONObject().put("code", code).toString().toRequestBody(JSON_TYPE)).build()
         quick.newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { done("Couldn't reach the ${PC}. Check Tailscale is on, then scan the code again.") } }
+            override fun onFailure(call: Call, e: IOException) {
+                main.post {
+                    restore()
+                    done(if (tunnel != null) "Couldn't reach the ${PC}. Check it's awake and online, then scan the code again." else "Couldn't reach the ${PC}. Check Tailscale is on, then scan the code again.")
+                }
+            }
             override fun onResponse(call: Call, response: Response) {
                 val code2 = response.code
                 val text = response.use { it.body.string() }
                 main.post {
                     val token = runCatching { JSONObject(text).getString("token") }.getOrNull()
-                    if (code2 == 200 && token != null) { pair(base, token); done(null) }
-                    else done(runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} turned the code down. Scan a new one."))
+                    if (code2 == 200 && token != null) { pair(if (tunnel != null) null else base, tunnel, token); done(null) }
+                    else restore().let { done(runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} turned the code down. Scan a new one.")) }
                 }
             }
         })

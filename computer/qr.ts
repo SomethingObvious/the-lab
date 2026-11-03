@@ -1,9 +1,9 @@
 // A QR code for a short link, so the phone can pair by pointing its camera
-// at the Mac. Byte mode, medium error correction, versions 1 to 10 (up to
-// 213 bytes), after Project Nayuki's reference encoder.
+// at the Mac. Byte mode, medium error correction, versions 1 to 20 (up to
+// 666 bytes), after Project Nayuki's reference encoder.
 
-const EC = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26];
-const BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5];
+const EC = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26];
+const BLOCKS = [0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16];
 
 const raw = (v: number) => {
   let r = (16 * v + 128) * v + 64;
@@ -40,8 +40,8 @@ function remainder(data: number[], div: number[]) {
 export function qr(text: string): boolean[][] {
   const bytes = [...Buffer.from(text, 'utf8')];
   let v = 1;
-  while (v <= 10 && 12 + (v < 10 ? 0 : 8) + bytes.length * 8 > capacity(v) * 8) v++;
-  if (v > 10) throw new Error(`"${text}" is too long for a QR code here.`);
+  while (v <= 20 && 12 + (v < 10 ? 0 : 8) + bytes.length * 8 > capacity(v) * 8) v++;
+  if (v > 20) throw new Error(`"${text}" is too long for a QR code here.`);
 
   const bits: number[] = [];
   const put = (val: number, len: number) => { for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1); };

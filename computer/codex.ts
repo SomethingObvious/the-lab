@@ -81,6 +81,18 @@ export class Codex {
 
   setModel(model: string | undefined) { this.model = model; }
 
+  // A model given to turn/start sticks to the thread, so going back to the
+  // default has to name the default.
+  private picked = false;
+  private async turnModel(): Promise<string | undefined> {
+    if (this.model) { this.picked = true; return this.model; }
+    if (!this.picked) return undefined;
+    const r = await this.call('model/list', { limit: 100 }).catch(() => null);
+    const def = r?.data?.find((m: any) => m.isDefault);
+    if (def) this.picked = false;
+    return def ? String(def.model ?? def.id) : undefined;
+  }
+
   async models() {
     await this.start();
     const r = await this.call('model/list', { limit: 100 });
@@ -131,7 +143,7 @@ export class Codex {
     if (!m) return;
     this.turn = 'starting';
     this.started = Date.now();
-    this.starting = this.call('turn/start', {
+    this.starting = this.turnModel().then((model) => this.call('turn/start', {
       threadId,
       input: this.input(m),
       cwd: this.home,
@@ -141,8 +153,8 @@ export class Codex {
       // approval request, where the server's guard decides it. Instructions
       // alone don't hold an agent to a rule, the sandbox does.
       sandboxPolicy: { type: 'workspaceWrite', writableRoots: [this.home], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
-      ...(this.model ? { model: this.model } : {}),
-    }).then((r) => {
+      ...(model ? { model } : {}),
+    })).then((r) => {
       if (this.turn === 'starting') this.turn = r.turn.id;
       this.taken = m.you;
     }, (e) => { this.turn = null; throw e; }).finally(() => { this.starting = null; });

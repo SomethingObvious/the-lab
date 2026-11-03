@@ -719,12 +719,17 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       <button type="button" class="link-btn tb-reset" data-tbreset>${icon('redo')}Put Back the Usual Widgets</button>`,
       '<button type="button" class="primary" data-close>Done</button>');
   }
-  const editBar = (fn, focus) => {
-    const next = settings.topBar.map((w) => ({ ...w }));
-    fn(next);
-    saveSettings({ topBar: next });
-    openTopBar();
-    (focus && sheet.querySelector(focus) || $('sheet-title')).focus();
+  // A failed save puts the old bar back, so the sheet is drawn again from it
+  // and no button is left pointing at a row that's gone.
+  const editBar = async (fn, focus) => {
+    const draft = settings.topBar.map((w) => ({ ...w }));
+    fn(draft);
+    const next = draft.filter(Boolean);
+    const save = saveSettings({ topBar: next });
+    const draw = () => { if (sheetKind !== 'topbar') return; openTopBar(); (focus && sheet.querySelector(focus) || $('sheet-title')).focus(); };
+    draw();
+    await save;
+    if (settings.topBar !== next) draw();
   };
 
   // The header gives its height to the conversation while reading history,
@@ -854,7 +859,13 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     { head: 'Agent' },
     { type: 'open', label: 'Model', hint: () => modelName(), open: () => openModels() },
     { type: 'open', label: 'Rename This Mac', hint: () => mac?.name || '', open: () => openRename() },
-    { type: 'open', label: 'Show the Welcome Card Again', open: () => { closeSheet(); saveSettings({ welcomeDone: false }); } },
+    { type: 'open', label: 'Show the Welcome Card Again', open: async () => {
+      closeSheet();
+      await saveSettings({ welcomeDone: false });
+      // It's the first thing in the conversation, so a long history needs a jump back to it.
+      const card = items.find((it) => it.type === 'notice' && it.e.points);
+      if (card) jump(card.e.id); else toast("This conversation doesn't have a welcome card.", true);
+    } },
   ];
   const urlTheme = root.dataset.theme;
   function applySettings() {
@@ -1506,9 +1517,9 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     if (d.widget) { if (longFired) { longFired = false; return; } const w = WIDGETS[d.widget]; return w?.tap ? guard(`the ${d.widget} widget`, w.tap) : toggleGlance(!glanceOpen); }
     if (d.hidemore !== undefined) { toggleGlance(false); return; }
     if (d.topbar !== undefined) return openTopBar();
-    if (d.tbmove) { const [i, by] = d.tbmove.split(':').map(Number); return editBar((b) => { const [w] = b.splice(i, 1); b.splice(i + by, 0, w); }, `[data-tbmove="${i + by}:${by}"]`); }
+    if (d.tbmove) { const [i, by] = d.tbmove.split(':').map(Number); return editBar((b) => { if (!b[i] || !b[i + by]) return; const [w] = b.splice(i, 1); b.splice(i + by, 0, w); }, `[data-tbmove="${i + by}:${by}"]`); }
     if (d.tbremove) { const i = Number(d.tbremove); return editBar((b) => b.splice(i, 1), `[data-tbremove="${Math.max(0, i - 1)}"]`); }
-    if (d.tbsize) { const [i, size] = d.tbsize.split(':'); return editBar((b) => { b[Number(i)].size = size; }, `[data-tbsize="${d.tbsize}"]`); }
+    if (d.tbsize) { const [i, size] = d.tbsize.split(':'); return editBar((b) => { if (b[Number(i)]) b[Number(i)].size = size; },`[data-tbsize="${d.tbsize}"]`); }
     if (d.tbadd) { const def = WIDGETS[d.tbadd]; return editBar((b) => b.push({ id: d.tbadd, size: def.sizes[0] }), `[data-tbremove="${settings.topBar.length}"]`); }
     if (d.tbreset !== undefined) return editBar((b) => b.splice(0, b.length, ...DEFAULT_SETTINGS.topBar.map((w) => ({ ...w }))));
     if (d.setkey) { await saveSettings({ [d.setkey]: JSON.parse(d.setval) }); if (sheetKind === 'settings') { openSettings(); sheet.querySelector(`[data-setkey="${d.setkey}"][aria-checked="true"]`)?.focus(); } return; }

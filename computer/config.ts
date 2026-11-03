@@ -10,7 +10,8 @@ export const home = () => process.env.LAB_HOME ?? join(homedir(), 'TheLab');
 export const labDir = () => process.env.LAB_DIR ?? join(homedir(), '.thelab');
 
 // `name` is what he renamed the computer to on his phone.
-export type Config = { token: string; port: number; engine?: 'claude' | 'codex'; name?: string };
+// `relay` is the tunnel relay's address, set by `node setup.ts relay`.
+export type Config = { token: string; port: number; engine?: 'claude' | 'codex'; name?: string; relay?: string };
 
 // Created once on first start. The token is what the phone was paired with,
 // so it is never regenerated on its own.
@@ -30,7 +31,12 @@ export function setConfig(patch: Partial<Config>) {
 
 export const WIN = process.platform === 'win32';
 // Every sentence the server writes for him names a Mac. On Windows the same
-// sentences name the PC and its Recycle Bin instead.
+// sentences name the PC and its Recycle Bin instead. Only whole phrases are
+// swapped, as the agent's text goes through here too and a file called
+// Mac Notes.txt or a folder called Trash has to keep its name.
+const END = String.raw`(?![\w/\\-]|\.\w)`;
+const MAC = new RegExp(String.raw`\b(the|this|your|his|my|a|owner's|rebuilt) Mac(?=('s)?${END})`, 'gi');
+const TRASH = new RegExp(String.raw`\bthe Trash${END}`, 'g');
+const MACOS = new RegExp(String.raw`(?<![\w/\\.-])macOS${END}`, 'g');
 export const words = (s: string, win = WIN) => !win ? s : s
-  .replace(/\bmacOS\b/g, 'Windows').replace(/\bMac\b/g, 'PC')
-  .replace(/\bthe Trash\b/g, 'the Recycle Bin').replace(/\bTrash\b/g, 'Recycle Bin');
+  .replace(MACOS, 'Windows').replace(MAC, '$1 PC').replace(TRASH, 'the Recycle Bin');

@@ -49,6 +49,9 @@ android {
         buildConfig = true
         resValues = true
     }
+
+    // Tunnel logs through android.util.Log, which does nothing on the computer.
+    testOptions.unitTests.isReturnDefaultValues = true
 }
 
 dependencies {
@@ -58,4 +61,5 @@ dependencies {
     implementation("androidx.window:window-java:1.5.1")
     implementation("com.squareup.okhttp3:okhttp:5.5.1")
     implementation("com.squareup.okhttp3:okhttp-sse:5.5.1")
+    testImplementation("junit:junit:4.13.2")
 }

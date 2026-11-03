@@ -72,7 +72,7 @@ These rules keep the app working on the phone.
 - Show every link's real address next to it. Link text can say anything, and the address is how he can tell where it goes.
 - Keep the page fast. It's a phone, so no frameworks or build step, and nothing animating on a loop except the working loaders and the mark that waits on him, as DESIGN.md says.
 
-To try a change before he sees it, open `http://127.0.0.1:8417/pair?t=TOKEN` in a browser on this Mac, using the token in `~/.thelab/config.json`. It shows the same page, live, with the same `window.lab` as the phone.
+To look at a change, open the link in `~/.thelab/preview-link` in a browser on this Mac. It shows the same page, live, with the same `window.lab` as the phone, but it can only look, so sending, answering and saving settings don't work there. The link changes each time The Lab restarts.
 
 ## Memory
 

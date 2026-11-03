@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The Mac is reached over HTTPS through Tailscale. Plain HTTP is only for
-     testing against a server forwarded with adb reverse. -->
+<!-- Plain HTTP only goes to this phone's own loopback, where the tunnel
+     (Tunnel.kt) picks it up and seals it, or to a server forwarded with adb
+     reverse for testing. Tailscale pairings use HTTPS. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
     <domain-config cleartextTrafficPermitted="true">

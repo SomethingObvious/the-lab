@@ -2,7 +2,7 @@
 
 The Lab lets you message the agent on your Mac or Windows PC from an Android phone. You see each step it takes as it happens, approve anything risky from the phone, and change how the app looks by asking for it in plain words.
 
-It runs on whichever plan you already pay for, Claude (Pro or Max) or ChatGPT (Plus or Pro, through Codex). It has two parts. A small server on the Mac runs the agent, keeps the conversation and history, and restarts itself after a crash or a reboot. The Android app (built for the Pixel Fold, and fine on any phone running Android 13 or later) holds a live connection to that server, keeps an ongoing notification showing what the agent is doing, and queues messages while the Mac is out of reach. The two talk over Tailscale, so nothing is open to the internet.
+It runs on whichever plan you already pay for, Claude (Pro or Max) or ChatGPT (Plus or Pro, through Codex). It has two parts. A small server on the Mac runs the agent, keeps the conversation and history, and restarts itself after a crash or a reboot. The Android app (built for the Pixel Fold, and fine on any phone running Android 13 or later) holds a live connection to that server, keeps an ongoing notification showing what the agent is doing, and queues messages while the Mac is out of reach. The two talk through an end-to-end encrypted tunnel, straight over the Wi-Fi at home and through a small relay everywhere else. The relay only ever sees sealed bytes, and the server itself is never open to the internet or the local network. Tailscale works too, for anyone who already uses it.
 
 The app's interface is a web page kept on the Mac in `~/TheLab/app`. When you ask the agent for a change, it edits that page and the phone picks it up within a couple of seconds. A change that doesn't parse never reaches the phone, and if one still fails to open there, the server puts the version before it back by itself and the phone shows a built-in safe screen with an undo button in the meantime.
 
@@ -34,5 +34,6 @@ You need a Mac or a Windows 10 or 11 PC, an Android phone, a USB-C cable and one
 - Messages draw from the same plan limits as the rest of your use of Claude or ChatGPT.
 - There is no iPhone app.
 - The app is built on your own Mac and installed over USB, so it isn't on the Play Store.
+- Away from home it needs the relay, a free Cloudflare Worker in `relay/`. One relay can serve any number of computers, and setup can point a new install at one that's already up.
 - The agent can still get things wrong, and an action it isn't asked about (editing a document, say) happens straight away. Put Things Back depends on local snapshots, which may need Time Machine turned on, and on Windows there are none, so the Recycle Bin is the only undo.
 - It's for one person. Whoever holds the paired phone can do anything the agent can.

@@ -12,10 +12,10 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 - `~/.thelab/`, the server's own state: its token, history, log, the files he sends and the tools setup downloads. It sits outside the workspace so the agent can't loosen its own limits.
 - `~/.thelab/source/`, this repository.
 - A login item that keeps the server running (`~/Library/LaunchAgents/com.somethingobvious.thelab.plist` on a Mac, a `TheLab` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows, which starts it hidden when he signs in).
-- Tailscale on the Mac and on the phone.
+- A relay on Cloudflare's free plan, unless he was given the address of one that's already up.
 - The Lab on the phone, built on this Mac and installed over a USB cable.
 
-Nothing is exposed to the internet. The phone reaches the Mac only through his own Tailscale network.
+Nothing is exposed to the internet. The server listens only on the Mac itself, and the phone reaches it through an encrypted tunnel, straight over the Wi-Fi when they share one and through the relay otherwise. The keys come from pairing and never leave the two devices, so the relay can't read or change anything it passes.
 
 ## 1. Node and the Source
 
@@ -58,15 +58,23 @@ node setup.ts selftest
 
 The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the Mac awake while it's plugged in (it uses `caffeinate -s` on a Mac and `SetThreadExecutionState` on Windows, so on battery it sleeps as usual, except while a task is running). The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
 
-## 4. Tailscale on the Mac
+## 4. The Relay
 
-If `node setup.ts check` says Tailscale is not installed, download the Mac app from https://tailscale.com/download/mac and open the installer. **He clicks through the installer**, allows the VPN configuration when macOS asks, and signs in. Any account works (Google, Apple, GitHub), but it has to be the same one on the phone later.
+If the message that started setup gave a relay address, use it:
 
 ```sh
-node setup.ts tailscale
+node setup.ts relay --url https://the-lab-relay.example.workers.dev
 ```
 
-This turns on `tailscale serve`, which gives the server an HTTPS address that only his own devices can reach. The first time, Tailscale may print a link to enable HTTPS for his network. If the step prints one, open it in the browser, have **him click Enable**, then run the step again. It prints the address when it's done.
+Otherwise put up his own. It's a Cloudflare Worker on the free plan, which is far more than one person uses:
+
+```sh
+node setup.ts relay
+```
+
+The first time, a Cloudflare page opens in the browser. **He signs in, or makes a free account, and clicks Allow.** If Cloudflare asks him to pick a workers.dev subdomain, any name works. The step checks the relay answers, saves its address and restarts the server.
+
+On Windows, the first time the server starts listening for the phone on the local network, Windows asks whether Node.js may use private networks. **He clicks Allow.** Without it the phone still works through the relay, just never straight over the Wi-Fi.
 
 ## 5. The Phone
 
@@ -85,15 +93,13 @@ node setup.ts phone
 
 The first run downloads Java and the Android build tools into `~/.thelab/tools` (about 1 GB, 5 to 15 minutes), builds the app with a signing key that stays on this Mac, installs it, grants notifications, keeps it running through battery saving, pairs it with this Mac and opens it.
 
-If Tailscale isn't on the phone yet, the step opens its Play Store page. **He taps Install, opens Tailscale, signs in with the same account as the Mac and accepts the VPN prompt.** Then:
+He can turn USB debugging back off afterwards if he likes, though leaving it on makes updates easier.
 
-```sh
-node setup.ts phone-vpn
-```
+If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the Mac that works once for 10 minutes. He points the phone's camera at it, opens the link, taps Open The Lab and then Pair, and no cable is needed. The link opens a page on the relay, but everything after the `#` stays on the phone.
 
-That makes Tailscale the phone's always-on VPN, so The Lab can reach the Mac from anywhere. He can turn USB debugging back off afterwards if he likes, though leaving it on makes updates easier.
+### Tailscale (Optional)
 
-If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the Mac that works once for 10 minutes. He points the phone's camera at it with Tailscale on, taps the link, then taps Pair, and no cable is needed.
+If he already uses Tailscale, the phone can reach the Mac over it as well, with no change on the phone. `node setup.ts tailscale` also gives the server an HTTPS address through `tailscale serve`, which an older pairing used. Neither is needed with the relay.
 
 ## 6. Check It
 
@@ -117,7 +123,7 @@ Updates run from the Claude or Codex app on the Mac, because the agent on the ph
 - The server log is `~/.thelab/server.log`.
 - "Signed out" notices on the phone mean `node setup.ts auth` needs running again.
 - To switch between Claude and ChatGPT later, run `node setup.ts auth --engine codex` (or `claude`), then `node setup.ts computer`. It picks up the last conversation it had on that engine, or starts a fresh one, and the history on the phone stays.
-- If the phone says it can't reach the Mac, check that the Mac is awake and on Tailscale, then that Tailscale is connected on the phone.
+- If the phone says it can't reach the Mac, check that the Mac is awake and online. Check My Setup on the phone says whether the Mac is connected to the relay and listening on the local network.
 
 ## Installing Through Google Play (Optional)
 

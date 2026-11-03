@@ -52,8 +52,16 @@ export class Design {
     this.onChange = onChange;
     this.onBroken = onBroken;
     mkdirSync(this.history, { recursive: true });
-    this.version = this.hash();
-    if (this.snapshots().length === 0) this.snapshot();
+    // A change held back before a restart stays held back. Otherwise whatever
+    // changed while the server was off is the newest version.
+    const problem = checkApp(this.dir);
+    if (problem && this.snapshots().length) {
+      this.version = this.hash(this.latest());
+      this.broken = problem;
+    } else {
+      this.version = this.hash();
+      if (!this.snapshots().length || this.hash(this.latest()) !== this.version) this.snapshot();
+    }
     watch(this.dir, { recursive: true, persistent: false }, () => {
       if (this.timer) clearTimeout(this.timer);
       // Editors write in bursts (temp file, rename, chmod), so wait for quiet.
@@ -61,14 +69,16 @@ export class Design {
     });
   }
 
-  private hash(): string {
+  private hash(dir = this.dir): string {
     const h = createHash('sha256');
-    for (const f of walk(this.dir).sort()) {
-      h.update(relative(this.dir, f).split(sep).join('/'));
+    for (const f of walk(dir).sort()) {
+      h.update(relative(dir, f).split(sep).join('/'));
       h.update(readFileSync(f));
     }
     return h.digest('hex').slice(0, 16);
   }
+
+  private latest() { return join(this.history, this.snapshots().at(-1)!); }
 
   private snapshots(): string[] {
     return readdirSync(this.history).filter((n) => /^\d+$/.test(n)).sort((a, b) => Number(a) - Number(b));
@@ -95,14 +105,17 @@ export class Design {
     this.onChange(v);
   }
 
+  // From the newest snapshot, which is always the published version, so a
+  // change that's held back never reaches the phone under its name.
   bundle(): { version: string; files: Record<string, string> } {
     const files: Record<string, string> = {};
+    const dir = this.latest();
     let total = 0;
-    for (const f of walk(this.dir)) {
+    for (const f of walk(dir)) {
       const data = readFileSync(f);
       total += data.length;
       if (total > MAX_BYTES) throw new Error(`The app folder is over ${MAX_BYTES / 1048576} MB, which is too big to send to the phone.`);
-      files[relative(this.dir, f).split(sep).join('/')] = data.toString('base64');
+      files[relative(dir, f).split(sep).join('/')] = data.toString('base64');
     }
     return { version: this.version, files };
   }

@@ -36,7 +36,8 @@ export function parseBattery(out: string): Mac['battery'] {
 // Desktops have no battery and print nothing.
 export function parseWinBattery(out: string): Mac['battery'] {
   const m = /^(\d+) (\d+)/m.exec(out.trim());
-  return m ? { percent: Number(m[1]), charging: m[2] !== '1' } : null;
+  // Win32_Battery: 2 is on mains, 3 full and 6 to 9 charging. 1, 4 and 5 run on the battery.
+  return m ? { percent: Number(m[1]), charging: [2, 3, 6, 7, 8, 9].includes(Number(m[2])) } : null;
 }
 
 // A Time Machine snapshot of every APFS volume, taken in a second or two.

@@ -12,7 +12,7 @@ Delegated, with the brief "easiest to maintain, highest quality and performance,
 
 - Phone: a native Android app in Kotlin. The native layer owns everything that has to stay up (connection, notifications, outbox, pairing, rescue screen). The screen itself is a web page in a WebView, because the owner's agent edits it on request and a native screen would need a rebuild over the cable for every change.
 - Computer: one Node 24 server in TypeScript, run directly with no build step, on the Agent SDK (`@anthropic-ai/claude-agent-sdk`) and signed in with the owner's own plan.
-- Link: Tailscale, private to the owner's devices, with HTTPS from `tailscale serve`.
+- Link: an end-to-end encrypted tunnel (computer/tunnel.ts, phone Tunnel.kt), straight over the local network or through a Cloudflare Worker relay (relay/). Tailscale still works as one more direct route.
 
 ## Users
 

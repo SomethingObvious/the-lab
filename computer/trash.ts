@@ -100,7 +100,18 @@ export function launchers(dir: string) {
   mkdirSync(dir, { recursive: true });
   const fwd = (p: string) => p.replace(/\\/g, '/');
   writeFileSync(join(dir, 'trash'), `#!/bin/sh\nexec "${fwd(process.execPath)}" "${fwd(self)}" "$@"\n`);
-  if (WIN) writeFileSync(join(dir, 'trash.cmd'), `@"${process.execPath}" "${self}" %*\r\n`);
+  // cmd reads this file in the console's code page, so it switches to UTF-8
+  // for a path like C:\Users\José and then puts the agent's console back.
+  if (WIN) writeFileSync(join(dir, 'trash.cmd'), [
+    '@echo off',
+    'for /f "tokens=2 delims=:." %%c in (\'chcp\') do set "LAB_CP=%%c"',
+    'chcp 65001 >nul',
+    `"${process.execPath}" "${self}" %*`,
+    'set "LAB_RC=%errorlevel%"',
+    'if defined LAB_CP chcp %LAB_CP% >nul',
+    'exit /b %LAB_RC%',
+    '',
+  ].join('\r\n'));
   else chmodSync(join(dir, 'trash'), 0o755);
 }
 
