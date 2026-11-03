@@ -135,6 +135,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   // Which turn or notice each event landed in, so search can jump to it.
   const byEid = new Map();
   let cur = null;
+  let settled = -1;
   let link = { state: 'connecting' };
   let status = { working: false, label: '' };
   let mac = null;
@@ -258,7 +259,13 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     else if (e.kind === 'ask') { t.asks.push(e); byRef.set(e.ref, t); }
     else if (e.kind === 'answered') t.answers[e.ref] = e;
     else if (e.kind === 'reply' || e.kind === 'file') t.out.push(e);
-    else if (e.kind === 'done') t.done = e;
+    else if (e.kind === 'done') {
+      for (let i = settled + 1; i < items.length; i++) {
+        const o = items[i];
+        if (o.type === 'turn' && !o.done) { o.done = e; dirty.add(o); }
+      }
+      settled = items.length - 1;
+    }
     byEid.set(String(e.id), t);
     dirty.add(t);
     if (e.kind === 'ask' || e.kind === 'answered' || e.kind === 'done') want.now = want.side = true;
@@ -353,7 +360,9 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     return div;
   }
 
-  const active = (t) => !t.done && t === cur && status.working;
+  // A message sent mid-task joins the running turn, so every turn since the
+  // last done belongs to the same run and ends with its done.
+  const active = (t) => !t.done && t.i > settled && status.working;
   const waitingAsk = (t) => t.asks.find((a) => !t.answers[a.ref]);
 
   function youEl(e, queued) {

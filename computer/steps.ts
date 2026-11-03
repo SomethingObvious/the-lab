@@ -1,7 +1,11 @@
 // Turns a tool call into the one-line title the phone shows, plus the raw
 // detail it opens to.
 
-const base = (p: unknown) => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
+// Files from his phone are stored as 8 hex characters, a dash and the real name.
+const base = (p: unknown) => {
+  const b = String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
+  return /[\\/]\.lab[\\/]files[\\/]/.test(String(p)) ? b.replace(/^[0-9a-f]{8}-/, '') : b;
+};
 const host = (u: unknown) => {
   try { return new URL(String(u)).host; } catch { return String(u ?? ''); }
 };
@@ -25,7 +29,11 @@ export function title(tool: string, input: Input): string {
     case 'WebFetch': return `Reading ${host(input.url)}`;
     case 'Agent':
     case 'Task': return `Handing off: ${input.description ?? 'a side task'}`;
-    case 'TodoWrite': return 'Updating the plan';
+    case 'TodoWrite':
+    case 'TaskCreate':
+    case 'TaskUpdate':
+    case 'TaskList': return 'Updating the plan';
+    case 'ToolSearch': return 'Finding the right tool';
     case 'Skill': return `Using the ${input.skill ?? input.command ?? ''} skill`.replace('  ', ' ');
     case 'Monitor': return input.description || 'Watching for a change';
     case 'mcp__lab__send_to_phone': return `Sending ${base(input.path)} to your phone`;

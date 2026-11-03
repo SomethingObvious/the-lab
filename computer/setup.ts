@@ -3,12 +3,13 @@
 //
 //   node setup.ts check        what is done and what is left, as JSON
 //   node setup.ts auth         sign the agent in with the owner's plan, if it isn't
+//                              (--engine claude|codex picks which one runs his messages)
 //   node setup.ts computer     workspace, server, start at login
 //   node setup.ts selftest     send a real message through the server and wait for the reply
 //   node setup.ts tailscale    HTTPS address for the phone through tailscale serve
 //   node setup.ts phone        build the app, install it over USB and pair it
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -18,6 +19,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { config, home } from './config.ts';
+import { codexBin } from './codex.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(HERE);
@@ -63,7 +65,29 @@ function signedIn(): { loggedIn: boolean; email?: string; authMethod?: string } 
   try { return JSON.parse(r.out.slice(r.out.indexOf('{'))); } catch { return { loggedIn: false }; }
 }
 
+// Which agent runs his messages. The agent doing setup passes its own name,
+// and the choice is kept in the server's config from then on.
+function engine(): 'claude' | 'codex' {
+  const want = flag('engine');
+  const c = config();
+  if (!want) return c.engine ?? 'claude';
+  if (want !== 'claude' && want !== 'codex') fail(`--engine has to be claude or codex, not ${want}.`);
+  if (c.engine !== want) writeFileSync(join(LAB, 'config.json'), JSON.stringify({ ...c, engine: want }, null, 2), { mode: 0o600 });
+  return want as 'claude' | 'codex';
+}
+
+const codexSignedIn = () => run(process.execPath, [codexBin(), 'login', 'status']).ok;
+
 async function auth() {
+  if (engine() === 'codex') {
+    if (!codexSignedIn()) {
+      say('Opening the ChatGPT sign-in page in the browser. Sign in with the account that has the paid plan, then come back here.');
+      spawnSync(process.execPath, [codexBin(), 'login'], { stdio: 'inherit' });
+    }
+    if (!codexSignedIn()) fail('Still not signed in. Run `node setup.ts auth --engine codex` again.');
+    say(run(process.execPath, [codexBin(), 'login', 'status']).out.split('\n').pop() ?? 'Signed in.');
+    return;
+  }
   let s = signedIn();
   if (!s.loggedIn) {
     say('Opening the sign-in page in the browser. Sign in with the account that has the paid plan, then come back here.');
@@ -118,11 +142,15 @@ function workspace() {
     // His app folder and notes are his after the first copy, so they're never overwritten.
     if (!existsSync(dest)) cpSync(join(template, name), dest, { recursive: true });
   }
+  // Codex reads AGENTS.md where Claude reads CLAUDE.md, so both see one file.
+  const agents = join(HOME, 'AGENTS.md');
+  if (!existsSync(agents)) { try { symlinkSync('CLAUDE.md', agents); } catch { cpSync(join(HOME, 'CLAUDE.md'), agents); } }
   config();
 }
 
 async function computer() {
   workspace();
+  say(`Messages go to ${engine() === 'codex' ? 'Codex' : 'Claude'}.`);
   if (MAC) {
     const nodeDir = dirname(process.execPath);
     const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
@@ -356,7 +384,8 @@ async function check() {
     workspace: existsSync(join(HOME, 'app', 'index.html')),
     startsAtLogin: MAC ? existsSync(PLIST) : null,
     serverRunning: await health(),
-    agentSignedIn: signedIn().loggedIn,
+    engine: engine(),
+    agentSignedIn: engine() === 'codex' ? codexSignedIn() : signedIn().loggedIn,
     tailscale: ts.installed ? ('running' in ts && ts.running ? 'signed in' : 'not signed in') : 'not installed',
     phoneUrl: existsSync(join(LAB, 'url')) ? readFileSync(join(LAB, 'url'), 'utf8').trim() : null,
     phoneKeystore: existsSync(join(LAB, 'phone.jks')),

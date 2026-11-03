@@ -47,6 +47,8 @@ test('step titles', () => {
   assert.equal(title('mcp__claude-in-chrome__navigate', { url: 'https://mail.google.com/x' }), 'Opening mail.google.com in Chrome');
   assert.equal(title('mcp__my_server__do_thing', {}), 'my server: do thing');
   assert.equal(title('mcp__claude_ai_Google_Calendar__list_events', {}), 'Google Calendar: list events');
+  assert.equal(title('Read', { file_path: '/Users/me/TheLab/.lab/files/56a55ced-19.png' }), 'Reading 19.png');
+  assert.equal(title('Read', { file_path: '/Users/me/56a55ced-19.png' }), 'Reading 56a55ced-19.png');
 });
 
 test('schedules run once, on their days, within the grace window', () => {
@@ -56,6 +58,7 @@ test('schedules run once, on their days, within the grace window', () => {
     { id: 'once', label: 'Dentist', text: 'Remind me', time: '23:50', date: '2026-11-07' },
     { label: 'Bad', text: 'x', time: '8am' },
     { label: 'Bad days', text: 'x', time: '08:00', days: ['weekdays'] },
+    { label: 'Bad date', text: 'x', time: '17:00', date: 'Friday' },
   ])!;
   assert.deepEqual(items.map((s) => s.id), ['daily', 'weekdays', 'once']);
   const noId = [{ label: 'Lunch', text: 'Remind me to eat', time: '12:00' }];
@@ -68,4 +71,55 @@ test('schedules run once, on their days, within the grace window', () => {
   assert.deepEqual(due(items, sat(8, 40), new Set()), []);
   assert.deepEqual(due(items, new Date(2026, 10, 8, 0, 5), new Set()).map((r) => r.key), ['once@2026-11-07T23:50']);
   assert.deepEqual(due(items, new Date(2026, 10, 9, 8, 0), new Set()).map((r) => r.key), ['daily@2026-11-09T08:00', 'weekdays@2026-11-09T08:00']);
+});
+
+// A stand-in for `codex app-server` that plays one turn: a command, an
+// approval for a second one, then a reply.
+const FAKE = String.raw`
+const rl = require('readline').createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+let turn = 0;
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
+  if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thr_1' }, model: 'fake' } });
+  if (m.method === 'turn/start') {
+    turn++;
+    out({ id: m.id, result: { turn: { id: 't' + turn, status: 'inProgress' } } });
+    out({ method: 'item/started', params: { item: { type: 'commandExecution', id: 'c1', command: "/bin/zsh -lc 'cat notes.md'", commandActions: [{ type: 'read', command: 'cat notes.md', name: 'notes.md', path: '/Users/me/notes.md' }] } } });
+    out({ method: 'item/completed', params: { item: { type: 'commandExecution', id: 'c1', status: 'failed', exitCode: 1, aggregatedOutput: 'No such file' } } });
+    out({ method: 'item/started', params: { item: { type: 'commandExecution', id: 'c2', command: "/bin/zsh -lc 'rm -rf ~/Downloads/old'", commandActions: [{ type: 'unknown', command: 'rm -rf ~/Downloads/old' }] } } });
+    return out({ id: 900, method: 'item/commandExecution/requestApproval', params: { itemId: 'c2', command: "/bin/zsh -lc 'rm -rf ~/Downloads/old'", reason: 'Deletes files' } });
+  }
+  if (m.id === 900) {
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a1', text: 'Decision was ' + m.result.decision } } });
+    return out({ method: 'turn/completed', params: { turn: { id: 't1', status: 'completed', durationMs: 1234, error: null } } });
+  }
+});
+`;
+
+test('codex turns map onto the phone events', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'lab-codex-'));
+  const fake = join(root, 'fake.cjs');
+  writeFileSync(fake, FAKE);
+  process.env.LAB_CODEX_BIN = fake;
+  const { Lab } = await import('./lab.ts');
+  const lab = new Lab({ home: root, engine: 'codex' });
+  const seen: any[] = [];
+  lab.store.listen((e) => {
+    seen.push(e);
+    if (e.kind === 'ask') setTimeout(() => lab.answer(String(e.ref), true), 10);
+  });
+  lab.send('Tidy my Downloads', crypto.randomUUID());
+  for (let i = 0; i < 100 && !seen.some((e) => e.kind === 'done'); i++) await wait(50);
+  const pick = (kind: string) => seen.filter((e) => e.kind === kind);
+  assert.deepEqual(pick('step').map((e) => [e.ref, e.title, e.detail]), [['c1', 'Reading notes.md', 'cat notes.md'], ['c2', 'rm -rf ~/Downloads/old', 'rm -rf ~/Downloads/old']]);
+  assert.deepEqual(pick('failed').map((e) => e.text), ['No such file']);
+  assert.equal(pick('ask')[0].title, 'Allow: rm -rf ~/Downloads/old?');
+  assert.deepEqual(pick('reply').map((e) => e.text), ['Decision was accept']);
+  assert.deepEqual(pick('done').map((e) => [e.ok, e.stopped, e.ms]), [[true, false, 1234]]);
+  assert.equal(lab.state.threadId, 'thr_1');
+  assert.equal(lab.status.working, false);
+  lab.close();
 });

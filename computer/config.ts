@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 export const home = () => process.env.LAB_HOME ?? join(homedir(), 'TheLab');
 
-export type Config = { token: string; port: number };
+export type Config = { token: string; port: number; engine?: 'claude' | 'codex' };
 
 // Created once on first start. The token is what the phone was paired with,
 // so it is never regenerated on its own.

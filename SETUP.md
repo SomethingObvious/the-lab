@@ -6,7 +6,7 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 
 ## What Gets Installed
 
-- `~/TheLab/`, the workspace. It holds `app/` (the phone app's interface, which you can edit later when he asks), `CLAUDE.md`, `DESIGN.md` and `.lab/` (the server's own state, which you should leave alone).
+- `~/TheLab/`, the workspace. It holds `app/` (the phone app's interface, which you can edit later when he asks), `CLAUDE.md` (also linked as `AGENTS.md`), `DESIGN.md` and `.lab/` (the server's own state, which you should leave alone).
 - `~/TheLab/source/`, this repository.
 - A login item that keeps the server running (`~/Library/LaunchAgents/com.somethingobvious.thelab.plist`).
 - Tailscale on the Mac and on the phone.
@@ -37,11 +37,13 @@ cd source/computer && npm ci
 
 ## 2. Sign the Agent In
 
+The server runs his messages through the same kind of agent you are. If you're Claude, use `--engine claude`. If you're Codex, use `--engine codex`.
+
 ```sh
-node setup.ts auth
+node setup.ts auth --engine claude
 ```
 
-The server runs its own copy of the agent, which keeps its own sign-in. If it isn't signed in, this opens a browser page. **He signs in** with the account that has his paid plan and clicks Authorize.
+The choice is saved, so later steps don't need it again. The Claude engine keeps its own sign-in, so this opens a browser page unless it's already signed in. **He signs in** with the account that has his paid plan and clicks Authorize. The Codex engine shares the Codex app's sign-in, so if he's signed into the app it's already done. Otherwise **he signs in with ChatGPT** on the page that opens.
 
 ## 3. Start the Server
 
@@ -104,4 +106,5 @@ When he asks to update The Lab, fetch the newer tag into `~/TheLab/source` the s
 - `node setup.ts check` shows what isn't working.
 - The server log is `~/TheLab/.lab/server.log`.
 - "Signed out" notices on the phone mean `node setup.ts auth` needs running again.
+- To switch between Claude and ChatGPT later, run `node setup.ts auth --engine codex` (or `claude`), then `node setup.ts computer`. The conversation starts fresh on the other one, and the history on the phone stays.
 - If the phone says it can't reach the Mac, check that the Mac is awake and on Tailscale, then that Tailscale is connected on the phone.

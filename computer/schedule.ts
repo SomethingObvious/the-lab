@@ -11,7 +11,9 @@ const GRACE = 30 * 60_000;
 // The agent writes schedules.json by hand, so bad entries are dropped rather
 // than failing the whole list.
 export const cleanSchedules = (a: unknown): Schedule[] | null => !Array.isArray(a) ? null : a
-  .filter((s) => typeof s?.label === 'string' && s.label.trim() && typeof s?.text === 'string' && s.text.trim() && TIME.test(s?.time))
+  // A date it can't read would otherwise turn a one-off into a daily run.
+  .filter((s) => typeof s?.label === 'string' && s.label.trim() && typeof s?.text === 'string' && s.text.trim() && TIME.test(s?.time)
+    && (s.date === undefined || (typeof s.date === 'string' && DATE.test(s.date))))
   .slice(0, 50)
   .map((s) => ({
     // Read every 20 seconds, so a missing id has to come out the same each time.

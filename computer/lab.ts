@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { clip, detail, title } from './steps.ts';
+import { Codex } from './codex.ts';
 
 export type Ev = { id: number; at: string; kind: string; [k: string]: unknown };
 type Listener = (e: Ev | Live) => void;
@@ -62,7 +63,7 @@ export class Store {
   close() { closeSync(this.fd); }
 }
 
-type State = { sessionId?: string; open?: { text: string; at: string } | null };
+export type State = { sessionId?: string; threadId?: string; open?: { text: string; at: string } | null };
 
 class Channel implements AsyncIterable<SDKUserMessage> {
   private queue: SDKUserMessage[] = [];
@@ -88,19 +89,26 @@ const NOTICE: Record<string, string> = {
   verification_required: 'The Claude account on the Mac needs to be verified. Open Claude on the Mac to finish it.',
 };
 
-const PROMPT = `You are talking to the owner of this Mac through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Use the send_to_phone tool when he asks for a file, a screenshot or anything easier to look at than describe. Read CLAUDE.md in the working directory before changing the app.`;
+export const DENIED: Record<string, string> = {
+  phone: 'He said no from his phone. Do not try another way around it, ask him what he wants instead.',
+  timeout: 'Nobody answered for an hour, so it was not allowed. Mention it in your reply.',
+  stop: 'He stopped the task.',
+};
 
-export type LabOptions = { home: string; model?: string };
+const PROMPT = `You are talking to the owner of this Mac through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app.`;
+
+export type LabOptions = { home: string; model?: string; engine?: 'claude' | 'codex' };
 
 export class Lab {
   store: Store;
   private q: Query | null = null;
   private input: Channel | null = null;
-  private state: State;
+  state: State;
   private opts: LabOptions;
+  private codex: Codex | null = null;
   private stateFile: string;
   private filesDir: string;
-  private asks = new Map<string, (allow: boolean, by: string) => void>();
+  asks = new Map<string, (allow: boolean, by: string) => void>();
   private unanswered: SDKUserMessage[] = [];
   private seen = new Set<string>();
   private stopping = false;
@@ -131,12 +139,12 @@ export class Lab {
     }
   }
 
-  private save() {
+  save() {
     writeFileSync(this.stateFile + '.tmp', JSON.stringify(this.state));
     renameSync(this.stateFile + '.tmp', this.stateFile);
   }
 
-  private setStatus(working: boolean, label = '') {
+  setStatus(working: boolean, label = '') {
     if (working === this.status.working && label === this.status.label) return;
     const since = working === this.status.working ? this.status.since : new Date().toISOString();
     this.status = { ...this.status, working, label, since };
@@ -153,19 +161,35 @@ export class Lab {
     const list = files.map((f) => `- ${join(this.filesDir, basename(decodeURIComponent(f.url)))} (${f.name}, ${f.type})`).join('\n');
     let content = files.length ? `${text}\n\nHe attached ${files.length === 1 ? 'a file' : `${files.length} files`} from his phone:\n${list}`.trim() : text;
     if (scheduled) content = `This is "${scheduled}", a scheduled message from schedules.json, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.\n\n${content}`;
+    this.setStatus(true, 'Reading your message');
+    if (this.opts.engine === 'codex') {
+      this.codex ??= new Codex(this, this.opts.home, PROMPT, this.opts.model);
+      this.codex.send(content, files.filter((f) => f.type.startsWith('image/')).map((f) => join(this.filesDir, basename(decodeURIComponent(f.url)))));
+      return true;
+    }
     const m: SDKUserMessage = { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid: cid as any, session_id: this.state.sessionId ?? '' };
     this.unanswered.push(m);
     this.ensureRunning();
     this.input!.push(m);
-    this.setStatus(true, 'Reading your message');
     return true;
   }
 
   async stop() {
+    if (this.codex) {
+      if (!this.status.working) return;
+      for (const finish of this.asks.values()) finish(false, 'stop');
+      return this.codex.stop();
+    }
     if (!this.q || !this.status.working) return;
     this.stopping = true;
     for (const finish of this.asks.values()) finish(false, 'stop');
     await this.q.interrupt().catch(() => {});
+  }
+
+  close() {
+    this.codex?.close();
+    this.q?.close();
+    this.store.close();
   }
 
   answer(ref: string, allow: boolean): boolean {
@@ -314,10 +338,18 @@ export class Lab {
     }
   }
 
-  private ask(name: string, input: Record<string, unknown>, o: { signal: AbortSignal; toolUseID: string; title?: string; description?: string }): Promise<PermissionResult> {
-    if (name === 'mcp__lab__send_to_phone') return Promise.resolve({ behavior: 'allow', updatedInput: input });
-    const ref = o.toolUseID;
-    this.store.add({ kind: 'ask', ref, tool: name, title: o.title ?? `Allow: ${title(name, input as any)}?`, detail: o.description ?? detail(name, input as any) }, true);
+  private async ask(name: string, input: Record<string, unknown>, o: { signal: AbortSignal; toolUseID: string; title?: string; description?: string }): Promise<PermissionResult> {
+    if (name === 'mcp__lab__send_to_phone') return { behavior: 'allow', updatedInput: input };
+    const { allow, by } = await this.waitFor(o.toolUseID, name, o.title ?? `Allow: ${title(name, input as any)}?`, o.description ?? detail(name, input as any), o.signal);
+    return allow
+      ? { behavior: 'allow', updatedInput: input }
+      : { behavior: 'deny', message: DENIED[by] ?? DENIED.stop };
+  }
+
+  // Puts an Allow and Deny on the phone and resolves with his answer, or a
+  // no after an hour or a stop.
+  waitFor(ref: string, tool: string, ask: string, more: string, signal?: AbortSignal): Promise<{ allow: boolean; by: string }> {
+    this.store.add({ kind: 'ask', ref, tool, title: ask, detail: more }, true);
     const was = this.status.label;
     this.setStatus(true, 'Waiting for you');
     return new Promise((done) => {
@@ -327,16 +359,14 @@ export class Lab {
         clearTimeout(timer);
         this.store.add({ kind: 'answered', ref, allow, by });
         if (this.status.working) this.setStatus(true, allow ? was : 'Carrying on without it');
-        done(allow
-          ? { behavior: 'allow', updatedInput: input }
-          : { behavior: 'deny', message: by === 'phone' ? 'He said no from his phone. Do not try another way around it, ask him what he wants instead.' : by === 'timeout' ? 'Nobody answered for an hour, so it was not allowed. Mention it in your reply.' : 'He stopped the task.' });
+        done({ allow, by });
       };
       this.asks.set(ref, finish);
-      o.signal.addEventListener('abort', () => finish(false, 'stop'), { once: true });
+      signal?.addEventListener('abort', () => finish(false, 'stop'), { once: true });
     });
   }
 
-  private async sendFile(path: string, caption?: string) {
+  async sendFile(path: string, caption?: string) {
     const src = resolve(path);
     const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true });
     if (!existsSync(src) || !statSync(src).isFile()) return fail(`There is no file at ${src}.`);

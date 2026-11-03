@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, readFileSync, renameSync, statSync, truncateSync, watch, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, watch, writeFileSync } from 'node:fs';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { extname, join, resolve, sep } from 'node:path';
 import { config, home } from './config.ts';
@@ -60,10 +60,32 @@ async function serve() {
   // Loaded here so the supervisor never pays for the SDK.
   const { Lab } = await import('./lab.ts');
   const { Design } = await import('./design.ts');
-  const { token, port } = config();
+  const { token, port, engine } = config();
   const HOME = home();
   const appDir = join(HOME, 'app');
-  const lab = new Lab({ home: HOME, model: process.env.LAB_MODEL || undefined });
+  const lab = new Lab({ home: HOME, model: process.env.LAB_MODEL || undefined, engine });
+
+  // Codex has no send_to_phone tool, so it copies files in here instead.
+  const toPhone = join(HOME, 'to-phone');
+  mkdirSync(toPhone, { recursive: true });
+  const drop = async (name: string) => {
+    const p = join(toPhone, name);
+    if (name.startsWith('.') || !existsSync(p) || !statSync(p).isFile()) return;
+    // Wait until the copy has finished growing.
+    for (let size = -1; size !== statSync(p).size;) { size = statSync(p).size; await new Promise((r) => setTimeout(r, 800)); }
+    await lab.sendFile(p);
+    rmSync(p, { force: true });
+  };
+  const sending = new Set<string>();
+  const sweep = () => {
+    for (const name of readdirSync(toPhone)) {
+      if (sending.has(name)) continue;
+      sending.add(name);
+      drop(name).catch((e) => console.error('to-phone:', e)).finally(() => sending.delete(name));
+    }
+  };
+  watch(toPhone, { persistent: false }, sweep);
+  sweep();
   const design = new Design(appDir, join(HOME, '.lab', 'design-history'), (version) => lab.store.live({ kind: 'design', version }));
   const bridge = readFileSync(new URL('./web-bridge.js', import.meta.url));
   const want = Buffer.from(token);
