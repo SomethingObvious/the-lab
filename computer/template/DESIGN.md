@@ -545,10 +545,10 @@ A 72 px `toolbar` pill with a 52 px loader, the current step and "Working for 0:
 The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the shortcut chips on top, any attachments waiting to send, then a row with the round attach button, the message field and the send shape. Send is a 56 px violet cookie with an up arrow, and a pale circle when there's nothing to send. Attach opens a menu with a mint circle for Photos and a pink rounded square for Files.
 
 ### Messages
-His messages are `primary` bubbles on the right, at most 86% wide. Tapping one opens a split button, Save as Shortcut with a chevron that holds Send Again and Copy. Messages still waiting to send turn `surface-2` and `dim` with a clock. Replies are `surface` bubbles on the left (92% wide at most) with Markdown, `link` list markers and mono code. Files arrive as `surface` pills with a pink flower icon, photos as images with the reply tail.
+His messages are `primary` bubbles on the right, at most 86% wide. Tapping one opens a split button, Save as Shortcut with a chevron that holds Send Again and Copy. Messages still waiting to send turn `surface-2` and `dim` with a clock. Replies are `surface` bubbles on the left (92% wide at most) with Markdown, `link` list markers and mono code. Files arrive as `surface` pills with a pink flower icon, photos as images with the reply tail. A message the server sent from `schedules.json` shows its label and a clock in the `meta` line under the bubble.
 
 ### Sheets and Snackbar
-The sheet is `surface`, 32 px top corners, up to 640 px wide, with a 48 px drag handle that also closes it, over a `scrim`. The snackbar is a `toolbar` pill 8 px above an open sheet, the toolbar or the composer (just above the hinge in tabletop with the keyboard down), gone after 4.5 s, or 7 s for a failure. A message the server sent from `schedules.json` shows its label and a clock in the `meta` line under the bubble.
+The sheet is `surface`, 32 px top corners, up to 640 px wide, with a 48 px drag handle that also closes it, over a `scrim`. The snackbar is a `toolbar` pill 8 px above an open sheet, the toolbar or the composer (just above the hinge in tabletop with the keyboard down), gone after 4.5 s, or 7 s for a failure.
 
 ## Do's and Don'ts
 

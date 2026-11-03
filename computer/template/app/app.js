@@ -246,7 +246,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       case 'openFailed': toast('Nothing on this phone can open that file.', true); return;
       case 'answerFailed': toast("Couldn't reach the Mac, so that answer didn't go through. Try again once it's back.", true); return;
       case 'stopFailed': toast("Couldn't reach the Mac to stop it. Try again once it's back.", true); return;
-      case 'you': { const t = newTurn(e, e.at); byEid.set(String(e.id), t); dirty.add(t); want.side = true; if (e.files?.length) want.files = true; schedule(); return; }
+      case 'you': { const t = newTurn(e, e.at); byEid.set(String(e.id), t); dirty.add(t); want.side = true; if (e.files?.length) want.files = true; schedule(); if (e.scheduled && fresh(e)) say(`Scheduled: ${e.scheduled}.`); return; }
       case 'notice': { const n = { type: 'notice', i: items.length, id: `n${e.id}`, e, at: e.at }; items.push(n); byEid.set(String(e.id), n); dirty.add(n); schedule(); if (fresh(e)) say(e.text); return; }
     }
     // Anything else that isn't part of a turn is for some other design.
@@ -365,7 +365,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
         ${moreOpen ? `<span class="more"><button type="button" class="pill" data-again="${esc(e.cid)}">${icon('redo')}Send Again</button><button type="button" class="pill" data-copy="${esc(e.cid)}">${icon('copy')}Copy</button></span>` : ''}
         <span class="split"><button type="button" data-save="${esc(e.cid)}" ${saved ? 'disabled' : ''}>${icon('star')}${saved ? 'Saved as Shortcut' : 'Save as Shortcut'}</button><button type="button" data-more aria-label="More Actions" aria-expanded="${moreOpen}">${icon('chev')}</button></span>
       </div>` : '';
-    const meta = queued ? `${icon('clock')}Waiting to send` : e.scheduled ? `${icon('clock')}${esc(e.scheduled)} at ${clock(e.at)}` : clock(e.at);
+    const meta = queued ? `${icon('clock')}Waiting to send` : e.scheduled ? `${icon('clock')}<span class="sr">Scheduled, </span>${esc(e.scheduled)} at ${clock(e.at)}` : clock(e.at);
     return `<div class="you${queued ? ' queued' : ''}" data-eid="${esc(e.id ?? '')}">
       ${files ? `<div class="you-files">${files}</div>` : ''}
       ${e.text ? `<button type="button" class="bubble" data-cid="${esc(e.cid)}" aria-expanded="${selected === e.cid}">${esc(e.text)}</button>` : ''}

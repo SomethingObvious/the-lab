@@ -140,7 +140,8 @@ object Notifier {
         val at = runCatching { Instant.parse(e.optString("at")).toEpochMilli() }.getOrDefault(0)
         if (System.currentTimeMillis() - at > 120_000) return
         if (kind == "you" || kind == "reply" || kind == "file") {
-            val text = if (kind == "file") "Sent you ${e.optString("name")}" else plain(e.optString("text"))
+            val label = e.optString("scheduled")
+            val text = if (kind == "file") "Sent you ${e.optString("name")}" else if (label.isNotEmpty()) "$label: ${plain(e.optString("text"))}" else plain(e.optString("text"))
             recent.addLast(Triple(text, at, kind == "you"))
             while (recent.size > 6) recent.removeFirst()
         }

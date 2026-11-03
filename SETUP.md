@@ -97,7 +97,7 @@ Have him send a message from The Lab on the phone, something like "What's my Mac
 
 ## Updating
 
-When he asks to update The Lab, fetch the newer tag into `~/TheLab/source` the same way as step 1 (his `~/TheLab/app` is never touched), run `npm ci` in `source/computer`, then `node setup.ts computer` to restart the server. If anything under `source/phone` changed, plug the phone in and run `node setup.ts phone` again. The app keeps its history and pairing across updates.
+When he asks to update The Lab, fetch the newer tag into `~/TheLab/source` the same way as step 1 (his `~/TheLab/app` is never touched), run `npm ci` in `source/computer`, then `node setup.ts computer` to restart the server. Then compare `source/computer/template/CLAUDE.md` with `~/TheLab/CLAUDE.md` and add any sections his copy is missing, keeping his own changes. Setup already adds any other template file he doesn't have. If anything under `source/phone` changed, plug the phone in and run `node setup.ts phone` again. The app keeps its history and pairing across updates.
 
 ## When Something's Wrong
 

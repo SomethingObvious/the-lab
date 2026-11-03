@@ -45,7 +45,8 @@ test('step titles', () => {
   assert.equal(title('Bash', { command: 'du -sh ~/Downloads', description: 'Measure Downloads' }), 'Measure Downloads');
   assert.equal(title('Read', { file_path: '/Users/me/notes.md' }), 'Reading notes.md');
   assert.equal(title('mcp__claude-in-chrome__navigate', { url: 'https://mail.google.com/x' }), 'Opening mail.google.com in Chrome');
-  assert.equal(title('mcp__my_server__do_thing', {}), 'my_server: do thing');
+  assert.equal(title('mcp__my_server__do_thing', {}), 'my server: do thing');
+  assert.equal(title('mcp__claude_ai_Google_Calendar__list_events', {}), 'Google Calendar: list events');
 });
 
 test('schedules run once, on their days, within the grace window', () => {
@@ -54,8 +55,11 @@ test('schedules run once, on their days, within the grace window', () => {
     { id: 'weekdays', label: 'Inbox', text: 'Check mail', time: '08:00', days: ['Mon', 'tue', 'wed', 'thu', 'fri'] },
     { id: 'once', label: 'Dentist', text: 'Remind me', time: '23:50', date: '2026-11-07' },
     { label: 'Bad', text: 'x', time: '8am' },
+    { label: 'Bad days', text: 'x', time: '08:00', days: ['weekdays'] },
   ])!;
   assert.deepEqual(items.map((s) => s.id), ['daily', 'weekdays', 'once']);
+  const noId = [{ label: 'Lunch', text: 'Remind me to eat', time: '12:00' }];
+  assert.equal(cleanSchedules(noId)![0].id, cleanSchedules(noId)![0].id);
   // 2026-11-07 is a Saturday.
   const sat = (h: number, m: number) => new Date(2026, 10, 7, h, m);
   assert.deepEqual(due(items, sat(7, 59), new Set()), []);

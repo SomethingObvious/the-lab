@@ -100,6 +100,10 @@ async function serve() {
   try { ran = { ...ran, ...JSON.parse(readFileSync(ranFile, 'utf8')) }; } catch { /* nothing has run yet */ }
   let schedules: Schedule[] = [];
   setInterval(() => {
+    // The page hangs every event on the newest turn, so a run mid-request
+    // would take over the one he's in. It isn't marked as run, so it goes
+    // on the first idle tick inside the grace window.
+    if (lab.status.working) return;
     if (existsSync(schedulesFile)) {
       try { schedules = cleanSchedules(JSON.parse(readFileSync(schedulesFile, 'utf8'))) ?? schedules; } catch { /* a broken file keeps the last good list */ }
     }

@@ -36,7 +36,8 @@ export function title(tool: string, input: Input): string {
     return `Chrome: ${chrome[1].replace(/_/g, ' ')}`;
   }
   const mcp = tool.match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
-  if (mcp) return `${mcp[1]}: ${mcp[2].replace(/_/g, ' ')}`;
+  // Claude's own connectors arrive as claude_ai_Google_Calendar and so on.
+  if (mcp) return `${mcp[1].replace(/^claude_ai_/, '').replace(/_/g, ' ')}: ${mcp[2].replace(/_/g, ' ')}`;
   return tool;
 }
 
