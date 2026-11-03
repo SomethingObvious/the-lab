@@ -456,7 +456,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
 
   // What the guard turned down, and what got saved to memory.
   function noteEl(e) {
-    if (e.kind === 'blocked') return `<div class="guard" data-eid="${esc(e.id)}">${mark('stopped')}<span><b>Not allowed: ${esc(e.title)}</b>${e.text ? `<span>${esc(e.text)}</span>` : ''}</span></div>`;
+    if (e.kind === 'blocked') return `<div class="guard" data-eid="${esc(e.id)}">${mark('stopped')}<span><b>${esc(e.label || 'Not allowed')}: ${esc(e.title)}</b>${e.text ? `<span>${esc(e.text)}</span>` : ''}</span></div>`;
     const lines = [];
     if (e.added?.length) lines.push(`<b>Saved to memory</b>${e.added.map((l) => `<span>${esc(l)}</span>`).join('')}`);
     if (e.removed?.length) lines.push(`<b>Taken out of memory</b>${e.removed.map((l) => `<span>${esc(l)}</span>`).join('')}`);

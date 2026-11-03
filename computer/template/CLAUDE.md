@@ -120,7 +120,7 @@ The events are saved in history and replayed to `subscribe` when the page loads.
 | `reply` | `text`. Your reply, in Markdown. `silent` when a quiet schedule had nothing to say, so draw it small. |
 | `step` | `ref`, `tool`, `title`, `detail`, `effect` (`read`, `change`, `delete`, `send`, `system` or `run`), `sub` (true inside a subagent). `title` is the plain version, `detail` the raw command or diff. |
 | `failed` | `ref`, `text`. The step with that `ref` failed. |
-| `blocked` | `ref`, `tool`, `title`, `text`. Something that's never allowed, with the reason in `text`. |
+| `blocked` | `ref`, `tool`, `title`, `text`, and maybe `label`. Something that was turned down without asking him, with the reason in `text`. `label` replaces the usual Not allowed heading (Held back, when the Mac's safety check couldn't run). |
 | `ask` | `ref`, `tool`, `title`, `detail`, `facts` (short lines on what it does, like "This can't be undone."), `why` (what the agent said about it, to show labelled as the agent's), `from` (where the request came from, when it followed something read from outside), `always` (Always Allow can be offered), `snapshot`. Needs Allow or Deny. |
 | `answered` | `ref`, `allow`, `by` (`phone`, `timeout` or `stop`). |
 | `snapshot` | `name`. A Time Machine snapshot taken before the task, for Put Things Back. |

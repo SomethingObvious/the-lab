@@ -150,7 +150,13 @@ class MainActivity : Activity() {
     }
 
     private fun toCompose(e: JSONObject) {
-        if (port != null && ready) send(e) else compose = e
+        if (port != null && ready) { send(e); keyboard() } else compose = e
+    }
+
+    // The page focuses the message box, but a focus no one tapped doesn't
+    // raise the keyboard, so the app asks for it once the focus has landed.
+    private fun keyboard() {
+        web?.postDelayed({ web?.let { it.requestFocus(); it.windowInsetsController?.show(WindowInsets.Type.ime()) } }, 300)
     }
 
     private fun shared(intent: Intent) {
@@ -340,7 +346,7 @@ class MainActivity : Activity() {
                     history.put(JSONObject().put("kind", "loaded"))
                     reply.postMessage(JSONObject().put("batch", history).toString())
                     unlisten = Hub.listen { send(it) }
-                    compose?.let { reply.postMessage(it.toString()) }
+                    compose?.let { reply.postMessage(it.toString()); keyboard() }
                     compose = null
                 }
             }

@@ -122,8 +122,18 @@ object Notifier {
             .setCategory(Notification.CATEGORY_STATUS)
         val since = runCatching { Instant.parse(Hub.status.optString("since")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
         if (waiting) {
-            b.setContentTitle("Needs your OK").setContentText("Open The Lab to allow or deny it.")
+            // A promoted card always sits first and expanded, so it carries the
+            // buttons rather than sending him down to the ask itself.
+            val at = Hub.events.indexOfLast { it.optString("kind") == "ask" }
+            val ask = Hub.events.getOrNull(at)
+                ?.takeIf { a -> Hub.events.subList(at + 1, Hub.events.size).none { it.optString("kind") == "answered" && it.optString("ref") == a.optString("ref") } }
+            b.setContentTitle("Needs your OK").setContentText(ask?.optString("plain")?.ifBlank { null } ?: "Open The Lab to allow or deny it.")
                 .setWhen(since).setShowWhen(true).setUsesChronometer(true)
+            if (ask != null) {
+                val ref = ask.optString("ref")
+                b.addAction(Notification.Action.Builder(null, "Deny", action(context, AnswerReceiver.DENY, ref, ref.hashCode() + 1)).setAuthenticationRequired(true).build())
+                    .addAction(Notification.Action.Builder(null, "Allow", action(context, AnswerReceiver.ALLOW, ref, ref.hashCode())).setAuthenticationRequired(true).build())
+            }
             if (Build.VERSION.SDK_INT >= 36) b.setShortCriticalText("Your OK")
             b.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
         } else if (working) {

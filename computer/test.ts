@@ -303,3 +303,19 @@ test('codex titles', async () => {
   assert.equal(commandTitle({ command: "/bin/zsh -lc 'cp ~/Desktop/shot.png ~/TheLab/to-phone/'" }), 'Sending shot.png to your phone');
   assert.equal(commandTitle({ command: "/bin/zsh -lc 'du -sh ~/Downloads'" }), 'du -sh ~/Downloads');
 });
+
+test('auto mode classifier refusals show as guard lines', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'lab-claude-'));
+  const { Lab } = await import('./lab.ts');
+  const lab = new Lab({ home: root, dir: join(root, '.thelab'), engine: 'claude', snapshots: false });
+  const seen: any[] = [];
+  lab.store.listen((e) => seen.push(e));
+  lab.step('t1', 'Write', { file_path: '/etc/hosts', content: 'x' }, 'Writing hosts', '/etc/hosts');
+  lab.failed('t1', 'Permission for this action has been denied by the Claude Code auto mode classifier. Reason: writes outside the project.');
+  lab.step('t2', 'Bash', { command: 'ls' }, 'Listing files', 'ls');
+  lab.failed('t2', 'Auto mode could not evaluate this action and it was held back.');
+  lab.failed('t3', 'No such file');
+  const shown = seen.filter((e) => e.kind === 'blocked' || e.kind === 'failed').map((e) => [e.kind, e.title, e.label]);
+  assert.deepEqual(shown, [['blocked', 'Writing hosts', undefined], ['blocked', 'Listing files', 'Held back'], ['failed', undefined, undefined]]);
+  lab.close();
+});

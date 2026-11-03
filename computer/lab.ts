@@ -140,6 +140,7 @@ export class Lab {
   // Steps whose refusal is already shown some other way, so the failed
   // result isn't drawn again.
   readonly hushed = new Set<string>();
+  private titles = new Map<string, string>();
   // Where outside content got into this task, which labels any send after it.
   taint: string | null = null;
   private noes = 0;
@@ -549,11 +550,22 @@ export class Lab {
     const j = judge(tool, input, this.where);
     if (j.source && !this.taint) this.taint = j.source;
     this.store.add({ kind: 'step', ref, tool, title: t, detail: more, effect: j.effect, ...(sub ? { sub: true } : {}) });
+    this.titles.set(ref, t);
     this.setStatus(true, t);
   }
 
   failed(ref: string, text: string) {
     if (this.hushed.delete(ref)) return;
+    // Auto mode's own check turns some calls down without asking the phone,
+    // and its message is written for the agent, not for him.
+    const title = this.titles.get(ref) ?? 'that step';
+    if (/denied by the Claude Code auto mode classifier/.test(text)) {
+      this.store.add({ kind: 'blocked', ref, tool: '', title, text: 'The Mac\'s own safety check stopped this. If you meant it, say so and it will try again.' });
+      return this.refused(title);
+    }
+    if (/^Auto mode could not evaluate this action/.test(text)) {
+      return void this.store.add({ kind: 'blocked', ref, tool: '', title, label: 'Held back', text: 'The Mac\'s safety check couldn\'t run just then. It usually works again in a minute.' });
+    }
     this.store.add({ kind: 'failed', ref, text });
   }
 
@@ -619,6 +631,7 @@ export class Lab {
         this.state.open = null;
         this.save();
         this.hushed.clear();
+        this.titles.clear();
         this.setStatus(false);
         return;
       }
