@@ -129,11 +129,32 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const keys = [keyOf(a)];
     if (a.dataset.answer) keys.push(`[data-answered="${CSS.escape(a.dataset.answer)}"]`);
     const out = change();
+    if (a.isConnected) return out;
     const scope = out instanceof Element ? out : within;
     const next = keys.filter(Boolean).map((k) => scope.matches?.(k) ? scope : scope.querySelector(k)).find(Boolean) || fallback?.();
     if (next) focusSoft(next);
     return out;
   }
+  // Redraws only touch the nodes that differ, so a photo isn't decoded
+  // again, a spinner keeps turning, a transition gets to run and focus stays
+  // put. A changed field is swapped whole, since what he typed lives in a
+  // property the markup can't see.
+  function morph(a, b) {
+    if (a.isEqualNode(b)) return;
+    if (a.nodeType !== 1) { a.nodeValue = b.nodeValue; return; }
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(a.nodeName)) { a.replaceWith(b); return; }
+    for (const { name } of [...a.attributes]) if (!b.hasAttribute(name)) a.removeAttribute(name);
+    for (const { name, value } of b.attributes) if (a.getAttribute(name) !== value) a.setAttribute(name, value);
+    patch(a, b);
+  }
+  function patch(a, b) {
+    const was = [...a.childNodes], now = [...b.childNodes];
+    now.forEach((y, i) => { const x = was[i]; if (!x) a.append(y); else if (x.nodeName === y.nodeName) morph(x, y); else x.replaceWith(y); });
+    for (const x of was.slice(now.length)) x.remove();
+  }
+  const tpl = document.createElement('template');
+  const setHTML = (el, html) => { tpl.innerHTML = html; patch(el, tpl.content); };
+  const setText = (el, s) => { if (el.textContent !== s) el.textContent = s; };
   // Elements that aren't controls get tabindex only while they hold focus,
   // so TalkBack doesn't read a whole turn as one item.
   function focusSoft(el) {
@@ -337,11 +358,13 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     dirty.delete(item);
     if (item.i < shownFrom) return;
     const el = safeEl(item);
-    if (item.el) { const old = item.el; refocus(old, () => { old.replaceWith(el); return el; }, () => el.querySelector('.bubble') || el); }
-    else {
-      if (needsDay(item.i)) log.insertBefore(dayEl(item), digestEl);
-      log.insertBefore(el, digestEl);
+    if (item.el) {
+      const old = item.el;
+      refocus(old, () => { morph(old, el); }, () => old.querySelector('.bubble') || old);
+      return;
     }
+    if (needsDay(item.i)) log.insertBefore(dayEl(item), digestEl);
+    log.insertBefore(el, digestEl);
     item.el = el;
   }
 
@@ -389,7 +412,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   // A status change while working only renames the live step.
   function patchRun() {
     const b = cur?.el?.querySelector('.run.live:not(.wait) .run-head b');
-    if (b) b.textContent = status.label || 'Working';
+    if (b) setText(b, status.label || 'Working');
   }
 
   function noticeEl(e) {
@@ -540,11 +563,11 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     ].filter(Boolean);
     const snap = turns.find((t) => t.snap)?.snap;
     digestFirst = turns[0].you?.id ?? null;
-    digestEl.innerHTML = `<h2 id="digest-title">While You Were Away</h2>
+    setHTML(digestEl, `<h2 id="digest-title">While You Were Away</h2>
       <p class="digest-sum">${n(turns.length, 'task')} finished${ran.length ? `, ${ran.length} of ${turns.length === 1 ? 'it' : 'them'} scheduled` : ''}.${rows.length ? '' : ' Nothing was sent, deleted or changed.'}</p>
       ${rows.length ? `<ul>${rows.map(([k, head, more]) => `<li class="dg-${k}"><b>${head}</b><span>${more}</span></li>`).join('')}</ul>` : ''}
       ${snap ? `<p class="digest-snap">${icon('redo')}<span>A Time Machine snapshot from ${shortDay(snap.at)}${dayLabel(snap.at) === 'Today' ? '' : ` at ${clock(snap.at)}`} can put things back.</span></p>` : ''}
-      <div class="digest-btns">${digestFirst !== null ? '<button type="button" class="pill" data-digest="show">Show Me</button>' : ''}<button type="button" class="pill" data-digest="close">Got It</button></div>`;
+      <div class="digest-btns">${digestFirst !== null ? '<button type="button" class="pill" data-digest="show">Show Me</button>' : ''}<button type="button" class="pill" data-digest="close">Got It</button></div>`);
     digestEl.hidden = false;
     if (booted) toBottom();
   }
@@ -556,7 +579,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   });
 
   function drawQueue() {
-    queue.innerHTML = outbox.map((m) => `<div class="turn">${youEl({ ...m, id: '' }, true)}</div>`).join('');
+    setHTML(queue, outbox.map((m) => `<div class="turn">${youEl({ ...m, id: '' }, true)}</div>`).join(''));
     if (booted) toBottom();
   }
 
@@ -673,23 +696,23 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     glance.classList.toggle('off', link.state !== 'online');
     // The title always says which computer this is and whether it's there.
     const where = link.state === 'online' ? 'Online' : link.state === 'connecting' ? 'Connecting' : link.state === 'unpaired' ? 'Not paired' : 'Offline';
-    $('head-sub').textContent = mac ? `${mac.name} · ${where}` : where;
+    setText($('head-sub'), mac ? `${mac.name} · ${where}` : where);
     $('fold-head').setAttribute('aria-label', hidden ? 'Show the Top Bar' : 'Hide the Top Bar');
     $('fold-head').setAttribute('aria-expanded', String(!hidden));
-    refocus(glance, () => { glance.innerHTML = hidden ? '' : settings.topBar.map((w) => guard(`the ${w.id} widget`, () => tile(w), '')).join(''); }, () => $('fold-head'));
+    refocus(glance, () => setHTML(glance, hidden ? '' : settings.topBar.map((w) => guard(`the ${w.id} widget`, () => tile(w), '')).join('')), () => $('fold-head'));
     glance.hidden = hidden || !glance.children.length;
     const more = $('glance-more');
     more.hidden = hidden || !glanceOpen || !mac;
     if (!more.hidden) {
       const row = (k, v) => `<span>${k}</span><b>${v}</b>`;
-      more.innerHTML = `${row('Name', `<span class="name-row"><span>${esc(mac.name)}</span><button type="button" class="link-btn rename" data-rename>${icon('edit')}Rename</button></span>`)}
+      setHTML(more, `${row('Name', `<span class="name-row"><span>${esc(mac.name)}</span><button type="button" class="link-btn rename" data-rename>${icon('edit')}Rename</button></span>`)}
         ${row('Battery', mac.battery ? `${mac.battery.percent}%, ${mac.battery.charging ? 'charging' : 'on battery'}` : 'Plugged in, no battery')}
         ${row('Storage', `${bytes(mac.disk.free)} free of ${bytes(mac.disk.total)}`)}
         ${mac.memory ? row('Memory', `${bytes(mac.memory.free)} free of ${bytes(mac.memory.total)}`) : ''}
         ${typeof mac.cpu === 'number' ? row('Processor', `${mac.cpu}% busy`) : ''}
         ${row('Up for', uptime(mac.uptime))}
         ${row('Updated', ago(mac.at))}
-        <div class="more-btns"><button type="button" class="link-btn" data-topbar>${icon('edit')}Edit the Top Bar</button><button type="button" class="link-btn" data-hidemore>${icon('chev')}Hide Details</button></div>`;
+        <div class="more-btns"><button type="button" class="link-btn" data-topbar>${icon('edit')}Edit the Top Bar</button><button type="button" class="link-btn" data-hidemore>${icon('chev')}Hide Details</button></div>`);
     }
   }
   function toggleGlance(open) { glanceOpen = open; drawGlance(); backing(); }
@@ -753,8 +776,13 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const d = fromBottom();
     // A waiting question needs the room more than the stats do.
     const asking = !$('now').hidden && $('now').classList.contains('asking');
-    if (tight || bigText || overlay() || asking || d > 300) head.classList.add('compact');
-    else if (d < 60) head.classList.remove('compact');
+    const was = head.classList.contains('compact');
+    const compact = tight || bigText || overlay() || asking || d > 300 ? true : d < 60 ? false : was;
+    if (compact === was) return;
+    const top = thread.getBoundingClientRect().top;
+    head.classList.toggle('compact', compact);
+    // What he's reading stays put on screen while the header changes height.
+    if (!pinned) thread.scrollTop += thread.getBoundingClientRect().top - top;
   }
   let threadH = 0;
   // Set once the shell says the whole history is in, so an empty list
@@ -791,36 +819,39 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   // second. Each change is a transition on `d`, so it only lays out while
   // it moves, where a looping morph lays out every frame.
   const CYCLE = ['burst', 'cookie', 'pentagon', 'clover'];
-  let beat = 0;
+  let beat = 0, tickFor = '';
   function drawNow() {
     const bar = $('now');
     if (!status.working && bar.contains(document.activeElement)) focusSoft(text);
     bar.hidden = !status.working;
     thread.classList.toggle('under-now', status.working);
-    clearInterval(tick);
-    tick = null;
-    if (!status.working) { drawGlance(); return; }
+    drawGlance();
+    if (!status.working) { clearInterval(tick); tick = null; tickFor = ''; return; }
     const ask = cur && waitingAsk(cur);
     bar.classList.toggle('asking', !!ask);
-    $('now-label').textContent = ask ? 'Needs your OK' : status.label || 'Working';
+    setText($('now-label'), ask ? 'Needs your OK' : status.label || 'Working');
     $('now-jump').hidden = !ask;
     fold();
     // An ask counts from when it was asked, and work from when the run began.
     const since = Date.parse(ask ? ask.at : status.since || cur?.at);
+    // A new label every step mustn't restart the clock or the mark's beat.
+    if (tick && tickFor === `${ask?.ref}:${since}`) return;
+    clearInterval(tick);
+    tickFor = `${ask?.ref}:${since}`;
     const upd = () => {
-      $('now-time').textContent = ask ? `Asked ${mmss(Date.now() - since)} ago` : `Working for ${mmss(Date.now() - since)}`;
+      if (document.hidden) return;
+      setText($('now-time'), ask ? `Asked ${mmss(Date.now() - since)} ago` : `Working for ${mmss(Date.now() - since)}`);
       if (!ask && beat++ % 2 === 0) $('now-mark').querySelector('.shape').setAttribute('class', `shape s-${CYCLE[(beat >> 1) % 4]}`);
     };
     upd();
     tick = setInterval(upd, 1000);
-    drawGlance();
   }
 
   function drawLink(was) {
     const show = link.state === 'offline' || link.state === 'unpaired';
     const stick = nearBottom();
     $('banner').hidden = !show;
-    $('banner-text').textContent = link.detail || "Can't reach the computer.";
+    setText($('banner-text'), link.detail || "Can't reach the computer.");
     $('banner-fix').hidden = link.fix !== 'tailscale';
     $('banner-retry').hidden = link.state === 'unpaired';
     if (stick && booted) toBottom();
@@ -912,7 +943,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   // asked for each time rather than written down here.
   async function openModels() {
     openSheet('models', 'Model', '<p class="hint">Asking the computer which models it has</p>', closeBtn);
-    try { modelList = await call('GET', '/models'); } catch (err) { if (sheetKind === 'models') $('sheet-body').innerHTML = offline(err); return; }
+    try { modelList = await call('GET', '/models'); } catch (err) { if (sheetKind === 'models') setHTML($('sheet-body'), offline(err)); return; }
     if (sheetKind !== 'models') return;
     drawModels();
   }
@@ -922,11 +953,11 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const listed = m.choices.some((c) => c.id === chosen);
     const choices = m.choices.some((c) => c.id === 'default') ? m.choices : [{ id: 'default', name: 'Default', description: 'Whatever the provider recommends' }, ...m.choices];
     refocus($('sheet-body'), () => {
-      $('sheet-body').innerHTML = `<p class="hint">These are the models ${m.engine === 'codex' ? 'Codex' : 'Claude'} on the computer can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ''}. A change starts with your next message.</p>
+      setHTML($('sheet-body'), `<p class="hint">These are the models ${m.engine === 'codex' ? 'Codex' : 'Claude'} on the computer can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ''}. A change starts with your next message.</p>
         <ul class="model-list" role="radiogroup" aria-label="Model">${choices.map((c) => `<li><button type="button" role="radio" class="model-row" aria-checked="${c.id === chosen}" data-model="${esc(c.id)}"><span class="radio" aria-hidden="true"></span><span><b>${esc(c.name)}</b>${c.description ? `<span>${esc(c.description)}</span>` : ''}</span></button></li>`).join('')}</ul>
         <label for="model-other">Another Model</label>
         <div class="model-other"><input id="model-other" value="${listed || chosen === 'default' ? '' : esc(chosen)}" placeholder="Its exact name" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"><button type="button" class="pill" data-modelother>Use It</button></div>
-        <p class="hint">For a model your provider has that isn't listed. Type its name exactly as the provider writes it.</p>`;
+        <p class="hint">For a model your provider has that isn't listed. Type its name exactly as the provider writes it.</p>`);
     }, () => $('sheet-title'));
   }
   async function pickModel(id) {
@@ -955,21 +986,21 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     try {
       const got = await call('GET', path);
       if (sheetKind === kind) draw(got);
-    } catch (err) { if (sheetKind === kind) $('sheet-body').innerHTML = offline(err); }
+    } catch (err) { if (sheetKind === kind) setHTML($('sheet-body'), offline(err)); }
   }
   function drawMemory(m) {
     memo = m;
     const pct = Math.min(100, Math.round((m.chars / m.cap) * 100));
     const part = (key, head, empty) => `<h3>${head}</h3>${m[key].length ? `<ul class="sc-list">${m[key].map((l, i) => `<li><span class="sc-text mem-line">${esc(l)}</span><button type="button" class="icon-btn" data-forget="${key}:${i}" aria-label="Forget ${esc(l)}">${icon('trash')}</button></li>`).join('')}</ul>` : `<p class="hint">${empty}</p>`}`;
     refocus($('sheet-body'), () => {
-      $('sheet-body').innerHTML = `<div class="meter${pct >= 80 ? ' full' : ''}" role="meter" aria-valuemin="0" aria-valuemax="${m.cap}" aria-valuenow="${m.chars}" aria-label="Memory used"><i style="width:${pct}%"></i></div>
+      setHTML($('sheet-body'), `<div class="meter${pct >= 80 ? ' full' : ''}" role="meter" aria-valuemin="0" aria-valuemax="${m.cap}" aria-valuenow="${m.chars}" aria-label="Memory used"><i style="width:${pct}%"></i></div>
         <p class="hint">${m.chars.toLocaleString()} of ${m.cap.toLocaleString()} characters used.${pct >= 80 ? ' When it fills up, the agent has to merge or drop older lines before it can add more.' : ''}</p>
         ${m.paused ? '<p class="mem-paused">Memory is paused. The agent can read what is here but can\'t add to it.</p>' : ''}
         ${part('about', 'About You', 'Nothing yet. Tell the agent something about yourself and it will keep it here.')}
         ${part('notes', 'Notes', 'Nothing yet. The agent keeps notes on how you like things done.')}
-        <div class="mem-btns"><button type="button" class="pill" data-mempause>${icon(m.paused ? 'redo' : 'pause')}${m.paused ? 'Resume Memory' : 'Pause Memory'}</button><button type="button" class="pill danger" data-memwipe>${icon('trash')}${wipeArmed ? 'Tap Again to Forget Everything' : 'Forget Everything'}</button></div>`;
+        <div class="mem-btns"><button type="button" class="pill" data-mempause>${icon(m.paused ? 'redo' : 'pause')}${m.paused ? 'Resume Memory' : 'Pause Memory'}</button><button type="button" class="pill danger" data-memwipe>${icon('trash')}${wipeArmed ? 'Tap Again to Forget Everything' : 'Forget Everything'}</button></div>`);
     }, () => $('sheet-title'));
-    $('sheet-actions').innerHTML = '<button type="button" class="primary" data-close>Done</button>';
+    setHTML($('sheet-actions'), '<button type="button" class="primary" data-close>Done</button>');
   }
   async function saveMemory(change, done) {
     try { drawMemory(await call('POST', '/memory', change)); if (done) toast(done); } catch (err) { toast(err.message || "Couldn't reach the computer, so memory wasn't changed.", true); }
@@ -987,14 +1018,14 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     plan = r.items;
     const last = (l) => !l ? 'Hasn\'t run yet' : l.result === 'failed' ? (l.fails > 1 ? `Failed the last ${l.fails} times` : `Failed ${shortDay(l.at)}`) : l.result === 'silent' ? `Ran ${shortDay(l.at)}, nothing to report` : l.result === 'stopped' ? `Stopped ${shortDay(l.at)}` : `Ran ${shortDay(l.at)}`;
     refocus($('sheet-body'), () => {
-      $('sheet-body').innerHTML = plan.length ? `<ul class="sch-list">${plan.map((s, i) => `<li class="${s.paused ? 'paused' : ''}${s.last?.fails >= 3 ? ' failing' : ''}">
+      setHTML($('sheet-body'), plan.length ? `<ul class="sch-list">${plan.map((s, i) => `<li class="${s.paused ? 'paused' : ''}${s.last?.fails >= 3 ? ' failing' : ''}">
           <div class="sch-top"><b>${esc(s.label)}</b><span>${s.paused ? 'Paused' : s.next ? `Next ${shortDay(s.next)}${dayLabel(s.next) === 'Today' ? '' : ` at ${clock(s.next)}`}` : 'Done'}</span></div>
           <p class="sch-when">${when(s)}${s.quiet ? ', only when there\'s news' : ''}</p>
           <p class="sch-text">${esc(s.text)}</p>
           <p class="sch-last">${last(s.last)}</p>
           <div class="sch-btns"><button type="button" class="pill" data-schpause="${i}">${icon(s.paused ? 'redo' : 'pause')}${s.paused ? 'Resume' : 'Pause'}</button><button type="button" class="pill" data-schedit="${i}">${icon('edit')}Edit</button><button type="button" class="icon-btn" data-schdel="${i}" aria-label="Delete ${esc(s.label)}">${icon('trash')}</button></div>
         </li>`).join('')}</ul>`
-        : '<p class="hint">Nothing is scheduled. Ask the agent something like "every weekday at 8, check my email and tell me what\'s new".</p>';
+        : '<p class="hint">Nothing is scheduled. Ask the agent something like "every weekday at 8, check my email and tell me what\'s new".</p>');
     }, () => $('sheet-title'));
   }
   async function saveSchedules(list, done) {
@@ -1013,18 +1044,18 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   function drawRules(r) {
     rules = r.items;
     refocus($('sheet-body'), () => {
-      $('sheet-body').innerHTML = rules.length ? `<ul class="sc-list">${rules.map((x, i) => `<li><div class="sc-fields"><b>${esc(x.plain)}</b><code class="rule-cmd">${esc(x.command)}</code><span class="sc-text">${esc(x.where || `In ${x.cwd}`)}</span></div><button type="button" class="pill" data-revoke="${i}">Remove</button></li>`).join('')}</ul>`
-        : '<p class="hint">Nothing yet. When a card offers Always Allow This Exact Command and you tap it, that command shows up here and runs without asking next time.</p>';
+      setHTML($('sheet-body'), rules.length ? `<ul class="sc-list">${rules.map((x, i) => `<li><div class="sc-fields"><b>${esc(x.plain)}</b><code class="rule-cmd">${esc(x.command)}</code><span class="sc-text">${esc(x.where || `In ${x.cwd}`)}</span></div><button type="button" class="pill" data-revoke="${i}">Remove</button></li>`).join('')}</ul>`
+        : '<p class="hint">Nothing yet. When a card offers Always Allow This Exact Command and you tap it, that command shows up here and runs without asking next time.</p>');
     }, () => $('sheet-title'));
   }
   async function openCheck() {
     openSheet('check', 'Check My Setup', '<p class="hint">Checking the computer and this phone</p>', closeBtn);
     let got;
-    try { got = lab.check ? await lab.check() : await call('GET', '/check'); } catch (err) { if (sheetKind === 'check') $('sheet-body').innerHTML = offline(err); return; }
+    try { got = lab.check ? await lab.check() : await call('GET', '/check'); } catch (err) { if (sheetKind === 'check') setHTML($('sheet-body'), offline(err)); return; }
     if (sheetKind !== 'check') return;
     const list = got.items || [];
     const bad = list.filter((x) => !x.ok).length;
-    $('sheet-body').innerHTML = `<p class="hint">${bad ? `${bad} thing${bad === 1 ? '' : 's'} to fix.` : 'Everything looks right.'}</p><ul class="check-list">${list.map((x) => `<li class="${x.ok ? 'ok' : 'bad'}">${mark(x.ok ? 'ok' : 'bad')}<span><b>${esc(x.title)}</b>${x.detail ? `<span>${esc(x.detail)}</span>` : ''}</span>${x.fix ? `<button type="button" class="pill" data-checkfix="${esc(x.fix)}">Fix</button>` : ''}</li>`).join('')}</ul>`;
+    setHTML($('sheet-body'), `<p class="hint">${bad ? `${bad} thing${bad === 1 ? '' : 's'} to fix.` : 'Everything looks right.'}</p><ul class="check-list">${list.map((x) => `<li class="${x.ok ? 'ok' : 'bad'}">${mark(x.ok ? 'ok' : 'bad')}<span><b>${esc(x.title)}</b>${x.detail ? `<span>${esc(x.detail)}</span>` : ''}</span>${x.fix ? `<button type="button" class="pill" data-checkfix="${esc(x.fix)}">Fix</button>` : ''}</li>`).join('')}</ul>`);
     say(bad ? `${bad} thing${bad === 1 ? '' : 's'} to fix.` : 'Everything looks right.');
   }
   function openRestore(t) {
@@ -1039,8 +1070,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const c = $('chips');
     c.hidden = !shortcuts.length || settings.chips === false;
     refocus(c, () => {
-      c.innerHTML = shortcuts.map((s) => `<button type="button" class="chip" data-sc="${esc(s.id)}" title="${esc(s.text)}">${esc(s.label)}</button>`).join('')
-        + (shortcuts.length ? `<button type="button" class="chip edit" id="manage">${icon('edit')}Edit</button>` : '');
+      setHTML(c, shortcuts.map((s) => `<button type="button" class="chip" data-sc="${esc(s.id)}" title="${esc(s.text)}">${esc(s.label)}</button>`).join('')
+        + (shortcuts.length ? `<button type="button" class="chip edit" id="manage">${icon('edit')}Edit</button>` : ''));
     }, () => text);
     for (const t of items) if (t.type === 'turn' && t.you && t.you.cid === selected) draw(t);
   }
@@ -1057,8 +1088,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     if (!again) sheetFrom = focused();
     sheetKind = kind;
     $('sheet-title').textContent = title;
-    $('sheet-body').innerHTML = body;
-    $('sheet-actions').innerHTML = actions;
+    setHTML($('sheet-body'), body);
+    setHTML($('sheet-actions'), actions);
     arrive(sheet);
     arrive($('scrim'));
     backing();
@@ -1169,6 +1200,11 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
 
   // Search
 
+  // Each message is lowercased once rather than on every key he types.
+  const lower = new WeakMap();
+  const has = (o, text, needle) => { let l = lower.get(o); if (l === undefined) lower.set(o, l = text(o).toLowerCase()); return l.includes(needle); };
+  const youText = (y) => y.text || '', fileName = (f) => f.name;
+  const outText = (o) => o.kind === 'reply' ? o.text.replace(/\*\*|`/g, '') : `${o.name}${o.caption ? `, ${o.caption}` : ''}`;
   // Searches the data rather than the page, so it finds turns that aren't drawn.
   function hits(q) {
     const needle = q.trim().toLowerCase();
@@ -1176,12 +1212,9 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const out = [];
     for (const t of items) {
       if (t.type !== 'turn') continue;
-      if (t.you?.text?.toLowerCase().includes(needle)) out.push({ who: 'You', e: t.you, text: t.you.text });
-      for (const f of t.you?.files || []) if (f.name.toLowerCase().includes(needle)) out.push({ who: 'You', e: t.you, text: f.name });
-      for (const o of t.out) {
-        const text = o.kind === 'reply' ? o.text.replace(/\*\*|`/g, '') : `${o.name}${o.caption ? `, ${o.caption}` : ''}`;
-        if (text.toLowerCase().includes(needle)) out.push({ who: mac?.name || 'Computer', e: o, text });
-      }
+      if (t.you?.text && has(t.you, youText, needle)) out.push({ who: 'You', e: t.you, text: t.you.text });
+      for (const f of t.you?.files || []) if (has(f, fileName, needle)) out.push({ who: 'You', e: t.you, text: f.name });
+      for (const o of t.out) if (has(o, outText, needle)) out.push({ who: mac?.name || 'Computer', e: o, text: outText(o) });
     }
     return out.reverse();
   }
@@ -1201,9 +1234,9 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const list = hits(q);
     const none = `Nothing matches "${q.trim()}".`;
     const count = list.length > MAX_HITS ? `The newest ${MAX_HITS} of ${list.length} results` : `${list.length} result${list.length === 1 ? '' : 's'}`;
-    $('results').innerHTML = !q.trim() ? `<p class="empty-state">Search your requests, the computer's replies and file names.</p>`
+    setHTML($('results'), !q.trim() ? `<p class="empty-state">Search your requests, the computer's replies and file names.</p>`
       : !list.length ? `<p class="empty-state">${esc(none)}</p>`
-      : `<p class="count">${count}</p><ol>${list.slice(0, MAX_HITS).map((h) => `<li><button type="button" class="hit" data-jump="${esc(h.e.id)}"><span class="hit-top"><b>${h.who}</b><span>${shortDay(h.e.at)}</span></span><span class="hit-text">${snippet(h.text, q.trim())}</span></button></li>`).join('')}</ol>`;
+      : `<p class="count">${count}</p><ol>${list.slice(0, MAX_HITS).map((h) => `<li><button type="button" class="hit" data-jump="${esc(h.e.id)}"><span class="hit-top"><b>${h.who}</b><span>${shortDay(h.e.at)}</span></span><span class="hit-text">${snippet(h.text, q.trim())}</span></button></li>`).join('')}</ol>`);
     clearTimeout(countTimer);
     if (q.trim()) countTimer = setTimeout(() => say(list.length ? count : none), 700);
   }
@@ -1254,10 +1287,10 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const list = $('side-list');
     const q = $('side-search').value.trim().toLowerCase();
     const turns = items.filter((t) => t.type === 'turn' && t.you).reverse();
-    const all = q ? turns.filter((t) => (t.you.text || '').toLowerCase().includes(q) || t.out.some((o) => (o.text || o.name || '').toLowerCase().includes(q))) : turns;
+    const all = q ? turns.filter((t) => has(t.you, youText, q) || t.out.some((o) => has(o, outText, q))) : turns;
     const rows = all.slice(0, sideLimit);
     refocus(list, () => {
-      list.innerHTML = rows.length ? rows.map((t) => {
+      setHTML(list, rows.length ? rows.map((t) => {
         const ask = active(t) && waitingAsk(t);
         const state = ask ? 'wait' : active(t) ? 'go' : t.done?.stopped ? 'stopped' : t.done && !t.done.ok ? 'bad' : t.done ? 'ok' : 'stopped';
         const meta = ask ? 'Asking you now' : active(t) ? 'Working now' : shortDay(t.at);
@@ -1265,7 +1298,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
         const here = t.id === (currentReq ?? cur?.id);
         return `<li><button type="button" class="req${here ? ' current' : ''}" data-req="${esc(t.id)}"${here ? ' aria-current="true"' : ''}>${mark(state)}<span class="req-body"><span class="req-text">${SAID[state] ? `<span class="sr">${SAID[state]}</span>` : ''}${esc(label)}</span><span class="req-meta">${meta}</span></span></button></li>`;
       }).join('') + (all.length > rows.length ? `<li class="side-more"><button type="button" class="pill" data-sidemore>Show Older Requests</button></li>` : '')
-        : loaded || q ? `<li class="side-empty">${q ? `Nothing matches "${esc(q)}".` : 'Your requests show up here.'}</li>` : '';
+        : loaded || q ? `<li class="side-empty">${q ? `Nothing matches "${esc(q)}".` : 'Your requests show up here.'}</li>` : '');
     }, () => $('side-search'));
     sideIO.disconnect();
     const m = list.querySelector('[data-sidemore]');
@@ -1285,9 +1318,9 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const photos = all.filter(isImage), files = all.filter((f) => !isImage(f));
     const body = $('files-body');
     refocus(body, () => {
-      body.innerHTML = !all.length && !loaded ? '' : !all.length ? `<p class="empty-state">Nothing yet. Photos and files you send to the computer, and ones it sends you, show up here.</p>` :
+      setHTML(body, !all.length && !loaded ? '' : !all.length ? `<p class="empty-state">Nothing yet. Photos and files you send to the computer, and ones it sends you, show up here.</p>` :
         (photos.length ? `<h3>Photos</h3><div class="grid">${photos.map((f) => `<button type="button" class="tile" data-open="${esc(f.url)}" aria-label="${esc(f.name)}, from ${f.who === 'You' ? 'you' : 'the computer'}"><img src="${thumb(f.url, 180)}" alt="" loading="lazy" decoding="async"><span aria-hidden="true">${f.who}</span></button>`).join('')}</div>` : '')
-        + (files.length ? `<h3>Files</h3><ul class="flist">${files.map((f, i) => `<li><button type="button" class="file" data-open="${esc(f.url)}">${fileIcon(['flower', 'cookie', 'pentagon', 'clover'][i % 4])}<span><span class="fn">${esc(f.name)}</span><br><span class="fs"><span class="who-tag">${f.who === 'You' ? 'From you' : 'From the computer'}</span> · ${bytes(f.size || 0)} · ${shortDay(f.at)}</span></span></button></li>`).join('')}</ul>` : '');
+        + (files.length ? `<h3>Files</h3><ul class="flist">${files.map((f, i) => `<li><button type="button" class="file" data-open="${esc(f.url)}">${fileIcon(['flower', 'cookie', 'pentagon', 'clover'][i % 4])}<span><span class="fn">${esc(f.name)}</span><br><span class="fs"><span class="who-tag">${f.who === 'You' ? 'From you' : 'From the computer'}</span> · ${bytes(f.size || 0)} · ${shortDay(f.at)}</span></span></button></li>`).join('')}</ul>` : ''));
     }, () => $('close-files'));
   }
   let filesFrom = null;
@@ -1303,8 +1336,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const p = $('pending');
     p.hidden = !pending.length && !uploading;
     refocus(p, () => {
-      p.innerHTML = pending.map((f, i) => `<div class="att">${isImage(f) ? `<img src="${thumb(f.url, 48)}" alt="" width="48" height="48" decoding="async">` : `<span class="fi">${icon('doc')}</span>`}<span>${esc(f.name)}</span><button type="button" data-unattach="${i}" aria-label="Remove ${esc(f.name)}">${icon('close')}</button></div>`).join('')
-        + (uploading ? `<div class="att loading"><span class="loader">${loader()}</span>Sending to the computer</div>` : '');
+      setHTML(p, pending.map((f, i) => `<div class="att">${isImage(f) ? `<img src="${thumb(f.url, 48)}" alt="" width="48" height="48" decoding="async">` : `<span class="fi">${icon('doc')}</span>`}<span>${esc(f.name)}</span><button type="button" data-unattach="${i}" aria-label="Remove ${esc(f.name)}">${icon('close')}</button></div>`).join('')
+        + (uploading ? `<div class="att loading"><span class="loader">${loader()}</span>Sending to the computer</div>` : ''));
     }, () => p.querySelector('[data-unattach]') || text);
     canSend();
   }
