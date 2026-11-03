@@ -123,6 +123,10 @@ test('the guard passes ordinary work and stops the rest', () => {
   assert.equal(verdict("osascript -e 'tell application \"Finder\" to empty the trash'"), 'block');
   assert.equal(judge('Bash', { command: 'rm -rf ~' }, W).plain, 'Delete your whole home folder');
   assert.equal(judge('Write', { file_path: '/Users/me/.thelab/server.ts' }, W).block !== undefined, true);
+  for (const command of ['cat ~/.thelab/tunnel.json', 'grep -r pass /Users/me/.thelab', 'cat ~/.thelab/config.json']) assert.equal(verdict(command), 'block', command);
+  assert.equal(judge('Read', { file_path: '/Users/me/.thelab/tunnel.json' }, W).block !== undefined, true);
+  assert.equal(judge('Grep', { pattern: 'token', path: '/Users/me/.thelab' }, W).block !== undefined, true);
+  assert.equal(verdict('cat ~/.thelab/preview-link'), 'go');
   assert.equal(judge('Read', { file_path: '/Users/me/notes.md' }, W).effect, 'read');
   // Once an email or web page is in the turn, a call that carries data out
   // in its address waits for a tap.
@@ -352,9 +356,8 @@ test('the guard reads PowerShell, cmd and Git Bash on Windows', () => {
   assert.equal(pc('Set-Service -Name Spooler -StartupType Disabled'), 'ask');
   assert.equal(judge('PowerShell', { command: 'Remove-Item -Recurse C:\\Users\\me\\Pictures' }, PCW).plain, 'Delete your whole Pictures folder');
   assert.equal(judge('Write', { file_path: 'C:\\Users\\me\\.thelab\\server.ts' }, PCW).block !== undefined, true);
-  assert.equal(words('Move it to the Trash on the Mac', true), 'Move it to the Recycle Bin on the PC');
-  assert.equal(words("The Mac's disk, this Mac and macOS.", true), "The PC's disk, this PC and Windows.");
-  assert.equal(words('Saved Mac Notes.txt to Trash/old, the Mac.docx and C:\\the Trash\\a', true), 'Saved Mac Notes.txt to Trash/old, the Mac.docx and C:\\the Trash\\a');
+  assert.equal(words('Move it to the Trash on the computer', true), 'Move it to the Recycle Bin on the computer');
+  assert.equal(words('Saved Trash/old.txt, the Trash.docx and C:\\the Trash\\a', true), 'Saved Trash/old.txt, the Trash.docx and C:\\the Trash\\a');
 });
 
 test('a change to app/ that cannot run never reaches the phone', async () => {

@@ -1,6 +1,6 @@
 # Setting Up The Lab
 
-These are instructions for the agent on the owner's Mac. Read the whole file first, then work through it top to bottom. Do every step yourself. The owner only needs to act where a step says so, and when that happens tell him exactly what to tap or click, one thing at a time, and wait for him to say it's done.
+These are instructions for the agent on the owner's computer. Read the whole file first, then work through it top to bottom. Do every step yourself. The owner only needs to act where a step says so, and when that happens tell him exactly what to tap or click, one thing at a time, and wait for him to say it's done.
 
 On a Windows PC the steps are the same with three differences. Install Node 24 or later with `winget install OpenJS.NodeJS` instead of the download below (he clicks Yes when Windows asks), use `curl.exe` and `tar` (both come with Windows 10 and 11) to fetch the source into `%USERPROFILE%\.thelab\source`, and read `~` as `%USERPROFILE%` throughout. Git Bash is optional. Setup and the server use PowerShell and cmd where they need a shell, and the agent's commands run in whichever shell it already has.
 
@@ -13,9 +13,9 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 - `~/.thelab/source/`, this repository.
 - A login item that keeps the server running (`~/Library/LaunchAgents/com.somethingobvious.thelab.plist` on a Mac, a `TheLab` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows, which starts it hidden when he signs in).
 - A relay on Cloudflare's free plan, unless he was given the address of one that's already up.
-- The Lab on the phone, built on this Mac and installed over a USB cable.
+- The Lab on the phone, built on this computer and installed over a USB cable.
 
-Nothing is exposed to the internet. The server listens only on the Mac itself, and the phone reaches it through an encrypted tunnel, straight over the Wi-Fi when they share one and through the relay otherwise. The keys come from pairing and never leave the two devices, so the relay can't read or change anything it passes.
+Nothing is exposed to the internet. The server listens only on the computer itself, and the phone reaches it through an encrypted tunnel, straight over the Wi-Fi when they share one and through the relay otherwise. The keys come from pairing and never leave the two devices, so the relay can't read or change anything it passes.
 
 ## 1. Node and the Source
 
@@ -56,7 +56,7 @@ node setup.ts computer
 node setup.ts selftest
 ```
 
-The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the Mac awake while it's plugged in (it uses `caffeinate -s` on a Mac and `SetThreadExecutionState` on Windows, so on battery it sleeps as usual, except while a task is running). The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
+The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the computer awake while it's plugged in (it uses `caffeinate -s` on a Mac and `SetThreadExecutionState` on Windows, so on battery it sleeps as usual, except while a task is running). The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
 
 ## 4. The Relay
 
@@ -65,6 +65,8 @@ If the message that started setup gave a relay address, use it:
 ```sh
 node setup.ts relay --url https://the-lab-relay.example.workers.dev
 ```
+
+Only use a relay run by someone he trusts with his computer. It can't read the messages it passes, but it serves the page a pairing QR code opens, so it could read that code. Pairing over the USB cable never goes near it.
 
 Otherwise put up his own. It's a Cloudflare Worker on the free plan, which is far more than one person uses:
 
@@ -82,7 +84,7 @@ The phone is a Pixel Fold. Developer mode has to be on before a cable install wo
 
 1. Settings, About phone, then tap Build number seven times. The phone asks for his PIN and then says he's a developer.
 2. Settings, System, Developer options, then turn on USB debugging.
-3. Plug the phone into the Mac with a USB-C cable that carries data (the one from the box does).
+3. Plug the phone into the computer with a USB-C cable that carries data (the one from the box does).
 4. Unlock the phone. A prompt asks "Allow USB debugging?". Tick Always allow from this computer and tap Allow.
 
 Then:
@@ -91,19 +93,19 @@ Then:
 node setup.ts phone
 ```
 
-The first run downloads Java and the Android build tools into `~/.thelab/tools` (about 1 GB, 5 to 15 minutes), builds the app with a signing key that stays on this Mac, installs it, grants notifications, keeps it running through battery saving, pairs it with this Mac and opens it.
+The first run downloads Java and the Android build tools into `~/.thelab/tools` (about 1 GB, 5 to 15 minutes), builds the app with a signing key that stays on this computer, installs it, grants notifications, keeps it running through battery saving, pairs it with this computer and opens it.
 
 He can turn USB debugging back off afterwards if he likes, though leaving it on makes updates easier.
 
-If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the Mac that works once for 10 minutes. He points the phone's camera at it, opens the link, taps Open The Lab and then Pair, and no cable is needed. The link opens a page on the relay, but everything after the `#` stays on the phone.
+If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the computer that works once for 10 minutes. He points the phone's camera at it, opens the link, taps Open The Lab and then Pair, and no cable is needed. The link opens a page on the relay, but everything after the `#` stays on the phone.
 
 ### Tailscale (Optional)
 
-If he already uses Tailscale, the phone can reach the Mac over it as well, with no change on the phone. `node setup.ts tailscale` also gives the server an HTTPS address through `tailscale serve`, which an older pairing used. Neither is needed with the relay.
+If he already uses Tailscale, the phone can reach the computer over it as well, with no change on the phone. `node setup.ts tailscale` also gives the server an HTTPS address through `tailscale serve`, which an older pairing used. Neither is needed with the relay.
 
 ## 6. Check It
 
-Have him send a message from The Lab on the phone, something like "What's my Mac's battery at?". The reply should arrive within a few seconds, with each step shown as it happens. Then tell him four things.
+Have him send a message from The Lab on the phone, something like "What's my computer's battery at?". The reply should arrive within a few seconds, with each step shown as it happens. Then tell him four things.
 
 - He can ask for changes to how the app looks, in plain words, and they show up on the phone right away.
 - If a design change ever breaks the app, holding the app icon shows Safe Mode, which has Undo Last Design Change.
@@ -111,11 +113,11 @@ Have him send a message from The Lab on the phone, something like "What's my Mac
 - Settings, in More, changes the look, the top bar's widgets and the model, and holding a widget goes straight to Edit the Top Bar.
 - More, in the app's header, has Check My Setup, which says what isn't working and how to fix it.
 
-On Android he can also make The Lab the phone's assistant (Settings, Apps, Default apps, Digital assistant app), so holding the power button opens it ready to type. The Lab also adds an Ask the Mac tile to Quick Settings and a home screen widget, which he can add from the usual places.
+On Android he can also make The Lab the phone's assistant (Settings, Apps, Default apps, Digital assistant app), so holding the power button opens it ready to type. The Lab also adds an Ask the computer tile to Quick Settings and a home screen widget, which he can add from the usual places.
 
 ## Updating
 
-Updates run from the Claude or Codex app on the Mac, because the agent on the phone can't write to `~/.thelab`. Fetch the newer tag into `~/.thelab/source` the same way as step 1 (his `~/TheLab/app` is never touched), run `npm ci` in `source/computer`, then `node setup.ts computer` to restart the server. Then compare `source/computer/template/CLAUDE.md` with `~/TheLab/CLAUDE.md` and add any sections his copy is missing, keeping his own changes. Setup already adds any other template file he doesn't have. If anything under `source/phone` changed, plug the phone in and run `node setup.ts phone` again. The app keeps its history and pairing across updates.
+Updates run from the Claude or Codex app on the computer, because the agent on the phone can't write to `~/.thelab`. Fetch the newer tag into `~/.thelab/source` the same way as step 1 (his `~/TheLab/app` is never touched), run `npm ci` in `source/computer`, then `node setup.ts computer` to restart the server. Then compare `source/computer/template/CLAUDE.md` with `~/TheLab/CLAUDE.md` and add any sections his copy is missing, keeping his own changes. Setup already adds any other template file he doesn't have. If anything under `source/phone` changed, plug the phone in and run `node setup.ts phone` again. The app keeps its history and pairing across updates.
 
 ## When Something's Wrong
 
@@ -123,8 +125,8 @@ Updates run from the Claude or Codex app on the Mac, because the agent on the ph
 - The server log is `~/.thelab/server.log`.
 - "Signed out" notices on the phone mean `node setup.ts auth` needs running again.
 - To switch between Claude and ChatGPT later, run `node setup.ts auth --engine codex` (or `claude`), then `node setup.ts computer`. It picks up the last conversation it had on that engine, or starts a fresh one, and the history on the phone stays.
-- If the phone says it can't reach the Mac, check that the Mac is awake and online. Check My Setup on the phone says whether the Mac is connected to the relay and listening on the local network.
+- If the phone says it can't reach the computer, check that the computer is awake and online. Check My Setup on the phone says whether the computer is connected to the relay and listening on the local network.
 
 ## Installing Through Google Play (Optional)
 
-Installing over a cable works without any accounts. If the owner would rather get updates from the Play Store, the app can go out through a Play Console internal testing track, which needs a Google Play developer account ($25 once) and is his call to make. `node setup.ts bundle` builds a signed `.aab`. Upload it to an internal testing release, add his Google account as a tester and open the opt-in link on the phone. Play signs what it hands out with its own key, so the Play copy can't install over a cable install. Uninstall the cable copy first, then pair again with `node setup.ts pair`. The history comes back from the Mac.
+Installing over a cable works without any accounts. If the owner would rather get updates from the Play Store, the app can go out through a Play Console internal testing track, which needs a Google Play developer account ($25 once) and is his call to make. `node setup.ts bundle` builds a signed `.aab`. Upload it to an internal testing release, add his Google account as a tester and open the opt-in link on the phone. Play signs what it hands out with its own key, so the Play copy can't install over a cable install. Uninstall the cable copy first, then pair again with `node setup.ts pair`. The history comes back from the computer.

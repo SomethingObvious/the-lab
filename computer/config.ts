@@ -30,13 +30,12 @@ export function setConfig(patch: Partial<Config>) {
 }
 
 export const WIN = process.platform === 'win32';
-// Every sentence the server writes for him names a Mac. On Windows the same
-// sentences name the PC and its Recycle Bin instead. Only whole phrases are
-// swapped, as the agent's text goes through here too and a file called
-// Mac Notes.txt or a folder called Trash has to keep its name.
+// The server's sentences say "the computer" whatever it runs, and name the
+// Trash, which Windows calls the Recycle Bin. Only the whole phrase is
+// swapped, as the agent's text goes through here too and a folder called
+// Trash has to keep its name.
 const END = String.raw`(?![\w/\\-]|\.\w)`;
-const MAC = new RegExp(String.raw`\b(the|this|your|his|my|a|owner's|rebuilt) Mac(?=('s)?${END})`, 'gi');
 const TRASH = new RegExp(String.raw`\bthe Trash${END}`, 'g');
 const MACOS = new RegExp(String.raw`(?<![\w/\\.-])macOS${END}`, 'g');
 export const words = (s: string, win = WIN) => !win ? s : s
-  .replace(MACOS, 'Windows').replace(MAC, '$1 PC').replace(TRASH, 'the Recycle Bin');
+  .replace(MACOS, 'Windows').replace(TRASH, 'the Recycle Bin');

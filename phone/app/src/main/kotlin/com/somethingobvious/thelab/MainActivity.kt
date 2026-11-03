@@ -74,7 +74,7 @@ class MainActivity : Activity() {
         if (!ready && rescueReason == null) {
             Hub.reportBroken(pageError ?: "The page didn't call lab.ready() within 8 seconds.")
             autoRescue = true
-            rescue("The design didn't finish loading, so this is the safe screen. The ${PC} is putting the version before it back.")
+            rescue("The design didn't finish loading, so this is the safe screen. The computer is putting the version before it back.")
         }
     }
     private var autoRescue = false
@@ -181,10 +181,10 @@ class MainActivity : Activity() {
         if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.addAll(it) }
         else intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
         if (uris.isEmpty()) return toCompose(JSONObject().put("kind", "compose").put("text", text))
-        Toast.makeText(this, "Sending to the ${PC}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Sending to the computer", Toast.LENGTH_SHORT).show()
         Hub.later {
             val out = JSONArray()
-            val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't send that to the ${PC}." }
+            val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't send that to the computer." }
             Hub.onMain {
                 if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
                 toCompose(JSONObject().put("kind", "compose").put("text", text).put("files", out))
@@ -199,30 +199,30 @@ class MainActivity : Activity() {
             Tunnel.Spec.parse(JSONObject().put("relay", uri.getQueryParameter("r") ?: "").put("room", room)
                 .put("key", uri.getQueryParameter("k") ?: "").put("pass", uri.getQueryParameter("p") ?: "")
                 .put("lan", JSONArray((uri.getQueryParameter("l") ?: "").split(',').filter { it.isNotBlank() })))
-                ?: return Toast.makeText(this, "That pairing link is damaged. Show a new code on the ${PC}.", Toast.LENGTH_LONG).show()
+                ?: return Toast.makeText(this, "That pairing link is damaged. Show a new code on the computer.", Toast.LENGTH_LONG).show()
         }
         val base = uri.getQueryParameter("u")?.trimEnd('/')
-        if (tunnel == null && (base == null || Uri.parse(base).scheme != "https")) return Toast.makeText(this, "That pairing link isn't for a ${PC}.", Toast.LENGTH_LONG).show()
+        if (tunnel == null && (base == null || Uri.parse(base).scheme != "https")) return Toast.makeText(this, "That pairing link isn't from The Lab.", Toast.LENGTH_LONG).show()
         val host = tunnel?.let { t -> t.relay?.let { Uri.parse(it).host } ?: "your Wi-Fi" } ?: Uri.parse(base).host ?: return
         AlertDialog.Builder(this)
-            .setTitle("Pair With This ${PC}?")
-            .setMessage(if (tunnel != null) "The Lab will talk to the ${PC} that showed this code, straight over Wi-Fi when it can and through $host otherwise. Only say yes if you just scanned the code on your own ${PC}."
-                else "The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own ${PC}.")
+            .setTitle("Pair With This Computer?")
+            .setMessage(if (tunnel != null) "The Lab will talk to the computer that showed this code, straight over Wi-Fi when it can and through $host otherwise. Only say yes if you just scanned the code on your own computer."
+                else "The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own computer.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Pair") { _, _ ->
                 Hub.claim(base, tunnel, code) { err ->
-                    Toast.makeText(this, err ?: "Paired with the ${PC}.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, err ?: "Paired with the computer.", Toast.LENGTH_LONG).show()
                     if (err == null) { LinkService.start(this); rescueReason = null; load() }
                 }
             }
             .show()
     }
 
-    // The Mac's checks, then this phone's own.
+    // The computer's checks, then this phone's own.
     private fun check(id: String) {
         Hub.request("GET", "/check", null) { text, err ->
             val items = text?.let { runCatching { JSONObject(it).getJSONArray("items") }.getOrNull() }
-                ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the ${PC}").put("detail", err ?: "Check the ${PC} is awake and Tailscale is on."))
+                ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the computer").put("detail", err ?: "Check the computer is awake and Tailscale is on."))
             val nm = getSystemService(NotificationManager::class.java)
             val asks = nm.getNotificationChannel("asks")
             if (!nm.areNotificationsEnabled() || asks?.importance == NotificationManager.IMPORTANCE_NONE)
@@ -231,11 +231,11 @@ class MainActivity : Activity() {
             val cm = getSystemService(ConnectivityManager::class.java)
             val vpn = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
             if (Tunnel.spec != null) when (Tunnel.route) {
-                "direct" -> items.put(JSONObject().put("ok", true).put("title", "Connected straight to the ${PC} over this network"))
-                "relay" -> items.put(JSONObject().put("ok", true).put("title", "Connected to the ${PC} through the relay"))
+                "direct" -> items.put(JSONObject().put("ok", true).put("title", "Connected straight to the computer over this network"))
+                "relay" -> items.put(JSONObject().put("ok", true).put("title", "Connected to the computer through the relay"))
             }
             else if (vpn) items.put(JSONObject().put("ok", true).put("title", "Tailscale is running on this phone"))
-            else items.put(JSONObject().put("ok", false).put("title", "Tailscale is off on this phone").put("detail", "The phone can only reach the ${PC} through Tailscale.").put("fix", "tailscale"))
+            else items.put(JSONObject().put("ok", false).put("title", "Tailscale is off on this phone").put("detail", "The phone can only reach the computer through Tailscale.").put("fix", "tailscale"))
             answer(id, JSONObject().put("items", items).toString())
         }
     }
@@ -340,7 +340,7 @@ class MainActivity : Activity() {
         val hasDesign = Hub.designDir.resolve("index.html").exists()
         showingApp = !(rescueReason != null || !hasDesign || !Hub.paired)
         if (!showingApp) {
-            w.loadUrl("$ORIGIN/shell/rescue.html?pc=$PC")
+            w.loadUrl("$ORIGIN/shell/rescue.html")
         } else {
             w.loadUrl("$ORIGIN/app/index.html")
             if (visible) frame.postDelayed(watchdog, 8000)
@@ -368,7 +368,7 @@ class MainActivity : Activity() {
                 val batch = JSONArray().put(Hub.link).put(Hub.status).put(Hub.outboxEvent()).put(insets).put(fold)
                 for (e in Hub.live.values) batch.put(e)
                 val hasDesign = Hub.designDir.resolve("index.html").exists()
-                val reason = rescueReason ?: if (!hasDesign && Hub.paired) "Your design hasn't arrived from the ${PC} yet. It loads as soon as the ${PC} is reachable." else null
+                val reason = rescueReason ?: if (!hasDesign && Hub.paired) "Your design hasn't arrived from the computer yet. It loads as soon as the computer is reachable." else null
                 if (reason != null) batch.put(JSONObject().put("kind", "rescue").put("reason", reason).put("hasDesign", hasDesign && rescueReason != null))
                 reply.postMessage(JSONObject().put("batch", batch).toString())
                 Hub.onLoaded {
@@ -406,7 +406,7 @@ class MainActivity : Activity() {
             }
             "call" -> {
                 val id = m.optString("id")
-                val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the ${PC}.")
+                val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the computer.")
                 Hub.request(method, m.optString("path"), m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
             }
             "check" -> check(m.optString("id"))

@@ -43,7 +43,7 @@
                 <action android:name="android.intent.action.ASSIST" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-            <!-- The QR code on the Mac opens this to finish pairing. -->
+            <!-- The QR code on the computer opens this to finish pairing. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

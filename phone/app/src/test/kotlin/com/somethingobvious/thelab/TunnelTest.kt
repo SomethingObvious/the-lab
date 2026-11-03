@@ -3,6 +3,8 @@ package com.somethingobvious.thelab
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -49,8 +51,32 @@ class TunnelTest {
     @Test fun turnsAwayAComputerWithTheWrongKey() {
         assumeTrue("set LAB_TUNNEL_TEST to run against computer/tunnel.ts", conf.isNotEmpty())
         Tunnel.direct = { true }
-        Tunnel.spec = spec(Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32)))
+        val wrong = spec(Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32)))
+        Tunnel.spec = wrong
         assertThrows(IOException::class.java) { get("/health") }
         assertEquals("key", Tunnel.why)
+        // Straight over the Wi-Fi alone, too.
+        Tunnel.spec = Tunnel.Spec(null, wrong.room, wrong.key, wrong.pass, wrong.lan)
+        assertThrows(IOException::class.java) { get("/health") }
+        assertEquals("key", Tunnel.why)
+    }
+
+    @Test fun aClaimGoesToTheNewComputerAndNothingElseDoes() {
+        assumeTrue("set LAB_TUNNEL_TEST to run against computer/tunnel.ts", conf.isNotEmpty())
+        Tunnel.direct = { true }
+        Tunnel.spec = null
+        val once = Tunnel.once(spec())
+        assertEquals("ok", http.newCall(Request.Builder().url("$once/health").header("Connection", "close").build()).execute().use { it.body.string() })
+        assertEquals(null, Tunnel.route)
+        assertThrows(IOException::class.java) { http.newCall(Request.Builder().url("$once/health").header("Connection", "close").build()).execute() }
+    }
+
+    @Test fun aPairingLinkWithABadAddressIsTurnedDown() {
+        val good = JSONObject().put("relay", "https://relay.example.workers.dev").put("room", "r").put("key", Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(65)))
+            .put("pass", Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32))).put("lan", JSONArray().put("192.168.0.18:8418"))
+        assertEquals("https://relay.example.workers.dev", Tunnel.Spec.parse(good)?.relay)
+        assertEquals(null, Tunnel.Spec.parse(JSONObject(good.toString()).put("relay", "foo:bar")))
+        assertEquals(null, Tunnel.Spec.parse(JSONObject(good.toString()).put("lan", JSONArray().put("192.168.0.18:99999"))))
+        assertEquals(null, Tunnel.Spec.parse(JSONObject(good.toString()).put("lan", JSONArray().put("evil.example:80"))))
     }
 }

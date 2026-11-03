@@ -53,15 +53,20 @@ const staticKey = (k: Keys) => {
   return ec;
 };
 
+// Adapters for virtual machines, WSL, Docker and internet sharing never lead
+// to the phone, and the phone only tries the first few addresses.
+const VIRTUAL = /vethernet|virtualbox|vmware|vmnet|docker|wsl|hyper-v|^br-|^bridge\d|^utun|^veth|zerotier/i;
+
 export function lanAddresses(port: number): string[] {
-  const out: string[] = [];
-  for (const list of Object.values(networkInterfaces())) for (const a of list ?? []) {
-    if (a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.')) out.push(`${a.address}:${port}`);
+  const out: { at: string; rank: number }[] = [];
+  for (const [name, list] of Object.entries(networkInterfaces())) for (const a of list ?? []) {
+    if (a.family !== 'IPv4' || a.internal || a.address.startsWith('169.254.')) continue;
+    // A Tailscale address (100.64.0.0/10) only answers when the phone has
+    // Tailscale on, so the home network's address is tried before it.
+    const [x, y] = a.address.split('.').map(Number);
+    out.push({ at: `${a.address}:${port}`, rank: VIRTUAL.test(name) ? 2 : x === 100 && y >= 64 && y < 128 ? 1 : 0 });
   }
-  // A Tailscale address (100.64.0.0/10) only answers when the phone has
-  // Tailscale on, so the home network's address is tried before it.
-  const tailscale = (a: string) => { const [x, y] = a.split('.').map(Number); return x === 100 && y >= 64 && y < 128 ? 1 : 0; };
-  return out.sort((a, b) => tailscale(a) - tailscale(b)).slice(0, 6);
+  return out.sort((a, b) => a.rank - b.rank).map((a) => a.at).slice(0, 6);
 }
 
 export const specOf = (k: Keys, relay: string | undefined, lan: string[]): Spec =>
@@ -114,6 +119,9 @@ class Mux {
     const s: Stream = { sock, unacked: 0, pending: 0, ended: false };
     this.streams.set(id, s);
     sock.on('data', (b: Buffer) => {
+      // The other end has let go, so nothing will ack this. It drains away
+      // rather than holding the socket open until the session ends.
+      if (s.ended) return;
       for (let i = 0; i < b.length; i += CHUNK) this.frame(id, DATA, b.subarray(i, i + CHUNK));
       s.unacked += b.length;
       if (s.unacked > WINDOW) sock.pause();
@@ -148,6 +156,7 @@ class Mux {
     } else if (type === END) {
       s.ended = true;
       s.sock.end();
+      s.sock.resume();
     }
   }
 
@@ -196,6 +205,8 @@ export class Responder {
     this.mux = new Mux((pt) => this.send(this.outBox!.seal(pt)));
   }
 
+  get ready() { return !!this.mux; }
+
   close() { this.mux?.closeAll(); }
 }
 
@@ -228,15 +239,21 @@ export function startTunnel(o: TunnelOptions) {
   const state: TunnelState = { relay: o.relay ? 'connecting' : 'off', lan: 'starting', peers: 0 };
   let stopped = false;
 
+  // Anyone on the same Wi-Fi can connect, so a connection that hasn't
+  // finished the handshake in 10 s goes, and only 32 are kept at once.
+  // Keepalive notices a phone that walked off the network.
   const lan = createServer((sock) => {
     sock.setNoDelay(true);
+    sock.setKeepAlive(true, 30_000);
     let r: Responder | null = null;
     const send = framed(sock, (p) => r?.packet(p));
     r = new Responder(k, o.port, send, () => sock.destroy());
     state.peers++;
+    const hello = setTimeout(() => { if (!r?.ready) sock.destroy(); }, 10_000);
     sock.on('error', () => {});
-    sock.on('close', () => { state.peers--; r?.close(); });
+    sock.on('close', () => { clearTimeout(hello); state.peers--; r?.close(); });
   });
+  lan.maxConnections = 32;
   lan.on('error', (e) => { state.lan = `off: ${e.message}`; });
   lan.listen(o.lanPort, o.lanHost ?? '0.0.0.0', () => { state.lan = 'on'; });
 
@@ -288,9 +305,13 @@ export function startTunnel(o: TunnelOptions) {
       if (ws !== sock) return;
       ws = null;
       endSessions();
-      state.relay = ev.code === 1008 || ev.code === 4003 ? 'refused: this computer is not the room owner' : `reconnecting (${ev.code || 'no answer'})`;
+      // 4001 means another copy of the server took the room, so this one
+      // waits a minute instead of taking it straight back.
+      state.relay = ev.code === 4003 ? 'refused: this computer is not the room owner'
+        : ev.code === 4001 ? 'replaced by another copy of the server' : `reconnecting (${ev.code || 'no answer'})`;
+      if (ev.code === 4001) wait = 60_000;
       if (!stopped) setTimeout(dial, wait);
-      wait = Math.min(wait * 2, 30_000);
+      wait = Math.min(wait * 2, ev.code === 4001 ? 120_000 : 30_000);
     };
   };
   dial();

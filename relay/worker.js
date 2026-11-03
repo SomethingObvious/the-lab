@@ -33,8 +33,17 @@ export class Room extends DurableObject {
     const offered = (req.headers.get('sec-websocket-protocol') ?? '').split(',').map((s) => s.trim());
     const [client, server] = Object.values(new WebSocketPair());
     if (offered[0] === 'lab' && offered[1]) {
-      if ((await sha(offered[1])) !== room) return new Response('Not the owner of this room.', { status: 403 });
-      for (const old of this.ctx.getWebSockets('pc')) old.close(4001, 'Another copy of the server took over.');
+      // Accepted and then closed, because a refused upgrade only reaches
+      // the computer as 1006 and it couldn't tell this apart from a drop.
+      if ((await sha(offered[1])) !== room) {
+        server.accept();
+        server.close(4003, 'Not the owner of this room.');
+        return new Response(null, { status: 101, webSocket: client, headers: { 'sec-websocket-protocol': 'lab' } });
+      }
+      // The phones' sessions were with the copy being replaced, so they
+      // start over with this one.
+      for (const old of this.ctx.getWebSockets('pc')) { old.serializeAttachment({ replaced: true }); old.close(4001, 'Another copy of the server took over.'); }
+      for (const p of this.ctx.getWebSockets('phone')) p.close(4000, 'The computer restarted.');
       this.ctx.acceptWebSocket(server, ['pc']);
       return new Response(null, { status: 101, webSocket: client, headers: { 'sec-websocket-protocol': 'lab' } });
     }
@@ -44,7 +53,7 @@ export class Room extends DurableObject {
     do peer = crypto.getRandomValues(new Uint32Array(1))[0]; while (this.ctx.getWebSockets(`p${peer}`).length);
     this.ctx.acceptWebSocket(server, ['phone', `p${peer}`]);
     server.serializeAttachment({ peer });
-    if (!this.ctx.getWebSockets('pc').length) {
+    if (!this.pc()) {
       server.send('away');
       server.close(4004, 'The computer is not connected.');
     }
@@ -64,7 +73,7 @@ export class Room extends DurableObject {
       else if (body[4] === LEAVE) phone.close(4000, 'The computer ended this session.');
       return;
     }
-    const pc = this.ctx.getWebSockets('pc')[0];
+    const pc = this.pc();
     if (!pc) {
       ws.send('away');
       ws.close(4004, 'The computer is not connected.');
@@ -76,18 +85,22 @@ export class Room extends DurableObject {
     pc.send(out);
   }
 
+  // The computer's socket, leaving out one that's closing after a takeover.
+  pc() { return this.ctx.getWebSockets('pc').find((s) => !s.deserializeAttachment()?.replaced); }
+
   webSocketClose(ws, code) { this.gone(ws, code); }
   webSocketError(ws) { this.gone(ws, 1011); }
 
   gone(ws, code) {
     try { ws.close(code === 1005 || code === 1006 ? 1000 : code); } catch {}
-    const { peer } = ws.deserializeAttachment() ?? {};
+    const { peer, replaced } = ws.deserializeAttachment() ?? {};
     if (peer === undefined) {
       // The session keys went with the computer, so its phones start over.
-      for (const p of this.ctx.getWebSockets('phone')) p.close(4000, 'The computer went away.');
+      // A copy that was replaced already sent them to the new one.
+      if (!replaced) for (const p of this.ctx.getWebSockets('phone')) p.close(4000, 'The computer went away.');
       return;
     }
-    const pc = this.ctx.getWebSockets('pc')[0];
+    const pc = this.pc();
     if (pc) try { pc.send(header(peer, LEAVE)); } catch {}
   }
 }
@@ -98,7 +111,7 @@ h1{font-size:1.6rem;line-height:1.2}a{display:inline-block;background:#4419c9;co
 @media (prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}}</style></head><body>
 <h1>Pair This Phone</h1><p>Tap the button to open The Lab and finish pairing. The code stays on this phone and never reaches this site.</p>
 <p><a id="go" href="#">Open The Lab</a></p>
-<script>document.getElementById('go').href = 'intent://pair?' + location.hash.slice(1) + '#Intent;scheme=thelab;package=com.somethingobvious.thelab;end';</script>
+<script>document.getElementById('go').href = 'intent://pair?' + location.hash.slice(1) + '#Intent;scheme=thelab;package=com.somethingobvious.thelab;end'; history.replaceState(null, '', '/p');</script>
 </body></html>`;
 
 export default {

@@ -58,6 +58,9 @@ object Tunnel {
     private const val ACK_EVERY = 64 * 1024
     private const val MAX_PACKET = 256 * 1024
     private val LABEL = "the lab tunnel 1".toByteArray()
+    private val RELAY = Regex("^https?://[A-Za-z0-9.-]+(:\\d{1,5})?/?$")
+    private val ADDRESS = Regex("^[0-9.]{7,15}:\\d{1,5}$")
+    private val LOOPBACK = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
 
     class Spec(val relay: String?, val room: String, val key: ByteArray, val pass: ByteArray, val lan: List<String>) {
         fun json(): JSONObject = JSONObject().put("relay", relay ?: JSONObject.NULL).put("room", room)
@@ -67,7 +70,7 @@ object Tunnel {
             fun parse(j: JSONObject): Spec? = runCatching {
                 val lan = j.optJSONArray("lan")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
                 Spec(j.optString("relay").takeIf { it.isNotBlank() && it != "null" }, j.getString("room"), unb64(j.getString("key")), unb64(j.getString("pass")), lan)
-                    .takeIf { it.key.size == 65 && it.pass.size == 32 }
+                    .takeIf { s -> s.key.size == 65 && s.pass.size == 32 && (s.relay == null || RELAY.matches(s.relay)) && s.lan.all { ADDRESS.matches(it) && it.substringAfterLast(':').toInt() in 1..65535 } }
             }.getOrNull()
         }
     }
@@ -80,7 +83,7 @@ object Tunnel {
     @Volatile var route: String? = null
         private set
     @Volatile var spec: Spec? = null
-        set(v) { field = v; drop() }
+        set(v) { field = v; lan = emptyList(); drop() }
     // The newest addresses the computer sent, ahead of the ones from pairing.
     @Volatile var lan: List<String> = emptyList()
 
@@ -90,11 +93,11 @@ object Tunnel {
     private val lock = java.lang.Object()
     private var server: ServerSocket? = null
     @Volatile private var session: Session? = null
-    private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).build()
+    private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).pingInterval(20, TimeUnit.SECONDS).build()
 
     fun base(): String = synchronized(lock) {
-        // Android's getLoopbackAddress() is ::1, and the address below is 127.0.0.1.
-        val s = server ?: ServerSocket(0, 50, InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))).also { ss ->
+        // Android's getLoopbackAddress() is ::1, and the address OkHttp is given is 127.0.0.1.
+        val s = server ?: ServerSocket(0, 50, LOOPBACK).also { ss ->
             server = ss
             thread(name = "tunnel", isDaemon = true) {
                 while (!ss.isClosed) {
@@ -106,6 +109,23 @@ object Tunnel {
         "http://127.0.0.1:${s.localPort}"
     }
 
+    // One request to a computer that isn't paired yet, over its own session,
+    // so a claim that fails never reaches the computer that is.
+    fun once(sp: Spec): String {
+        val ss = ServerSocket(0, 1, LOOPBACK)
+        thread(name = "tunnel-once", isDaemon = true) {
+            ss.use {
+                it.soTimeout = 30_000
+                val sock = try { it.accept() } catch (e: IOException) { return@thread }
+                try { open(sp, sp.lan).first.let { s -> s.carry(sock); s.dead() } } catch (e: Exception) {
+                    Log.i(TAG, "tunnel: claim couldn't connect (${e.message})")
+                    runCatching { sock.close() }
+                }
+            }
+        }
+        return "http://127.0.0.1:${ss.localPort}"
+    }
+
     // Ends the session, so the next connection picks its route again. Called
     // when the phone changes network, which is when a direct route can appear.
     fun drop() {
@@ -115,8 +135,9 @@ object Tunnel {
         old?.dead()
     }
 
+    // Anything thrown on this thread would take the whole app down.
     private fun carry(sock: Socket) {
-        val s = try { session() } catch (e: IOException) {
+        val s = try { session() } catch (e: Exception) {
             Log.i(TAG, "tunnel: ${e.message}")
             runCatching { sock.close() }
             return
@@ -127,25 +148,43 @@ object Tunnel {
     private fun session(): Session { synchronized(dialing) {
         val sp = spec ?: throw IOException("not paired")
         session?.takeIf { it.alive && it.spec === sp }?.let { return it }
-        if (direct()) for (a in lan.ifEmpty { sp.lan }.take(4)) {
+        val (s, how) = try { open(sp, lan.ifEmpty { sp.lan }) } catch (e: IOException) {
+            why = when (e) { is Away -> "away"; is WrongKey -> "key"; is NoRoute -> "none"; else -> "relay" }
+            throw e
+        }
+        // He paired again while this was dialing, so it's for the old computer.
+        if (spec !== sp) { s.dead(); throw IOException("the pairing changed while connecting") }
+        session?.dead()
+        session = s
+        route = how
+        why = ""
+        Log.i(TAG, "tunnel: $how")
+        return s
+    } }
+
+    // The direct addresses first, then the relay. A wrong key on either
+    // means the paired computer wasn't the one that answered.
+    private fun open(sp: Spec, addresses: List<String>): Pair<Session, String> {
+        var wrongKey = false
+        if (direct()) for (a in addresses.take(4)) {
             try {
-                return Session.start(TcpLink(a), sp, 2000).also { session = it; route = "direct"; why = ""; Log.i(TAG, "tunnel: direct to $a") }
-            } catch (e: IOException) {
+                return Session.start(TcpLink(a), sp, 2000) to "direct"
+            } catch (e: WrongKey) {
+                wrongKey = true
+                Log.i(TAG, "tunnel: $a answered with the wrong key")
+            } catch (e: Exception) {
                 Log.i(TAG, "tunnel: $a didn't answer (${e.message})")
             }
         }
-        val relay = sp.relay ?: run { why = "none"; throw IOException("no address answered and there is no relay") }
+        val relay = sp.relay ?: throw if (wrongKey) WrongKey() else NoRoute()
         try {
-            return Session.start(WsLink("${relay.trimEnd('/').replaceFirst(Regex("^http"), "ws")}/r/${sp.room}", ws), sp, 10_000)
-                .also { session = it; route = "relay"; why = ""; Log.i(TAG, "tunnel: through the relay") }
+            return Session.start(WsLink("${relay.trimEnd('/').replaceFirst(Regex("^http"), "ws")}/r/${sp.room}", ws), sp, 10_000) to "relay"
         } catch (e: Away) {
-            why = "away"; throw e
-        } catch (e: WrongKey) {
-            why = "key"; throw e
-        } catch (e: IOException) {
-            why = "relay"; throw e
+            throw e
+        } catch (e: Exception) {
+            throw if (wrongKey || e is WrongKey) WrongKey() else e as? IOException ?: IOException(e.message)
         }
-    } }
+    }
 
     // A test on the computer has no Android network to ask.
     internal var direct: () -> Boolean = ::local
@@ -160,6 +199,7 @@ object Tunnel {
 
     class Away : IOException("The computer isn't connected to the relay.")
     class WrongKey : IOException("The answer didn't come from the paired computer.")
+    class NoRoute : IOException("No address answered and there is no relay.")
 
     private class Box(key: ByteArray) {
         private val k = SecretKeySpec(key, "AES")

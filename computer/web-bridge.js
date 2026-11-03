@@ -1,4 +1,4 @@
-// window.lab for the app opened in a browser on the Mac itself. The phone
+// window.lab for the app opened in a browser on the computer itself. The phone
 // gets the same API from the Android shell, so a design works in both.
 (() => {
   const listeners = new Set();
@@ -46,7 +46,7 @@
     };
     es.onerror = () => {
       es.close();
-      link = { kind: 'link', state: 'offline', detail: 'The server on this Mac is not answering.' };
+      link = { kind: 'link', state: 'offline', detail: 'The server on this computer is not answering.' };
       emit(link);
       setTimeout(connect, 3000);
     };
@@ -88,7 +88,7 @@
     async call(method, path, body) {
       const r = await fetch(path, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) });
       const out = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(out.error || `The Mac answered ${r.status}.`);
+      if (!r.ok) throw new Error(out.error || `The computer answered ${r.status}.`);
       return out;
     },
     check() { return this.call('GET', '/check'); },
@@ -122,7 +122,7 @@
     onBack() {},
     ready() {},
   };
-  // While someone is at this Mac with The Lab in front, the phone stays quiet.
+  // While someone is at this computer with The Lab in front, the phone stays quiet.
   const here = () => { if (document.visibilityState === 'visible' && document.hasFocus()) post('/presence').catch(() => {}); };
   setInterval(here, 30_000);
   addEventListener('focus', here);

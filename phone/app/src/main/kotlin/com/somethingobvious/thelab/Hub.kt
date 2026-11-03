@@ -35,11 +35,10 @@ import java.time.Instant
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-// Everything that has to outlive the screen: the stream from the Mac, the
+// Everything that has to outlive the screen: the stream from the computer, the
 // cached history, the outbox and the downloaded design. All state is touched
 // on the main thread only.
 // What every line the app writes calls the computer, set by the build.
-val PC: String = BuildConfig.COMPUTER
 
 object Hub {
     private const val TAG = "Lab"
@@ -70,7 +69,7 @@ object Hub {
     var status = JSONObject().put("kind", "status").put("working", false).put("label", "")
         private set
     // The newest event of every kind the server sends without an id, kept
-    // across restarts so the page can show them while the ${PC} is away. Any
+    // across restarts so the page can show them while the computer is away. Any
     // kind works, so a new one needs no change here.
     val live = LinkedHashMap<String, JSONObject>()
     val mac: JSONObject? get() = live["mac"]
@@ -135,7 +134,7 @@ object Hub {
                 main.post { if (link.optString("state") != "online") reconnectNow() }
             }
         })
-        if (!paired) setLink("unpaired", "This phone isn't paired with a ${PC} yet. Plug it into the ${PC} and let the agent run setup.")
+        if (!paired) setLink("unpaired", "This phone isn't paired with a computer yet. Plug it into the computer and let the agent run setup.")
     }
 
     // Reading and parsing 2,000 events takes long enough to drop frames, so
@@ -218,7 +217,7 @@ object Hub {
             .header("Authorization", "Bearer $token")
             .apply { if (lastId > 0) header("Last-Event-ID", lastId.toString()) }
             .build()
-        if (link.optString("state") != "online") setLink("connecting", "Reaching the ${PC}")
+        if (link.optString("state") != "online") setLink("connecting", "Reaching the computer")
         source = EventSources.createFactory(client).newEventSource(req, object : EventSourceListener() {
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 main.post { if (source === eventSource) onEvent(type, data) }
@@ -245,7 +244,7 @@ object Hub {
         val e = runCatching { JSONObject(data) }.getOrElse { return }
         if (type == "hello") {
             failures = 0
-            setLink("online", "Connected to the ${PC}")
+            setLink("online", "Connected to the computer")
             e.optJSONObject("status")?.let { setStatus(it) }
             e.optJSONObject("mac")?.let { setLive(it) }
             e.optJSONArray("shortcuts")?.let { setLive(JSONObject().put("kind", "shortcuts").put("items", it)) }
@@ -295,22 +294,23 @@ object Hub {
 
     private fun onLost(t: Throwable?, code: Int?) {
         source = null
+        if (code == null && Tunnel.spec != null) Tunnel.drop()
         val cm = app.getSystemService(ConnectivityManager::class.java)
         val caps = cm.getNetworkCapabilities(cm.activeNetwork)
         when {
-            code == 401 -> setLink("unpaired", "The ${PC} doesn't recognise this phone any more. Plug it into the ${PC} and let the agent pair it again.")
+            code == 401 -> setLink("unpaired", "The computer doesn't recognise this phone any more. Plug it into the computer and let the agent pair it again.")
             caps == null -> setLink("offline", "This phone is offline.")
             Tunnel.spec != null -> setLink("offline", when (Tunnel.why) {
-                "away" -> "The ${PC} isn't connected right now. It may be asleep, switched off or offline."
-                "relay" -> "Can't reach the relay, so the ${PC} is only reachable on the same Wi-Fi."
-                "key" -> "Something answered that isn't your ${PC}, so The Lab didn't trust it. Pair this phone again if it keeps happening."
-                "none" -> "Can't find the ${PC} on this network. Without a relay it's only reachable on the same Wi-Fi."
-                else -> "Can't reach the ${PC}. It may be asleep, switched off or offline."
+                "away" -> "The computer isn't connected right now. It may be asleep, switched off or offline."
+                "relay" -> "Can't reach the relay, so the computer is only reachable on the same Wi-Fi."
+                "key" -> "Something answered that isn't your computer, so The Lab didn't trust it. Pair this phone again if it keeps happening."
+                "none" -> "Can't find the computer on this network. Without a relay it's only reachable on the same Wi-Fi."
+                else -> "Can't reach the computer. It may be asleep, switched off or offline."
             })
-            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> setLink("offline", "Tailscale is off on this phone, so it can't reach the ${PC}.", "tailscale")
-            code != null && code in 502..504 -> setLink("offline", "The ${PC} is on, but The Lab's server isn't answering. It restarts itself, so give it a minute.")
-            t is UnknownHostException -> setLink("offline", "This phone can't find the ${PC} on Tailscale. Check Tailscale is connected.", "tailscale")
-            else -> setLink("offline", "Can't reach the ${PC}. It may be asleep, switched off or offline.")
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> setLink("offline", "Tailscale is off on this phone, so it can't reach the computer.", "tailscale")
+            code != null && code in 502..504 -> setLink("offline", "The computer is on, but The Lab's server isn't answering. It restarts itself, so give it a minute.")
+            t is UnknownHostException -> setLink("offline", "This phone can't find the computer on Tailscale. Check Tailscale is connected.", "tailscale")
+            else -> setLink("offline", "Can't reach the computer. It may be asleep, switched off or offline.")
         }
         if (code == 401) return
         failures++
@@ -358,45 +358,44 @@ object Hub {
         }
     }
 
-    // done gets false only when the Mac never heard it. A 404 means it was already answered.
+    // done gets false only when the computer never heard it. A 404 means it was already answered.
     fun stop(done: (Boolean) -> Unit = {}) = post("/stop", JSONObject(), quick) { done(it in 200..299) }
     fun answer(ref: String, allow: Boolean, always: Boolean = false, done: (Boolean) -> Unit = {}) =
         post("/answer", JSONObject().put("ref", ref).put("allow", allow).put("always", always), quick) { done(it in 200..299 || it == 404) }
 
-    // Any JSON route on the Mac, for the page's memory, schedules and setup
+    // Any JSON route on the computer, for the page's memory, schedules and setup
     // sheets. done gets the body, or null and an error in plain words.
     fun request(method: String, path: String, body: String?, done: (String?, String?) -> Unit) {
-        val base = url ?: return done(null, "This phone isn't paired with a ${PC} yet.")
-        if (!path.startsWith("/") || path.contains("..")) return done(null, "That isn't a route on the ${PC}.")
+        val base = url ?: return done(null, "This phone isn't paired with a computer yet.")
+        if (!path.startsWith("/") || path.contains("..")) return done(null, "That isn't a route on the computer.")
         val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
             .method(method, if (method == "GET") null else (body ?: "{}").toRequestBody(JSON_TYPE)).build()
         (if (path == "/models" || path == "/check") slow else quick).newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { done(null, "Couldn't reach the ${PC}. Try again once it's back.") } }
+            override fun onFailure(call: Call, e: IOException) { main.post { done(null, "Couldn't reach the computer. Try again once it's back.") } }
             override fun onResponse(call: Call, response: Response) {
                 val code = response.code
                 val text = response.use { it.body.string() }
                 main.post {
                     if (code in 200..299) done(text, null)
-                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} answered $code."))
+                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer answered $code."))
                 }
             }
         })
     }
 
-    // A QR code scanned on the Mac hands over a one-time code, which the Mac
+    // A QR code scanned on the computer hands over a one-time code, which the computer
     // swaps for the token here so the token never sits in a browser history.
     fun claim(base: String?, tunnel: Tunnel.Spec?, code: String, done: (String?) -> Unit) {
-        // The claim goes through the new route, and the old one comes back if it fails.
-        val before = Tunnel.spec
-        val to = if (tunnel != null) { Tunnel.spec = tunnel; Tunnel.base() } else base ?: return done("That pairing link is missing its address.")
-        val restore = { if (tunnel != null && Tunnel.spec === tunnel) Tunnel.spec = before }
-        val req = Request.Builder().url("${to.trimEnd('/')}/pair/claim")
+        // Only the claim goes to the new computer. Everything else stays with
+        // the paired one until the token comes back.
+        val to = if (tunnel != null) Tunnel.once(tunnel) else base ?: return done("That pairing link is missing its address.")
+        // One request only, so the one-off session closes as soon as it's answered.
+        val req = Request.Builder().url("${to.trimEnd('/')}/pair/claim").header("Connection", "close")
             .post(JSONObject().put("code", code).toString().toRequestBody(JSON_TYPE)).build()
         quick.newCall(req).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 main.post {
-                    restore()
-                    done(if (tunnel != null) "Couldn't reach the ${PC}. Check it's awake and online, then scan the code again." else "Couldn't reach the ${PC}. Check Tailscale is on, then scan the code again.")
+                    done(if (tunnel != null) "Couldn't reach the computer. Check it's awake and online, then scan the code again." else "Couldn't reach the computer. Check Tailscale is on, then scan the code again.")
                 }
             }
             override fun onResponse(call: Call, response: Response) {
@@ -405,7 +404,7 @@ object Hub {
                 main.post {
                     val token = runCatching { JSONObject(text).getString("token") }.getOrNull()
                     if (code2 == 200 && token != null) { pair(if (tunnel != null) null else base, tunnel, token); done(null) }
-                    else restore().let { done(runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} turned the code down. Scan a new one.")) }
+                    else done(runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer turned the code down. Scan a new one."))
                 }
             }
         })
@@ -423,7 +422,7 @@ object Hub {
     fun saveShortcuts(items: JSONArray, done: (Boolean) -> Unit) = post("/shortcuts", JSONObject().put("items", items)) { done(it == 200) }
 
     // Blocking. Copies the pick into the file cache first, so the page can
-    // show it straight away without fetching it back from the Mac.
+    // show it straight away without fetching it back from the computer.
     fun upload(uri: Uri): JSONObject {
         val cr = app.contentResolver
         var name = "file"
@@ -434,7 +433,7 @@ object Hub {
             }
         } catch (_: SecurityException) {}
         if (size > 100L * 1024 * 1024) throw IOException("$name is over the 100 MB limit.")
-        val base = url ?: throw IOException("This phone isn't paired with a ${PC} yet.")
+        val base = url ?: throw IOException("This phone isn't paired with a computer yet.")
         val type = cr.getType(uri) ?: "application/octet-stream"
         val dir = File(app.cacheDir, "files").apply { mkdirs() }
         val tmp = File.createTempFile("upload", ".part", dir)
@@ -448,9 +447,9 @@ object Hub {
             val (code, text) = try {
                 client.newCall(req).execute().use { it.code to it.body.string() }
             } catch (e: IOException) {
-                throw IOException("Couldn't reach the ${PC}, so $name wasn't attached.", e)
+                throw IOException("Couldn't reach the computer, so $name wasn't attached.", e)
             }
-            if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} didn't take $name (HTTP $code)."))
+            if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer didn't take $name (HTTP $code)."))
             val j = JSONObject(text)
             tmp.renameTo(File(dir, Uri.decode(j.getString("url").removePrefix("/files/"))))
             return j

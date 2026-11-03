@@ -16,37 +16,37 @@ Delegated, with the brief "easiest to maintain, highest quality and performance,
 
 ## Users
 
-The owner runs a Pixel Fold and a Mac and is at home with AI tools. Setup is done end to end by his agent following this repo, and he only taps where Android or Tailscale insist on a human.
+The owner runs a Pixel Fold and a Mac or Windows computer and is at home with AI tools. Setup is done end to end by his agent following this repo, and he only taps where Android or Tailscale insist on a human.
 
 He wants to text his computer from his phone, from anywhere, have it do real work (files, web, apps, email, whatever the agent can reach) and watch exactly what it is doing as it does it.
 
 ## Product Purpose
 
-The Lab is his computer's agent in his pocket. He sends a request, the agent on his Mac works on it, and the phone shows the reply along with a live log of every step that opens to the exact command, file or URL. It works if it becomes the way he uses his computer when he isn't at it, and he never loses a message or wonders whether it is running.
+The Lab is his computer's agent in his pocket. He sends a request, the agent on his computer works on it, and the phone shows the reply along with a live log of every step that opens to the exact command, file or URL. It works if it becomes the way he uses his computer when he isn't at it, and he never loses a message or wonders whether it is running.
 
 ## Positioning
 
 Dispatch and Remote Control already reach a desktop from the phone. The Lab differs in three ways a neighbour could not truthfully copy.
 
 - It is his own app, and its look is his to change by asking ("make it darker", "put the stop button bottom left"). His agent edits the app's interface and it updates live.
-- It survives the computer restarting, sleeping or losing its sign-in. Messages queue on the phone, the server on the Mac comes back by itself, and an interrupted task gets reported rather than silently repeated.
+- It survives the computer restarting, sleeping or losing its sign-in. Messages queue on the phone, the server on the computer comes back by itself, and an interrupted task gets reported rather than silently repeated.
 - It shows what the agent is doing as it happens, with a readable title per step and the raw detail one tap away.
 
 ## Operating Context
 
 - He uses it anywhere, one-handed on the folded outer screen or with both hands on the unfolded inner one.
-- The Mac sits at home, plugged in, and the server keeps it awake while it's on power.
+- The computer sits at home, plugged in, and the server keeps it awake while it's on power.
 - Requests range from quick questions to tasks that run for many minutes with the phone in his pocket, so notifications carry replies and approval requests.
 - Auto mode decides most actions. When it can't, the phone asks him using the agent's own sentence ("wants to delete 40 files in Downloads") with Allow and Deny.
 
 ## Capabilities and Constraints
 
-- There is one long-running conversation, kept by the agent on the Mac and compacted automatically.
+- There is one long-running conversation, kept by the agent on the computer and compacted automatically.
 - Each step arrives as a title (shell steps carry their own description) with the tool name and its exact input behind it.
 - A running task can be stopped at any moment and the conversation carries on.
 - The agent can send files and images, which open on the phone.
-- The in-app interface is plain HTML, CSS and JS in a folder on his Mac that his agent edits. A rescue screen built into the APK can't be edited, so a broken design can always be undone from the phone.
-- The app opens instantly with the last history it saw when the Mac is off, and holds outgoing messages until it is back.
+- The in-app interface is plain HTML, CSS and JS in a folder on his computer that his agent edits. A rescue screen built into the APK can't be edited, so a broken design can always be undone from the phone.
+- The app opens instantly with the last history it saw when the computer is off, and holds outgoing messages until it is back.
 - It is still undecided whether streaming reply text as it's written is worth the extra traffic.
 
 ## Brand Commitments

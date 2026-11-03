@@ -13,11 +13,11 @@ import { cleanEnv, type Card, type Lab } from './lab.ts';
 type Msg = { id?: number | string; method?: string; params?: any; result?: any; error?: { message: string; code?: number } };
 
 const NOTICE: Record<string, string> = {
-  unauthorized: 'The Mac is signed out of ChatGPT. Open the Codex app on the Mac and sign in, then send your message again.',
+  unauthorized: 'The computer is signed out of ChatGPT. Open the Codex app on the computer and sign in, then send your message again.',
   usageLimitExceeded: 'The ChatGPT plan hit its usage limit for now. It will carry on once the limit resets.',
 };
 
-// The npm package's launcher picks the right native binary for this Mac.
+// The npm package's launcher picks the right native binary for this computer.
 export const codexBin = () => process.env.LAB_CODEX_BIN ?? createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js');
 
 // `bash -lc '...'` is how every command arrives, which is noise on a phone.
@@ -149,7 +149,7 @@ export class Codex {
       cwd: this.home,
       approvalPolicy: 'on-request',
       // Only his Lab folder is writable and the network is off, so anything
-      // touching the rest of the Mac or the internet comes back as an
+      // touching the rest of the computer or the internet comes back as an
       // approval request, where the server's guard decides it. Instructions
       // alone don't hold an agent to a rule, the sandbox does.
       sandboxPolicy: { type: 'workspaceWrite', writableRoots: [this.home], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
@@ -183,7 +183,7 @@ export class Codex {
       this.write({ method: 'initialized', params: {} });
       const acct = await this.call('account/read', { refreshToken: false });
       if (!acct.account && acct.requiresOpenaiAuth) throw new Error(NOTICE.unauthorized);
-      const instructions = `${this.prompt} Your notes about him are in memory.md in the working directory, so read it at the start of a conversation and keep it up to date. You can only write inside the working directory and the network is off, so for anything else run the command with sandbox_permissions set to require_escalated and a justification he'll understand in one short sentence. The Mac decides those, and asks him on his phone first for anything that deletes, sends, installs or changes settings. A declined request means no, so don't look for a way around it.`;
+      const instructions = `${this.prompt} Your notes about him are in memory.md in the working directory, so read it at the start of a conversation and keep it up to date. You can only write inside the working directory and the network is off, so for anything else run the command with sandbox_permissions set to require_escalated and a justification he'll understand in one short sentence. The computer decides those, and asks him on his phone first for anything that deletes, sends, installs or changes settings. A declined request means no, so don't look for a way around it.`;
       const opts = { cwd: this.home, approvalPolicy: 'on-request', sandbox: 'workspace-write', developerInstructions: instructions, ...(this.model ? { model: this.model } : {}) };
       const saved = this.lab.state.threadId;
       const r = saved

@@ -1,5 +1,5 @@
 // A QR code for a short link, so the phone can pair by pointing its camera
-// at the Mac. Byte mode, medium error correction, versions 1 to 20 (up to
+// at the computer. Byte mode, medium error correction, versions 1 to 20 (up to
 // 666 bytes), after Project Nayuki's reference encoder.
 
 const EC = [0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26];

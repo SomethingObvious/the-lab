@@ -348,14 +348,14 @@ Colours, type and corners above are custom properties in `app/app.css`. Colours 
 
 **Creative North Star: "The Loudest Native App on the Phone"**
 
-The page is Pixel's own Material 3 Expressive with the volume turned all the way up. It should feel like it shipped with the Fold, and still carry more colour and more shape than anything else on the phone. A tall violet header owns the top, pastel containers carry the Mac's numbers and the shortcuts, and every state the agent can be in has its own shape and colour, so he can read the screen from arm's length without reading a word.
+The page is Pixel's own Material 3 Expressive with the volume turned all the way up. It should feel like it shipped with the Fold, and still carry more colour and more shape than anything else on the phone. A tall violet header owns the top, pastel containers carry the computer's numbers and the shortcuts, and every state the agent can be in has its own shape and colour, so he can read the screen from arm's length without reading a word.
 
-It's a working tool he uses all day, one-handed on the outer screen. Density is moderate: big type and big targets, but no decorative space. Colour always means something. Violet is him and the app, green is work going on, amber is waiting on him, red is broken or stopping, and the four pastels are the Mac's figures and his shortcuts. The grey chat with one blue accent is the thing this refuses.
+It's a working tool he uses all day, one-handed on the outer screen. Density is moderate: big type and big targets, but no decorative space. Colour always means something. Violet is him and the app, green is work going on, amber is waiting on him, red is broken or stopping, and the four pastels are the computer's figures and his shortcuts. The grey chat with one blue accent is the thing this refuses.
 
-Motion is springy and short, and it's tied to state. Shapes morph when the state behind them changes, corners tighten under a finger, and nothing loops unless the Mac is actually busy or waiting on him.
+Motion is springy and short, and it's tied to state. Shapes morph when the state behind them changes, corners tighten under a finger, and nothing loops unless the computer is actually busy or waiting on him.
 
 **Key Characteristics:**
-- Violet header block with The Lab in heavy, wide Roboto Flex, the Mac's name under it, and a row of pastel widgets he picks himself
+- Violet header block with The Lab in heavy, wide Roboto Flex, the computer's name under it, and a row of pastel widgets he picks himself
 - Tonal cards with 28 px corners, no borders, depth from tone rather than shadow
 - One morphing shape library where each shape names a state
 - Fat pill composer with colour-cycled shortcut chips riding on top
@@ -370,10 +370,10 @@ Saturated violet and four fixed pastels on a cool lilac paper, with green, amber
 - **Header Violet** (`head`): the header block only. `head-deep` is its sunken layer for the search field and the expanded Mac details.
 - **Lab Violet** (`primary`): his own messages, the send button, Allow, the primary sheet action and the notice button. It means "you" or "go".
 - **Violet Container** (`primary-c`, text `on-primary-c`): quieter violet for the split button under his message, attached file chips, notices, the current request in the side list and text selection.
-- **Link Violet** (`link`): links, text buttons, list markers, the "From you" and "From the Mac" tags.
+- **Link Violet** (`link`): links, text buttons, list markers, the "From you" and "From the computer" tags.
 
 ### Secondary
-- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header widgets (each widget picks one as its tone), the marks on the welcome card, cycle across the shortcut chips in that order with lilac fourth, and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every widget colour while the Mac is offline. A widget can also take `deep`, which is `head-deep` with `on-head`.
+- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header widgets (each widget picks one as its tone), the marks on the welcome card, cycle across the shortcut chips in that order with lilac fourth, and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every widget colour while the computer is offline. A widget can also take `deep`, which is `head-deep` with `on-head`.
 
 ### Tertiary
 - **Work Green** (`work`, container `work-c`): the live run card and the working loaders.
@@ -401,7 +401,7 @@ Saturated violet and four fixed pastels on a cool lilac paper, with green, amber
 **Body Font:** Roboto Flex (with Roboto, system-ui)
 **Label/Mono Font:** Roboto Mono (with ui-monospace, Menlo, Consolas)
 
-**Character:** One variable family pushed hard. Display and titles run heavy and wide (weights up to 860, width up to 116%), body stays near regular, and Roboto Mono is only for what the Mac literally ran.
+**Character:** One variable family pushed hard. Display and titles run heavy and wide (weights up to 860, width up to 116%), body stays near regular, and Roboto Mono is only for what the computer literally ran.
 
 Both fonts are local `.woff2` files in `app/fonts/`. Roboto Flex is loaded with its full weight (100 to 1000) and width (25% to 151%) axes, so set `font-weight` and `font-stretch` freely within those.
 
@@ -414,7 +414,7 @@ Both fonts are local `.woff2` files in `app/fonts/`. Roboto Flex is loaded with 
 - **Body Large** (450, 16 px, 1.45): messages, replies, steps, the message field. This is the root size.
 - **Body Medium** (450, 14 px): run summaries, notices, the snackbar, answered lines.
 - **Body Small** (550, 12 px): file sizes and photo captions.
-- **Label Large, Medium, Small** (650, 14, 12 and 11 px): buttons and chips, the Mac's name under the title, times and day dividers, a widget's second line. Every size is multiplied by `--ts`, which the Text Size setting sets (1, 1.15 or 1.3).
+- **Label Large, Medium, Small** (650, 14, 12 and 11 px): buttons and chips, the computer's name under the title, times and day dividers, a widget's second line. Every size is multiplied by `--ts`, which the Text Size setting sets (1, 1.15 or 1.3).
 - **Code** (Roboto Mono 400, 13 px, 1.5 to 1.55): raw commands, the approval's detail, error lines, code in replies.
 
 ### Named Rules
@@ -476,7 +476,7 @@ Depth is tonal. Cards are flat fills one or two steps off the page (`surface`, `
 Two kinds of shape. Rounded rectangles do the containing, and a small library of soft polar shapes does the signalling.
 
 ### Corners
-Everything is rounded, nothing is square. Pills take half their height (20 px at 40 high, 24 at 48, 26 at 52, 28 at 56). Cards and bubbles use 28 px, the approval card and sheet 32 px, the header's bottom edge, the tray and the toolbar 36 px. Message bubbles keep one 8 px tail corner: bottom right for his, top left for the Mac's replies and photos. Grouped lists (search results, the file list, the shortcut editor) round only the group's outer corners to 24 or 28 px and keep 8 px between items. Connected button pairs (Deny and Allow, Review and Stop, the split button) round their outer ends fully and their inner ends to 6 or 10 px.
+Everything is rounded, nothing is square. Pills take half their height (20 px at 40 high, 24 at 48, 26 at 52, 28 at 56). Cards and bubbles use 28 px, the approval card and sheet 32 px, the header's bottom edge, the tray and the toolbar 36 px. Message bubbles keep one 8 px tail corner: bottom right for his, top left for the computer's replies and photos. Grouped lists (search results, the file list, the shortcut editor) round only the group's outer corners to 24 or 28 px and keep 8 px between items. Connected button pairs (Deny and Allow, Review and Stop, the split button) round their outer ends fully and their inner ends to 6 or 10 px.
 
 ### State Shapes
 Each shape is the same 96 point outline (`--sh-circle`, `--sh-cookie` and so on, generated at the top of `app.js`), so any one can morph into any other with a transition on `d`. Each shape means a state, wherever it appears.
@@ -487,7 +487,7 @@ Each shape is the same 96 point outline (`--sh-circle`, `--sh-cookie` and so on,
 - **Flower** (8 petals): the default file icon.
 - **Circle**: stopped, a plain finished step's dot, and the send button with nothing to send.
 - **Pentagon**: working, held still, under reduced motion. Also one of the file icon shapes.
-- While the Mac is working, the toolbar loader springs to the next of burst, cookie, pentagon and clover every 2 s as it spins. That cycle means working and nothing else. The working marks in the list and the steps hold a pentagon and spin, so only one shape is ever changing at a time.
+- While the computer is working, the toolbar loader springs to the next of burst, cookie, pentagon and clover every 2 s as it spins. That cycle means working and nothing else. The working marks in the list and the steps hold a pentagon and spin, so only one shape is ever changing at a time.
 
 File icons cycle flower, cookie, pentagon and clover down the Files list just for variety, which is the one place a shape is decoration.
 
@@ -536,14 +536,14 @@ Tactile and chunky. Every one is a pill that squares up under the finger.
 - **Focus:** an inset 2 px `focus` ring, no outline.
 
 ### Navigation
-There are no tabs. The header holds the title with the Mac's name and state under it, Search (folded only), Files and Photos, a chevron that hides or shows the widgets, and More, which opens a sheet of six rows: Settings, Memory, Schedules, Always Allowed, Check My Setup and Rename This Mac. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Unfolded, the left column lists every request with its state mark, and the current one is a `primary-c` pill.
+There are no tabs. The header holds the title with the computer's name and state under it, Search (folded only), Files and Photos, a chevron that hides or shows the widgets, and More, which opens a sheet of six rows: Settings, Memory, Schedules, Always Allowed, Check My Setup and Rename This Computer. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Unfolded, the left column lists every request with its state mark, and the current one is a `primary-c` pill.
 
 ### Header and Widgets
-The violet block with The Lab, the Mac's name and its state under it in Label Large (`Paul's Mac · Online`), and a grid of widgets. The default three are Connection (pink, Online with how long it's been up), Battery (sun, pink at 20% or lower on battery) and Storage (mint, wide, with a used meter). He can add, remove, resize and reorder them in Settings, or by long-pressing one. Each is a widget in the `WIDGETS` list in `app.js`.
+The violet block with The Lab, the computer's name and its state under it in Label Large (`Paul's Laptop · Online`), and a grid of widgets. The default three are Connection (pink, Online with how long it's been up), Battery (sun, pink at 20% or lower on battery) and Storage (mint, wide, with a used meter). He can add, remove, resize and reorder them in Settings, or by long-pressing one. Each is a widget in the `WIDGETS` list in `app.js`.
 - **Sizes:** small takes one of four columns, wide two, long the whole row and big two columns by two rows, the way home screen widgets do. Rows are at least 60 px and grow with their text.
 - **Shape:** a pill (24 px corners) at wide and long, 28 px at small, 36 px at big. Corners tighten to 14 px under a finger.
 - **Inside:** the value in heavy narrow type with an optional icon, a label line under it, a detail line at long and big, and a 6 px meter in the tile's own ink on wide and up.
-- **Hidden:** the chevron hides the widgets, leaving the title row with the Mac's name. The choice is saved in settings.
+- **Hidden:** the chevron hides the widgets, leaving the title row with the computer's name. The choice is saved in settings.
 
 A widget without a tap of its own opens a `head-deep` details panel with every reading, a Rename text button on the name row, Edit the Top Bar and Hide Details.
 
@@ -577,7 +577,7 @@ A `reply` with `silent` (a quiet schedule that found nothing) draws as the run's
 Every link in a reply shows its real host in `dim` next to it, as `(example.com)`, unless the link's own words already name it. A bare address is a link that reads as itself.
 
 ### While You Were Away
-After 10 minutes or more away, a `surface` card with a 2 px `primary-c` ring opens the log above the newest runs. It sums up what ran while he was gone, in plain rows on `surface-1`: anything sent off the Mac and anything that didn't finish in `fail-c`, deletes, installs and requests that weren't answered in time in `ask-c`, and changed files in the plain fill. A line under the rows says whether there's a snapshot to go back to. Show Me jumps to the first run it covers, Got It hides it, and sending anything hides it too.
+After 10 minutes or more away, a `surface` card with a 2 px `primary-c` ring opens the log above the newest runs. It sums up what ran while he was gone, in plain rows on `surface-1`: anything sent off the computer and anything that didn't finish in `fail-c`, deletes, installs and requests that weren't answered in time in `ask-c`, and changed files in the plain fill. A line under the rows says whether there's a snapshot to go back to. Show Me jumps to the first run it covers, Got It hides it, and sending anything hides it too.
 
 ### More Sheets
 Each row in More is a 64 px `surface-1` row with a 44 px `primary-c` icon disc, a Title Medium name and a `dim` line under it, grouped with 8 px corners inside and 24 px on the outside.

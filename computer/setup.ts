@@ -1,4 +1,4 @@
-// Setup steps for the agent on the owner's Mac. SETUP.md says when to run
+// Setup steps for the agent on the owner's computer. SETUP.md says when to run
 // each one. Every step can be run again safely.
 //
 //   node setup.ts check        what is done and what is left, as JSON
@@ -10,7 +10,7 @@
 //   node setup.ts relay        put up the relay on Cloudflare, or --url to use one that's already up
 //   node setup.ts tailscale    HTTPS address for the phone through tailscale serve, if he has Tailscale
 //   node setup.ts phone        build the app, install it over USB and pair it
-//   node setup.ts pair         open a QR code on the Mac that pairs the phone again
+//   node setup.ts pair         open a QR code on the computer that pairs the phone again
 //   node setup.ts bundle       build the app as an .aab for Play Console internal testing
 import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -159,8 +159,8 @@ function workspace() {
   config();
 }
 
-// The template is written for a Mac. Each copy keeps only the blocks for its
-// own system, and on Windows it names the PC and the Recycle Bin.
+// The template is written for both systems. Each copy keeps only the blocks for its
+// own system, and on Windows it names the Recycle Bin.
 function fit(file: string) {
   if (!/\.(md|js|html|json|css)$/.test(file)) return;
   const other = WIN ? 'mac' : 'windows';
@@ -359,7 +359,7 @@ function adbDevice(adb: string): string {
   const out = run(adb, ['devices']).out.split('\n').slice(1).map((l) => l.trim().split(/\s+/)).filter((p) => p.length >= 2);
   const wanted = flag('serial');
   const ready = out.filter(([s, state]) => state === 'device' && (!wanted || s === wanted));
-  if (out.some(([, state]) => state === 'unauthorized')) fail('The phone is plugged in but hasn\'t allowed this Mac yet. Unlock it and tap Allow on the "Allow USB debugging?" prompt (tick Always allow), then run this again.');
+  if (out.some(([, state]) => state === 'unauthorized')) fail('The phone is plugged in but hasn\'t allowed this computer yet. Unlock it and tap Allow on the "Allow USB debugging?" prompt (tick Always allow), then run this again.');
   if (ready.length === 0) fail('No phone found over USB. Plug it in with a data cable, unlock it, and check Developer options > USB debugging is on.');
   if (ready.length > 1) fail(`More than one device is connected (${ready.map((r) => r[0]).join(', ')}). Pass --serial to pick one.`);
   return ready[0][0];
@@ -382,7 +382,7 @@ async function phone() {
   say('Building the app');
   const gradlew = join(project, WIN ? 'gradlew.bat' : 'gradlew');
   if (!WIN) chmodSync(gradlew, 0o755);
-  const build = spawnSync(gradlew, ['assembleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`, `-Plab.computer=${words('Mac')}`],
+  const build = spawnSync(gradlew, ['assembleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`],
     { cwd: project, env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk }, stdio: 'inherit', shell: WIN });
   if (build.status !== 0) fail('The app build failed. The Gradle output above says why.');
   const apk = join(project, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk');
@@ -390,7 +390,7 @@ async function phone() {
   say('Installing on the phone');
   let inst = run(adb, ['-s', serial, 'install', '-r', apk]);
   if (!inst.ok && /INSTALL_FAILED_UPDATE_INCOMPATIBLE/.test(inst.out)) {
-    // Signed with a different key (a rebuilt Mac, or a test build), so it has to go and come back.
+    // Signed with a different key (a rebuilt computer, or a test build), so it has to go and come back.
     run(adb, ['-s', serial, 'uninstall', PKG]);
     inst = run(adb, ['-s', serial, 'install', apk]);
   }
@@ -400,7 +400,7 @@ async function phone() {
   // here, or every cold start runs in the interpreter for the first few days.
   sh('cmd', 'package', 'compile', '-m', 'speed', '-f', PKG);
   sh('pm', 'grant', PKG, 'android.permission.POST_NOTIFICATIONS');
-  // Keeps the link to the Mac alive through Doze.
+  // Keeps the link to the computer alive through Doze.
   sh('dumpsys', 'deviceidle', 'whitelist', `+${PKG}`);
   const { token } = config();
   // Every value here is base64url, an address or a comma list, so none of
@@ -410,11 +410,11 @@ async function phone() {
   const pair = sh('am', 'broadcast', '-n', `${PKG}/.PairReceiver`, ...extras, ...(url ? ['--es', 'url', url] : []), '--es', 'token', token);
   if (!/result=0/.test(pair.out)) fail(`Pairing didn't take: ${pair.out}`);
   sh('am', 'start', '-n', `${PKG}/.MainActivity`);
-  say(relayUrl ? 'The app is installed, paired and open on the phone. It reaches this Mac straight over Wi-Fi at home and through the relay everywhere else.'
-    : 'The app is installed, paired and open on the phone. Without a relay it only reaches this Mac on the same Wi-Fi, so run `node setup.ts relay` next.');
+  say(relayUrl ? 'The app is installed, paired and open on the phone. It reaches this computer straight over Wi-Fi at home and through the relay everywhere else.'
+    : 'The app is installed, paired and open on the phone. Without a relay it only reaches this computer on the same Wi-Fi, so run `node setup.ts relay` next.');
 }
 
-// Keeps Tailscale's VPN on at all times on the phone, so The Lab can always reach the Mac.
+// Keeps Tailscale's VPN on at all times on the phone, so The Lab can always reach the computer.
 async function phoneVpn() {
   const javaHome = await jdk();
   const sdk = await androidSdk(javaHome);
@@ -444,16 +444,16 @@ async function check() {
   say(JSON.stringify(status, null, 2));
 }
 
-// Opens a page on the Mac with a QR code. Scanned with the phone's camera
+// Opens a page on the computer with a QR code. Scanned with the phone's camera
 // while Tailscale is on, it pairs The Lab again without the cable.
 async function pair() {
   const { port, token } = config();
   if (!(await health())) fail('The server is not running. Run `node setup.ts computer` first.');
-  if (!config().relay && !existsSync(join(LAB, 'url'))) fail('Run `node setup.ts relay` first, so the code can point at this Mac.');
+  if (!config().relay && !existsSync(join(LAB, 'url'))) fail('Run `node setup.ts relay` first, so the code can point at this computer.');
   const link = `http://127.0.0.1:${port}/pair?t=${encodeURIComponent(token)}&next=/pair-phone`;
   if (MAC) run('open', [link]);
   else if (WIN) run('explorer.exe', [link]);
-  else say(`Open this on the Mac: ${link}`);
+  else say(`Open this on the computer: ${link}`);
   say(config().relay ? 'The pairing code is open in the browser. On the phone, point the camera at the code, open the link it finds and tap Open The Lab. It works once and lasts 10 minutes.'
     : 'The pairing code is open in the browser. On the phone, turn Tailscale on, then point the camera at the code and tap the link. It works once and lasts 10 minutes.');
 }
@@ -468,7 +468,7 @@ async function bundle() {
   writeFileSync(join(project, 'local.properties'), `sdk.dir=${sdk.replace(/\\/g, '/')}\n`);
   const gradlew = join(project, WIN ? 'gradlew.bat' : 'gradlew');
   if (!WIN) chmodSync(gradlew, 0o755);
-  const build = spawnSync(gradlew, ['bundleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`, `-Plab.computer=${words('Mac')}`, `-Plab.versionCode=${Math.floor(Date.now() / 60000)}`],
+  const build = spawnSync(gradlew, ['bundleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`, `-Plab.versionCode=${Math.floor(Date.now() / 60000)}`],
     { cwd: project, env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk }, stdio: 'inherit', shell: WIN });
   if (build.status !== 0) fail('The bundle build failed. The Gradle output above says why.');
   say(join(project, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab'));

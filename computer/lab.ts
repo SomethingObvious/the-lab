@@ -21,7 +21,7 @@ export type Attached = { name: string; url: string; size: number; type: string }
 
 const KEEP = 5000;
 // Kinds that notify on the phone, which skip the notification while he's
-// using The Lab on the Mac itself.
+// using The Lab on the computer itself.
 const LOUD = new Set(['reply', 'file', 'ask', 'notice']);
 // Events whose words the server wrote, not the agent or him.
 const OURS = new Set(['ask', 'blocked', 'notice']);
@@ -34,7 +34,7 @@ export class Store {
   private next = 1;
   private fd: number;
   private listeners = new Set<Listener>();
-  // Whether he's at the Mac with The Lab open, set by the server.
+  // Whether he's at the computer with The Lab open, set by the server.
   atMac: () => boolean = () => false;
 
   constructor(file: string) {
@@ -99,11 +99,11 @@ class Channel implements AsyncIterable<SDKUserMessage> {
 }
 
 const NOTICE: Record<string, string> = {
-  authentication_failed: 'The Lab on the Mac is signed out of Claude. Open the Claude app on the Mac and ask it to sign The Lab back in, then send your message again.',
-  billing_error: 'The Claude plan on the Mac has a billing problem. Check the account, then send your message again.',
+  authentication_failed: 'The Lab on the computer is signed out of Claude. Open the Claude app on the computer and ask it to sign The Lab back in, then send your message again.',
+  billing_error: 'The Claude plan on the computer has a billing problem. Check the account, then send your message again.',
   rate_limit: 'The Claude plan hit its usage limit for now. It will carry on once the limit resets.',
-  account_on_hold: 'The Claude account on the Mac is on hold.',
-  verification_required: 'The Claude account on the Mac needs to be verified. Open Claude on the Mac to finish it.',
+  account_on_hold: 'The Claude account on the computer is on hold.',
+  verification_required: 'The Claude account on the computer needs to be verified. Open Claude on the computer to finish it.',
 };
 
 // How long an Allow card waits. Long enough to find the phone, short enough
@@ -122,9 +122,9 @@ const WELCOME = {
   kind: 'notice',
   first: true,
   title: 'Before You Start',
-  text: 'The Lab works while your Mac is awake, asks before it deletes, sends or installs anything, and puts what it deletes in the Trash.',
+  text: 'The Lab works while your computer is awake, asks before it deletes, sends or installs anything, and puts what it deletes in the Trash.',
   points: [
-    { icon: 'bolt', text: 'It works while your Mac is awake. A closed lid or a flat battery pauses it.' },
+    { icon: 'bolt', text: 'It works while your computer is awake. A closed lid or a flat battery pauses it.' },
     { icon: 'shield', text: 'It asks you here before it deletes, sends or installs anything.' },
     { icon: 'trash', text: 'What it deletes goes to the Trash, so you can get it back.' },
     { icon: 'check', text: 'It can get things wrong, so check anything that matters.' },
@@ -205,7 +205,7 @@ export class Lab {
       this.store.add({ kind: 'done', ok: false, stopped: false, ms: 0 });
       this.store.add({
         kind: 'notice',
-        text: `The server on the Mac restarted partway through "${clip(this.state.open.text, 120)}". Nothing was redone.`,
+        text: `The server on the computer restarted partway through "${clip(this.state.open.text, 120)}". Nothing was redone.`,
         action: { label: 'Carry On', send: 'Carry on with what you were doing before the restart. Check what already got done first.' },
       });
       this.state.open = null;
@@ -313,7 +313,7 @@ export class Lab {
         console.error('snapshot:', e.message);
         if (this.snapFailed) return;
         this.snapFailed = true;
-        this.store.add({ kind: 'notice', text: `The Mac couldn't take a Time Machine snapshot (${clip(String(e.message), 120)}), so the only undo for now is the Trash. Turning on Time Machine in System Settings usually fixes it.` });
+        this.store.add({ kind: 'notice', text: `The computer couldn't take a Time Machine snapshot (${clip(String(e.message), 120)}), so the only undo for now is the Trash. Turning on Time Machine in System Settings usually fixes it.` });
       },
     ).finally(() => { this.snapping = null; });
     await this.snapping;
@@ -328,8 +328,8 @@ export class Lab {
     if (j.undo === 'trash') facts.push('You can get it back from the Trash.');
     else if (j.undo === 'yes') facts.push('This can be undone.');
     else if (j.undo === 'no') facts.push("This can't be undone.");
-    if (j.leaves) facts.push(`This sends something off the Mac${j.touches[0] ? `, to ${j.touches[0]}` : ''}.`);
-    else if (j.effect !== 'send') facts.push('Nothing leaves the Mac.');
+    if (j.leaves) facts.push(`This sends something off the computer${j.touches[0] ? `, to ${j.touches[0]}` : ''}.`);
+    else if (j.effect !== 'send') facts.push('Nothing leaves the computer.');
     if (j.secret) facts.push('It reads a saved password or key.');
     if (j.unsure) facts.push("Exactly which files isn't known until it runs.");
     const plain = j.plain || title(tool, input);
@@ -378,7 +378,7 @@ export class Lab {
     }
     if (j.rm) {
       this.hushed.add(ref);
-      return decide('deny', words(`On this Mac files are deleted by moving them to the Trash, so he can get them back. Run ${this.trashCmd} with every path in one command instead. List what you'll delete first if it's more than a handful.`));
+      return decide('deny', words(`On this computer files are deleted by moving them to the Trash, so he can get them back. Run ${this.trashCmd} with every path in one command instead. List what you'll delete first if it's more than a handful.`));
     }
     const mem = this.memoryGate(tool, args);
     if (mem) { this.hushed.add(ref); return decide('deny', mem); }
@@ -634,11 +634,11 @@ export class Lab {
     // and its message is written for the agent, not for him.
     const title = this.titles.get(ref) ?? 'that step';
     if (/denied by the Claude Code auto mode classifier/.test(text)) {
-      this.store.add({ kind: 'blocked', ref, tool: '', title, text: 'The Mac\'s own safety check stopped this. If you meant it, say so and it will try again.' });
+      this.store.add({ kind: 'blocked', ref, tool: '', title, text: 'The computer\'s own safety check stopped this. If you meant it, say so and it will try again.' });
       return this.refused(title);
     }
     if (/^Auto mode could not evaluate this action/.test(text)) {
-      return void this.store.add({ kind: 'blocked', ref, tool: '', title, label: 'Held back', text: 'The Mac\'s safety check couldn\'t run just then. It usually works again in a minute.' });
+      return void this.store.add({ kind: 'blocked', ref, tool: '', title, label: 'Held back', text: 'The computer\'s safety check couldn\'t run just then. It usually works again in a minute.' });
     }
     this.store.add({ kind: 'failed', ref, text });
   }
@@ -792,7 +792,7 @@ export class Lab {
     if (!Array.isArray(files) || files.length > 20) throw new Error('A message can carry up to 20 files.');
     return files.map((f: any) => {
       const p = typeof f?.url === 'string' && f.url.startsWith('/files/') ? this.fileFor(decodeURIComponent(f.url.slice(7))) : null;
-      if (!p) throw new Error(`${JSON.stringify(f?.url)} isn't a file uploaded to this Mac.`);
+      if (!p) throw new Error(`${JSON.stringify(f?.url)} isn't a file uploaded to this computer.`);
       return { name: clip(String(f.name ?? basename(p)), 120), url: f.url, size: statSync(p).size, type: clip(String(f.type ?? 'application/octet-stream'), 100) };
     });
   }
@@ -803,4 +803,4 @@ export class Lab {
   }
 }
 
-const PROMPT = (trash: string) => words(`You are talking to the owner of this Mac through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app. Delete files with ${trash} PATH..., which moves them to the Trash, never with rm. Write web addresses out in full rather than hiding them behind link text.`);
+const PROMPT = (trash: string) => words(`You are talking to the owner of this computer through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app. Delete files with ${trash} PATH..., which moves them to the Trash, never with rm. Write web addresses out in full rather than hiding them behind link text.`);

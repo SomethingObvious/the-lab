@@ -116,7 +116,7 @@ async function serve() {
   };
   sweep();
   setInterval(sweep, 60_000).unref();
-  // A change to app/ that can't run stays on the Mac. The agent hears why,
+  // A change to app/ that can't run stays on the computer. The agent hears why,
   // and he hears about it once the turn is over.
   let told = '';
   const HELD = 'Your last change to app/ was held back';
@@ -149,7 +149,7 @@ async function serve() {
     if (macNow) lab.store.live(macNow);
   }, 60_000).unref();
 
-  // While The Lab is open and in front on the Mac and he's using it, the
+  // While The Lab is open and in front on the computer and he's using it, the
   // phone doesn't buzz for what he can already see.
   let atMacUntil = 0;
   lab.store.atMac = () => Date.now() < atMacUntil;
@@ -236,7 +236,7 @@ async function serve() {
       const after = next(m.item, now);
       lab.store.add({
         kind: 'notice',
-        text: `"${m.item.label}" didn't run at ${when}, because the Mac was asleep, off or busy. ${after ? `It runs next ${after.toDateString() === now.toDateString() ? 'today' : 'on ' + after.toLocaleDateString([], { weekday: 'long' })} at ${after.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : "It won't run again."}`,
+        text: `"${m.item.label}" didn't run at ${when}, because the computer was asleep, off or busy. ${after ? `It runs next ${after.toDateString() === now.toDateString() ? 'today' : 'on ' + after.toLocaleDateString([], { weekday: 'long' })} at ${after.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : "It won't run again."}`,
         action: { label: 'Run It Now', send: m.item.text },
       });
     }
@@ -353,22 +353,22 @@ async function serve() {
   // What the Check Setup button reports, in his words.
   const check = async () => {
     const { claudeSignedIn, codexSignedIn, tailscaleState } = await import('./checks.ts');
-    const out: { ok: boolean; title: string; detail?: string }[] = [{ ok: true, title: `The Lab ${pkg.version} is running on the Mac` }];
+    const out: { ok: boolean; title: string; detail?: string }[] = [{ ok: true, title: `The Lab ${pkg.version} is running on the computer` }];
     const signed = engine === 'codex' ? codexSignedIn() : claudeSignedIn().loggedIn;
     out.push(signed ? { ok: true, title: `Signed in to ${engine === 'codex' ? 'ChatGPT' : 'Claude'}` }
-      : { ok: false, title: `Signed out of ${engine === 'codex' ? 'ChatGPT' : 'Claude'}`, detail: `Open the ${engine === 'codex' ? 'Codex' : 'Claude'} app on the Mac and ask it to sign The Lab back in.` });
+      : { ok: false, title: `Signed out of ${engine === 'codex' ? 'ChatGPT' : 'Claude'}`, detail: `Open the ${engine === 'codex' ? 'Codex' : 'Claude'} app on the computer and ask it to sign The Lab back in.` });
     const t = tunnel.state;
-    if (t.relay === 'connected') out.push({ ok: true, title: 'Connected to the relay, so the phone can reach the Mac from anywhere' });
-    else if (t.relay === 'off') out.push({ ok: false, title: 'No relay is set up', detail: existsSync(urlFile) ? 'The phone reaches the Mac on the same Wi-Fi or through Tailscale. Ask the agent on the Mac to set up the relay so it works everywhere.' : 'The phone only reaches the Mac on the same Wi-Fi. Ask the agent on the Mac to set up the relay so it works everywhere.' });
-    else out.push({ ok: false, title: "Can't reach the relay", detail: `The phone can still reach the Mac on the same Wi-Fi. The relay link is ${t.relay}.` });
-    out.push(t.lan === 'on' ? { ok: true, title: 'Listening on the local network' } : { ok: false, title: "Not listening on the local network", detail: `The phone can't reach the Mac directly on the same Wi-Fi (${t.lan}).` });
+    if (t.relay === 'connected') out.push({ ok: true, title: 'Connected to the relay, so the phone can reach the computer from anywhere' });
+    else if (t.relay === 'off') out.push({ ok: false, title: 'No relay is set up', detail: existsSync(urlFile) ? 'The phone reaches the computer on the same Wi-Fi or through Tailscale. Ask the agent on the computer to set up the relay so it works everywhere.' : 'The phone only reaches the computer on the same Wi-Fi. Ask the agent on the computer to set up the relay so it works everywhere.' });
+    else out.push({ ok: false, title: "Can't reach the relay", detail: `The phone can still reach the computer on the same Wi-Fi. The relay link is ${t.relay}.` });
+    out.push(t.lan === 'on' ? { ok: true, title: 'Listening on the local network' } : { ok: false, title: "Not listening on the local network", detail: `The phone can't reach the computer directly on the same Wi-Fi (${t.lan}).` });
     if (existsSync(urlFile)) {
       const ts = tailscaleState();
-      out.push(ts.installed && 'running' in ts && ts.running ? { ok: true, title: 'Tailscale is running on the Mac' } : { ok: false, title: 'Tailscale is off on the Mac', detail: 'The relay and the local network still work. Open Tailscale and sign in to use it too.' });
+      out.push(ts.installed && 'running' in ts && ts.running ? { ok: true, title: 'Tailscale is running on the computer' } : { ok: false, title: 'Tailscale is off on the computer', detail: 'The relay and the local network still work. Open Tailscale and sign in to use it too.' });
     }
     const m = await mac().catch(() => null);
-    if (m?.battery && !m.battery.charging) out.push({ ok: false, title: `The Mac is on battery (${m.battery.percent}%)`, detail: 'It will go to sleep when idle. Plug it in to keep The Lab going.' });
-    if (m && m.disk.free < 5e9) out.push({ ok: false, title: 'The Mac is nearly out of space', detail: 'Ask the agent what is taking up room.' });
+    if (m?.battery && !m.battery.charging) out.push({ ok: false, title: `The computer is on battery (${m.battery.percent}%)`, detail: 'It will go to sleep when idle. Plug it in to keep The Lab going.' });
+    if (m && m.disk.free < 5e9) out.push({ ok: false, title: 'The computer is nearly out of space', detail: 'Ask the agent what is taking up room.' });
     if (process.platform === 'darwin') out.push(lab.snapshotAt ? { ok: true, title: 'Time Machine snapshots are working' } : { ok: false, title: 'No Time Machine snapshot yet', detail: 'One is taken before each task. If this stays, turn on Time Machine in System Settings.' });
     const mem = lab.memory();
     if (mem.chars > mem.cap * 0.8) out.push({ ok: false, title: 'Memory is nearly full', detail: 'Open Memory and remove what is no longer true.' });
@@ -384,11 +384,11 @@ async function serve() {
         // Scanned from the QR code on the phone, inside Tailscale.
         const c = url.searchParams.get('c');
         if (c !== null) {
-          if (!spend(c, 'scan')) return html(res, 410, 'Pairing Link Used', '<h1>That Code Has Expired</h1><p>Each code works once, for 10 minutes. Ask the agent on the Mac for a new one.</p>');
+          if (!spend(c, 'scan')) return html(res, 410, 'Pairing Link Used', '<h1>That Code Has Expired</h1><p>Each code works once, for 10 minutes. Ask the agent on the computer for a new one.</p>');
           const base = existsSync(urlFile) ? readFileSync(urlFile, 'utf8').trim() : `https://${req.headers.host}`;
           const claim = code('claim', 120_000);
           const intent = `intent://pair?u=${encodeURIComponent(base)}&c=${claim}#Intent;scheme=thelab;package=com.somethingobvious.thelab;end`;
-          return html(res, 200, 'Pair The Lab', `<h1>Pair This Phone With the Mac</h1><p>Tap the button to open The Lab and finish pairing.</p><p><a class="btn" href="${intent}">Open The Lab</a></p>`);
+          return html(res, 200, 'Pair The Lab', `<h1>Pair This Phone With Your Computer</h1><p>Tap the button to open The Lab and finish pairing.</p><p><a class="btn" href="${intent}">Open The Lab</a></p>`);
         }
         const pv = Buffer.from(url.searchParams.get('p') ?? '');
         if (pv.length) {
@@ -404,14 +404,14 @@ async function serve() {
       }
       if (path === '/pair/claim' && req.method === 'POST') {
         const { code: c } = await body(req);
-        if (typeof c !== 'string' || !spend(c, 'claim')) return json(res, 410, { error: 'That pairing code has expired. Scan a new one on the Mac.' });
+        if (typeof c !== 'string' || !spend(c, 'claim')) return json(res, 410, { error: 'That pairing code has expired. Scan a new one on the computer.' });
         if (login(req)) { lab.state.login = login(req); lab.save(); }
         return json(res, 200, { token });
       }
       if (!authed(req) && !previewing(req, path)) return json(res, 401, { error: req.method === 'GET' ? 'Not paired with this computer.' : 'The preview only looks. Send from the phone instead.' });
 
       if (req.method === 'GET' && path === '/pair-phone') {
-        if (!relay && !existsSync(urlFile)) return html(res, 409, 'Pair a Phone', '<h1>There Is No Relay Yet</h1><p>Pair the phone over its USB cable instead, or ask the agent on the Mac to set up the relay first.</p>');
+        if (!relay && !existsSync(urlFile)) return html(res, 409, 'Pair a Phone', '<h1>There Is No Relay Yet</h1><p>Pair the phone over its USB cable instead, or ask the agent on the computer to set up the relay first.</p>');
         const { qrSvg } = await import('./qr.ts');
         const link = relay ? pairLink(code('claim', 10 * 60_000)) : `${readFileSync(urlFile, 'utf8').trim()}/pair?c=${code('scan', 10 * 60_000)}`;
         const img = `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString('base64')}`;
@@ -518,7 +518,7 @@ async function serve() {
       if (req.method === 'POST' && path === '/name') {
         const { name } = await body(req);
         if (typeof name !== 'string' || name.trim().length > 40) return json(res, 400, { error: 'A name has to be 40 characters or fewer.' });
-        // A blank name goes back to the one the Mac calls itself.
+        // A blank name goes back to the one the computer calls itself.
         setConfig({ name: name.trim() || undefined });
         macNow = await mac().catch(() => macNow);
         if (macNow) lab.store.live(macNow);
@@ -542,7 +542,7 @@ async function serve() {
         return res.end(bridge);
       }
       // The desktop view of the same app, for checking a design change on
-      // the Mac itself.
+      // the computer itself.
       if (req.method === 'GET') {
         const p = resolve(appDir, '.' + (path === '/' ? '/index.html' : path));
         if (!p.startsWith(appDir + sep) || !existsSync(p) || !statSync(p).isFile()) return json(res, 404, { error: `No such file: ${path}` });

@@ -23,7 +23,7 @@ import org.json.JSONObject
 import java.time.Instant
 import java.util.UUID
 
-// Keeps the process, and so the stream from the Mac, alive while the app is
+// Keeps the process, and so the stream from the computer, alive while the app is
 // in the background. Its notification doubles as the live status line.
 class LinkService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
@@ -76,11 +76,11 @@ object Notifier {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannels(listOf(
             NotificationChannel("status", "Connection", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Shows whether the ${PC} is reachable and what it's working on"
+                description = "Shows whether the computer is reachable and what it's working on"
                 setShowBadge(false)
             },
             NotificationChannel("replies", "Replies", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Replies and files from the ${PC}"
+                description = "Replies and files from the computer"
             },
             NotificationChannel("asks", "Approvals", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "When the agent needs your go-ahead"
@@ -154,10 +154,10 @@ object Notifier {
                 .setWhen(runCatching { Instant.parse(d.optString("at")).toEpochMilli() }.getOrDefault(0)).setShowWhen(true)
         } else {
             val title = when (link.optString("state")) {
-                "online" -> "Connected to the ${PC}"
-                "connecting" -> "Reaching the ${PC}"
+                "online" -> "Connected to the computer"
+                "connecting" -> "Reaching the computer"
                 "unpaired" -> "Not paired"
-                else -> "Can't reach the ${PC}"
+                else -> "Can't reach the computer"
             }
             b.setContentTitle(title).setShowWhen(false)
             if (link.optString("state") != "online") b.setContentText(link.optString("detail"))
@@ -188,16 +188,16 @@ object Notifier {
             recent.addLast(Triple(text, at, kind == "you"))
             while (recent.size > 6) recent.removeFirst()
         }
-        // Someone at the Mac with The Lab in front already sees it there.
+        // Someone at the computer with The Lab in front already sees it there.
         if (Hub.foreground || e.optBoolean("onMac")) return
         val b = when (kind) {
             "reply", "file" -> {
-                val mac = Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your ${PC}").setKey("mac").build()
+                val mac = Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer").setKey("mac").build()
                 val me = Person.Builder().setName("You").setKey("me").build()
                 conversation(context, mac)
                 val style = Notification.MessagingStyle(me)
                 for ((text, time, mine) in recent) style.addMessage(text, time, if (mine) null else mac)
-                val input = RemoteInput.Builder(AnswerReceiver.TEXT).setLabel("Message your ${PC}").build()
+                val input = RemoteInput.Builder(AnswerReceiver.TEXT).setLabel("Message your computer").build()
                 val reply = PendingIntent.getBroadcast(
                     context, 20, Intent(context, AnswerReceiver::class.java).setAction(AnswerReceiver.REPLY),
                     PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -220,7 +220,7 @@ object Notifier {
                     .setContentText(lines.firstOrNull() ?: e.optString("detail"))
                     .setStyle(Notification.BigTextStyle().bigText(text))
                     .setCategory(Notification.CATEGORY_REMINDER)
-                    // Allowing runs something on his Mac, so it shouldn't work from a locked phone.
+                    // Allowing runs something on his computer, so it shouldn't work from a locked phone.
                     .addAction(Notification.Action.Builder(null, "Deny", action(context, AnswerReceiver.DENY, ref, code + 1)).setAuthenticationRequired(true).build())
                     .addAction(Notification.Action.Builder(null, "Allow", action(context, AnswerReceiver.ALLOW, ref, code)).setAuthenticationRequired(true).build())
                     .also { nm.notify(code, it.setSmallIcon(R.drawable.ic_status).setColor(VIOLET).setContentIntent(open(context)).setAutoCancel(true).build()) }
@@ -248,18 +248,18 @@ object Notifier {
     private fun conversation(context: Context, mac: Person) {
         val open = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_MAIN)
         val info = ShortcutInfo.Builder(context, "mac")
-            .setShortLabel(mac.name ?: "Your ${PC}")
+            .setShortLabel(mac.name ?: "Your computer")
             .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
             .setPerson(mac)
             .setLongLived(true)
             .setIntent(open)
-            // Puts the Mac in the share sheet's top row.
+            // Puts the computer in the share sheet's top row.
             .setCategories(setOf(SHARE_CATEGORY))
             .build()
         runCatching { context.getSystemService(ShortcutManager::class.java).pushDynamicShortcut(info) }
     }
 
-    fun shareTarget(context: Context) = conversation(context, Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your ${PC}").setKey("mac").build())
+    fun shareTarget(context: Context) = conversation(context, Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer").setKey("mac").build())
     const val SHARE_CATEGORY = "com.somethingobvious.thelab.category.SHARE"
 
 
@@ -268,7 +268,7 @@ object Notifier {
         context.getSystemService(NotificationManager::class.java).notify(code, Notification.Builder(context, "asks")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("Your answer didn't go through")
-            .setContentText("Couldn't reach the ${PC}. Open The Lab to answer.")
+            .setContentText("Couldn't reach the computer. Open The Lab to answer.")
             .setContentIntent(open(context)).setAutoCancel(true)
             .build())
     }
@@ -276,7 +276,7 @@ object Notifier {
     fun stopFailed(context: Context) {
         context.getSystemService(NotificationManager::class.java).notify(STOP_ID, Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
-            .setContentTitle("Couldn't reach the ${PC} to stop it")
+            .setContentTitle("Couldn't reach the computer to stop it")
             .setContentText("It's probably still working. Open The Lab to try again.")
             .setContentIntent(open(context)).setAutoCancel(true)
             .build())

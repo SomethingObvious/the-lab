@@ -22,13 +22,13 @@ Escape everything that came from outside with `esc()` before putting it in HTML,
 
 ## What Has to Keep Working
 
-These have to stay visible and working whatever the look: the message box, Stop while you're working, Allow and Deny on every request along with where it came from and what it does, the connection state when the Mac can't be reached, messages still waiting to send, Put Things Back, and the More menu (Settings, Memory, Schedules, Always Allowed and Check My Setup). The page still calls `lab.ready()` once it has drawn, has no internet (everything it loads is in `app/`), pads with the `--lab-inset-*` variables, and works folded (about 410 pixels wide), unfolded (about 850), with large text, and in light and dark.
+These have to stay visible and working whatever the look: the message box, Stop while you're working, Allow and Deny on every request along with where it came from and what it does, the connection state when the computer can't be reached, messages still waiting to send, Put Things Back, and the More menu (Settings, Memory, Schedules, Always Allowed and Check My Setup). The page still calls `lab.ready()` once it has drawn, has no internet (everything it loads is in `app/`), pads with the `--lab-inset-*` variables, and works folded (about 410 pixels wide), unfolded (about 850), with large text, and in light and dark.
 
 ## The Safety Nets
 
 They're there so a mistake costs him a minute instead of the app, so leave them in place.
 
-- A change where a script or JSON file doesn't parse, or `index.html` is missing, stays on this Mac. The phone keeps the last version that worked, and you're told what's wrong right after the edit. Fix it in the same turn.
+- A change where a script or JSON file doesn't parse, or `index.html` is missing, stays on this computer. The phone keeps the last version that worked, and you're told what's wrong right after the edit. Fix it in the same turn.
 - Each part of the page is drawn inside `guard(where, fn)`. A part that throws is left out (a message that can't be drawn shows as a short red line) and reported, so one bad widget or setting can't take the rest down. Wrap anything new that could throw the same way, and don't take `guard` out of the drawing code.
 - Errors on the phone come back to you at the top of his next message, and are logged in `~/.thelab/app-errors.log`.
 - If the page doesn't call `lab.ready()` within 8 seconds, the phone shows its safe screen and the server puts the version before your change back by itself. He'll see a notice saying so, and you'll hear what failed.

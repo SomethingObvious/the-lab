@@ -51,7 +51,7 @@
 <header>
   <h1>The Lab</h1>
   <p class="why" id="why">Safe screen</p>
-  <div class="link" id="link"><span class="dot"></span><span id="linkText">Reaching the Mac</span></div>
+  <div class="link" id="link"><span class="dot"></span><span id="linkText">Reaching the computer</span></div>
 </header>
 <div class="actions">
   <button type="button" id="design" class="primary" hidden>Back to My Design</button>
@@ -63,15 +63,11 @@
 <ol id="log"><li class="empty">Nothing here yet.</li></ol>
 <p class="sr" id="sr" role="status"></p>
 <form id="form">
-  <textarea id="text" rows="1" placeholder="Message the Mac" aria-label="Message the Mac"></textarea>
+  <textarea id="text" rows="1" placeholder="Message the computer" aria-label="Message the computer"></textarea>
   <button type="submit" class="primary">Send</button>
 </form>
 <script>
   const $ = (id) => document.getElementById(id);
-  // The app passes what it calls the computer, Mac or PC.
-  const PC = new URLSearchParams(location.search).get('pc') || 'Mac';
-  $('linkText').textContent = `Reaching the ${PC}`;
-  $('text').placeholder = $('text').ariaLabel = `Message the ${PC}`;
   const log = $('log');
   const items = [];
   let outbox = [];
@@ -105,7 +101,7 @@
     if (text && e.at && Date.now() - Date.parse(e.at) < 30000) $('sr').textContent = text;
   };
   lab.subscribe((e) => {
-    if (e.kind === 'reply') say(e, `The ${PC} replied: ${e.text.slice(0, 160)}`);
+    if (e.kind === 'reply') say(e, `The computer replied: ${e.text.slice(0, 160)}`);
     if (e.kind === 'ask') say(e, `Needs your OK: ${e.title}`);
     if (e.kind === 'failed') say(e, `A step failed: ${e.text}`);
     switch (e.kind) {
@@ -118,7 +114,7 @@
         $('link').className = `link ${e.state}`;
         $('linkText').textContent = e.detail || e.state;
         $('fix').hidden = e.fix !== 'tailscale';
-        if (e.state === 'unpaired') $('why').textContent = `This phone is not paired with a ${PC} yet.`;
+        if (e.state === 'unpaired') $('why').textContent = `This phone is not paired with a computer yet.`;
         return;
       }
       case 'status': $('stop').hidden = !e.working; return;

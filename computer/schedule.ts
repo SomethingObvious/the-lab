@@ -7,7 +7,7 @@ export type Schedule = { id: string; label: string; text: string; time: string; 
 const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-// A Mac that slept through the time still runs it if it wakes within this.
+// A computer that slept through the time still runs it if it wakes within this.
 export const GRACE = 30 * 60_000;
 
 // The agent writes schedules.json by hand, so bad entries are dropped rather
@@ -55,7 +55,7 @@ export function due(items: Schedule[], now: Date, ran: Set<string>): { item: Sch
 }
 
 // Runs that fell between `since` and now but are too late to send, because
-// the Mac was asleep or the server was off. Capped at a day, so a Mac that
+// the computer was asleep or the server was off. Capped at a day, so a computer that
 // was off for a week gets one note per entry rather than seven.
 export function missed(items: Schedule[], since: Date, now: Date, ran: Set<string>): { item: Schedule; key: string; at: Date }[] {
   const from = new Date(Math.max(since.getTime(), now.getTime() - 24 * 3600_000));

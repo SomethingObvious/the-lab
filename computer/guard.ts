@@ -1,6 +1,6 @@
 // Reads a tool call, never the agent's words about it, and says what it would
 // do in plain terms: what it touches, whether it can be undone, whether
-// anything leaves the Mac, and whether it is never allowed at all. Every Allow
+// anything leaves the computer, and whether it is never allowed at all. Every Allow
 // card on the phone and every rule the server enforces is built from this, so
 // an agent talked round by a web page or an email can't explain its way past it.
 import { basename, dirname, posix, win32 } from 'node:path';
@@ -15,7 +15,7 @@ export type Judgement = {
   touches: string[];
   // 'trash' and 'yes' can be put back by him, 'no' can't, null isn't known.
   undo: 'yes' | 'trash' | 'no' | null;
-  // Something goes off this Mac.
+  // Something goes off this computer.
   leaves: boolean;
   // Set when the call is never allowed, whatever anyone says, with why.
   block?: string;
@@ -59,12 +59,14 @@ const PS_READ = /^(get|test|select|measure|format|write|resolve|convertto|conver
 const PS_SYSTEM = /^(set|enable|disable|install|uninstall|register|unregister|stop|restart|start|remove|clear|reset|update|add|grant|revoke|suspend|resume|publish|initialize|format|mount|dismount|repair|lock|unlock|block|unblock|protect|unprotect|invoke|new|rename|move|copy|export|send)-/;
 // Names a command is known by, whatever folder or extension it was run from.
 export const nameOf = (argv0: string) => { const raw = (argv0.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.(exe|cmd|bat|com)$/, ''); return ALIAS[raw] ?? raw; };
-// Folders whose whole contents going would wreck the Mac or his files.
+// Folders whose whole contents going would wreck the computer or his files.
 const BIG = ['Desktop', 'Documents', 'Downloads', 'Pictures', 'Movies', 'Music', 'Library', 'Applications', 'Public', 'Sites', 'Videos', 'AppData', 'OneDrive'];
 const SYSTEM_DIRS = ['/', '/System', '/Library', '/Applications', '/Users', '/usr', '/bin', '/sbin', '/private', '/etc', '/var', '/opt', '/cores', '/Volumes', '/tmp', 'C:', 'C:/Windows', 'C:/Program Files', 'C:/Program Files (x86)', 'C:/ProgramData', 'C:/Users'];
 const SECRET = /(\/\.ssh\/(id_|.*key)|\/\.aws\/credentials|\/\.netrc|\/\.gnupg\/|\/Keychains\/|\/\.config\/gh\/hosts|\/\.docker\/config\.json|\/Cookies(\.binarycookies)?$|\/Login Data$|\/\.npmrc$|\/\.pypirc$|\.pem$|\.p12$|\/\.env(\.\w+)?$|\/Microsoft\/(Credentials|Protect|Vault)\/)/i;
-// Both NTFS and the Mac's APFS ignore case, so every match here does too.
-const TOKEN = /config\.json$|password$|\.jks$/i;
+// Both NTFS and the computer's APFS ignore case, so every match here does too.
+// tunnel.json holds the keys that would let it pose as this computer to the
+// phone, which then hands over the token.
+const TOKEN = /config\.json$|tunnel\.json$|password$|\.jks$/i;
 
 type Seg = { argv: string[]; out: string[]; pipedIn: boolean; ps?: boolean };
 
@@ -189,7 +191,7 @@ function protectedPath(p: string, w: Where): string | null {
   if (within(p, w.lab)) return 'The Lab keeps its own code, token and history there, and the agent may never change them.';
   const configs = [`${w.user}/.claude`, `${w.home}/.claude`, `${w.user}/.codex`, `${w.home}/.codex`];
   if (configs.some((d) => within(p, d)) && /settings(\.local)?\.json$|config\.toml$|\/rules(\/|$)|\/hooks(\/|$)|\.claude$|\.codex$/i.test(p)) return "That's the agent's own permission settings, which it may never change.";
-  if (/com\.somethingobvious\.thelab\.plist$/i.test(p)) return "That's what starts The Lab with the Mac, and the agent may never change it.";
+  if (/com\.somethingobvious\.thelab\.plist$/i.test(p)) return "That's what starts The Lab with the computer, and the agent may never change it.";
   return null;
 }
 
@@ -324,7 +326,7 @@ function command(seg: Seg, w: Where): Judgement {
   if (['format', 'diskpart', 'clear-disk', 'format-volume', 'initialize-disk', 'remove-partition'].includes(cmd) || (cmd === 'cipher' && /\/w/i.test(line))) return never('Erase a disk', 'Erasing or repartitioning a disk is never allowed.');
   if (cmd === 'bcdedit' || (/^(set|add)-mppreference$/.test(cmd) && /-(disable|exclusion)/i.test(line)) || (cmd === 'set-executionpolicy' && /unrestricted|bypass/i.test(line))) return never('Turn off Windows security', 'Turning off Windows security is never allowed.');
   if (cmd === 'clear-recyclebin') return never('Empty the Recycle Bin', 'Emptying the Trash takes away your undo, so only you do that.', 'delete');
-  if (cmd === 'chmod' && has(argv, '-R') && rest.some((a) => wipes(expand(a, w).path, w))) return never('Change permissions on everything', 'Changing permissions across the whole Mac is never allowed.');
+  if (cmd === 'chmod' && has(argv, '-R') && rest.some((a) => wipes(expand(a, w).path, w))) return never('Change permissions on everything', 'Changing permissions across the whole computer is never allowed.');
 
   // Anything naming The Lab's own folder or the agent's settings, other
   // than reading the log.
@@ -332,7 +334,8 @@ function command(seg: Seg, w: Where): Judgement {
   const readOnly = (READ.has(cmd) || (!!seg.ps && PS_READ.test(cmd))) && !seg.out.length && !(cmd === 'sed' && has(argv, '-i'));
   const owned = named.find((p) => protectedPath(p.path, w));
   if (owned && !readOnly) return { ...never(`Change ${basename(owned.path)}`, protectedPath(owned.path, w)!, 'change'), touches: [owned.path] };
-  if (named.some((p) => within(p.path, w.lab) && TOKEN.test(p.path))) return { ...never("Read The Lab's token", 'The token that pairs your phone is never read by the agent.', 'read'), secret: true };
+  // Searching the whole folder reads the token as surely as naming it does.
+  if (named.some((p) => within(p.path, w.lab) && (TOKEN.test(p.path) || same(p.path, w.lab)))) return { ...never("Read The Lab's token", 'The token that pairs your phone is never read by the agent.', 'read'), secret: true };
   const secret = named.find((p) => SECRET.test(p.path));
 
   // Sending.
@@ -371,9 +374,9 @@ function command(seg: Seg, w: Where): Judgement {
   if ((cmd === 'aws' && /\bs3:\/\//.test(line) && /\b(cp|sync|mv)\b/.test(line)) || (cmd === 'rclone' && /^(copy|sync|move)$/.test(sub)) || (cmd === 'docker' && sub === 'push') || (cmd === 'npm' && sub === 'publish') || (cmd === 'twine' && sub === 'upload'))
     return { ...j, effect: 'send', leaves: true, undo: 'no', plain: `Upload with ${cmd} ${sub}` };
   if (cmd === 'open' && rest.some((a) => /^mailto:/.test(a))) return { ...j, effect: 'send', leaves: true, plain: 'Start an email' };
-  if (cmd === 'osascript' && /\bsend\b/i.test(line) && /mail|messages|outlook/i.test(line)) return { ...j, effect: 'send', leaves: true, undo: 'no', plain: 'Send a message from the Mac' };
+  if (cmd === 'osascript' && /\bsend\b/i.test(line) && /mail|messages|outlook/i.test(line)) return { ...j, effect: 'send', leaves: true, undo: 'no', plain: 'Send a message from the computer' };
   if (cmd === 'osascript' && /\b(delete|move\b.*\btrash)\b/i.test(line)) return { ...j, effect: 'delete', plain: 'Delete something with AppleScript' };
-  if (cmd === 'osascript' && /do shell script|keystroke|administrator privileges/i.test(line)) return { ...j, effect: 'system', plain: 'Control the Mac with AppleScript' };
+  if (cmd === 'osascript' && /do shell script|keystroke|administrator privileges/i.test(line)) return { ...j, effect: 'system', plain: 'Control the computer with AppleScript' };
 
   // Installing and settings.
   const installs = (cmd === 'brew' && /^(install|uninstall|reinstall|upgrade|remove|rm|tap|untap|services)$/.test(sub))
@@ -393,7 +396,7 @@ function command(seg: Seg, w: Where): Judgement {
   if (cmd === 'pmset' && /^-g/.test(sub)) return look('Check power settings');
   if (cmd === 'launchctl' && /^(list|print|blame|version)$/.test(sub)) return look("Check what's running");
   if (cmd === 'diskutil' && /^(list|info|apfs)$/.test(sub)) return look('Check the disks');
-  if (cmd === 'scutil' && sub === '--get') return look('Check a Mac setting');
+  if (cmd === 'scutil' && sub === '--get') return look('Check a computer setting');
   if (cmd === 'networksetup' && /^-(get|list)/.test(sub)) return look('Check network settings');
   if (cmd === 'mdutil' && sub === '-s') return look('Check Spotlight');
   if (cmd === 'security' && /^(find-.*-password|dump-keychain|export)$/.test(sub)) return { ...look('Read a saved password from the keychain'), secret: true };
@@ -405,8 +408,8 @@ function command(seg: Seg, w: Where): Judgement {
   if (sudo) return { ...j, effect: 'system', plain: `Run as administrator: ${clip(line)}` };
   if (SYSTEM.has(cmd)) {
     const plain = cmd === 'killall' || cmd === 'pkill' ? `Quit ${rest.join(', ')}` : cmd === 'kill' ? 'Stop a running program'
-      : cmd === 'launchctl' ? 'Change what starts with the Mac' : cmd === 'crontab' ? 'Schedule something to run by itself'
-      : cmd === 'pmset' || cmd === 'powercfg' ? 'Change power settings' : /^(shutdown|reboot|halt)$/.test(cmd) ? 'Restart or shut down the Mac'
+      : cmd === 'launchctl' ? 'Change what starts with the computer' : cmd === 'crontab' ? 'Schedule something to run by itself'
+      : cmd === 'pmset' || cmd === 'powercfg' ? 'Change power settings' : /^(shutdown|reboot|halt)$/.test(cmd) ? 'Restart or shut down the computer'
       : cmd === 'schtasks' ? 'Schedule something to run by itself' : cmd === 'reg' ? 'Change a Windows setting'
       : `Change a system setting (${cmd})`;
     return { ...j, effect: 'system', plain };
@@ -437,7 +440,7 @@ const BOMB = /(\w+|:)\s*\(\)\s*\{[^}]*\1\s*\|\s*\1\s*&/;
 const RANK: Effect[] = ['read', 'run', 'change', 'system', 'delete', 'send'];
 
 export function judgeShell(line: string, w: Where, ps = false): Judgement {
-  if (BOMB.test(line)) return { ...blank(), effect: 'system', plain: 'Start a fork bomb', block: 'That would lock the Mac up, so it is never allowed.' };
+  if (BOMB.test(line)) return { ...blank(), effect: 'system', plain: 'Start a fork bomb', block: 'That would lock the computer up, so it is never allowed.' };
   // A cd carries to the commands after it, so relative paths land where they will.
   let cwd = w.cwd;
   const stack: (string | undefined)[] = [];
@@ -489,7 +492,7 @@ function mcp(tool: string, input: Record<string, any>): Judgement {
   const about = subject ? ` "${clip(String(subject))}"` : '';
   if (/chrome|browser|playwright|puppeteer/i.test(server)) {
     const url = String(input.url ?? '');
-    if (/upload/i.test(name)) return { ...j, effect: 'send', leaves: true, undo: 'no', plain: 'Upload a file from the Mac to a web page' };
+    if (/upload/i.test(name)) return { ...j, effect: 'send', leaves: true, undo: 'no', plain: 'Upload a file from the computer to a web page' };
     if (url) return { ...j, effect: 'read', touches: [hostOf(url)], source: `a web page on ${hostOf(url)}`, leaves: smuggles(url), plain: smuggles(url) ? `Open ${hostOf(url)} with data in the address` : `Open ${hostOf(url)}` };
     return { ...j, effect: verb(READS) || /page|text|screenshot|tabs|console|network/i.test(name) ? 'read' : 'run', source: verb(READS) ? 'a web page' : undefined, plain: '' };
   }
@@ -517,7 +520,7 @@ export function judge(tool: string, input: Record<string, any>, w: Where): Judge
     return { ...blank(), effect: 'change', touches: [p], plain: `${tool === 'Write' ? 'Write' : 'Edit'} ${basename(p)}${within(p, w.home) ? '' : ` in ${place(p, w)}`}`, block: protectedPath(p, w) ?? undefined };
   }
   if (['Read', 'Glob', 'Grep', 'LS', 'NotebookRead'].includes(tool)) {
-    if (p && within(p, w.lab) && TOKEN.test(p)) return { ...blank(), secret: true, touches: [p], plain: "Read The Lab's token", block: 'The token that pairs your phone is never read by the agent.' };
+    if (p && within(p, w.lab) && (TOKEN.test(p) || (tool === 'Grep' && same(p, w.lab)))) return { ...blank(), secret: true, touches: [p], plain: "Read The Lab's token", block: 'The token that pairs your phone is never read by the agent.' };
     if (p && SECRET.test(p)) return { ...blank(), secret: true, touches: [p], plain: `Read ${basename(p)}, which holds a password or key` };
     return blank();
   }

@@ -144,7 +144,7 @@ button { cursor: pointer; }
   padding-inline: var(--inl) var(--inr);
 }
 
-/* The coloured header block with the Mac at a glance. It reaches under the
+/* The coloured header block with the computer at a glance. It reaches under the
    cutout and side bars, its contents don't. */
 .head {
   grid-area: head;
@@ -710,7 +710,7 @@ textarea::placeholder { color: var(--faint); }
 .app.tight .head-row { min-height: 48px; }
 @media (max-width: 719px), (max-height: 500px) {
   /* Short on room, the conversation needs it more than the stats. The banner
-     still shows when the Mac is away. */
+     still shows when the computer is away. */
   .app.tight .glance, .app.tight .glance-more { display: none; }
   .app.tight .head.compact { padding-bottom: 6px; }
 }

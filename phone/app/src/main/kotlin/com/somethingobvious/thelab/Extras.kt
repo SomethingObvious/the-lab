@@ -23,7 +23,7 @@ class ComposeTile : TileService() {
     }
 }
 
-// A home screen bar that opens straight into typing and shows what the Mac
+// A home screen bar that opens straight into typing and shows what the computer
 // is up to underneath.
 class Widget : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
@@ -39,7 +39,7 @@ class Widget : AppWidgetProvider() {
             val working = Hub.link.optString("state") == "online" && Hub.status.optBoolean("working")
             val line = when {
                 !Hub.paired -> "Not paired yet"
-                Hub.link.optString("state") != "online" -> "Can't reach the ${PC} right now"
+                Hub.link.optString("state") != "online" -> "Can't reach the computer right now"
                 working && Hub.status.optString("label") == "Waiting for you" -> "Needs your OK"
                 working -> Hub.status.optString("label").ifBlank { "Working" }
                 else -> "Ready"

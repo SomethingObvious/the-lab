@@ -1,5 +1,5 @@
 // window.lab, injected by the Android shell before any page script runs.
-// The design talks to the Mac only through this, so a design can't break the
+// The design talks to the computer only through this, so a design can't break the
 // connection, the outbox or notifications.
 (() => {
   if (window.lab || typeof labNative === 'undefined') return;
@@ -91,7 +91,7 @@
       if (key !== lastTheme) { lastTheme = key; call('theme', t); }
     }, delay);
   }
-  // Whatever the design throws goes to the Mac for the agent to fix, even
+  // Whatever the design throws goes to the computer for the agent to fix, even
   // when its own script never got as far as running.
   const reported = new Set();
   const report = (message, where) => {
@@ -124,10 +124,10 @@
     saveShortcuts: (items) => ask('saveShortcuts', { items }),
     stop: () => call('stop'),
     answer: (ref, allow, always) => call('answer', { ref, allow: !!allow, always: !!always }),
-    // Memory, schedules and always-allowed commands on the Mac. Resolves with
-    // the JSON the Mac sent, or rejects with its error in plain words.
+    // Memory, schedules and always-allowed commands on the computer. Resolves with
+    // the JSON the computer sent, or rejects with its error in plain words.
     call: (method, path, body) => ask('call', { method, path, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }).then((t) => JSON.parse(t)),
-    // The Mac's setup check with this phone's own checks added.
+    // The computer's setup check with this phone's own checks added.
     check: () => ask('check', {}).then((t) => JSON.parse(t)),
     undoDesign: () => call('undo'),
     open: (url) => call('open', { url }),

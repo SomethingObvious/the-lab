@@ -3,7 +3,7 @@
   const root = document.documentElement;
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const icon = (id) => `<svg class="ic" aria-hidden="true"><use href="#i-${id}"/></svg>`;
-  // A part that throws is skipped and reported to the Mac, so the rest of
+  // A part that throws is skipped and reported to the computer, so the rest of
   // the page keeps working and the agent hears what to fix.
   const guard = (where, fn, fallback) => {
     try { return fn(); } catch (err) { console.error(err); lab.reportError?.(err?.message || String(err), where); return fallback; }
@@ -227,8 +227,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   const fresh = (e) => booted && Date.now() - Date.parse(e.at) < 30000;
   function announce(e, t) {
     if (e.kind === 'ask') say(`Needs your OK: ${e.title}`);
-    else if (e.kind === 'reply') { const p = plain(e.text); say(`The Mac replied: ${p.length > 160 ? `${p.slice(0, 157)}...` : p}`); }
-    else if (e.kind === 'file') say(`The Mac sent ${e.name}.`);
+    else if (e.kind === 'reply') { const p = plain(e.text); say(`The computer replied: ${p.length > 160 ? `${p.slice(0, 157)}...` : p}`); }
+    else if (e.kind === 'file') say(`The computer sent ${e.name}.`);
     else if (e.kind === 'failed') say(`A step failed: ${t.steps.find((s) => s.ref === e.ref)?.title || e.text}`);
     else if (e.kind === 'done') say(e.stopped ? 'Stopped.' : e.ok ? `Done after ${took(e.ms)}.` : "That one didn't finish.");
   }
@@ -260,8 +260,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       case 'backprogress': follow(e.progress, e.edge); return;
       case 'backcancel': follow(0); return;
       case 'openFailed': toast('Nothing on this phone can open that file.', true); return;
-      case 'answerFailed': toast("Couldn't reach the Mac, so that answer didn't go through. Try again once it's back.", true); return;
-      case 'stopFailed': toast("Couldn't reach the Mac to stop it. Try again once it's back.", true); return;
+      case 'answerFailed': toast("Couldn't reach the computer, so that answer didn't go through. Try again once it's back.", true); return;
+      case 'stopFailed': toast("Couldn't reach the computer to stop it. Try again once it's back.", true); return;
       case 'you': { const t = newTurn(e, e.at); byEid.set(String(e.id), t); dirty.add(t); want.side = true; if (e.files?.length) want.files = true; schedule(); if (e.scheduled && fresh(e)) say(`Scheduled: ${e.scheduled}.`); return; }
       case 'notice': { const n = { type: 'notice', i: items.length, id: `n${e.id}`, e, at: e.at }; items.push(n); byEid.set(String(e.id), n); dirty.add(n); schedule(); if (fresh(e)) say(e.text); return; }
       // The snapshot taken as a task starts is the one Put Things Back uses.
@@ -329,7 +329,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   const brokenEl = () => {
     const d = document.createElement('div');
     d.className = 'notice broken';
-    d.textContent = "This part couldn't be shown, and the Mac has been told about it.";
+    d.textContent = "This part couldn't be shown, and the computer has been told about it.";
     return d;
   };
   const safeEl = (item) => guard('drawing the conversation', () => elOf(item), null) || brokenEl();
@@ -531,7 +531,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const list = (xs) => xs.slice(0, 3).map((x) => esc(x.title)).join(', ') + (xs.length > 3 ? `, and ${xs.length - 3} more` : '');
     const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
     const rows = [
-      sent.length && ['send', 'Sent off the Mac', list(sent)],
+      sent.length && ['send', 'Sent off the computer', list(sent)],
       gone.length && ['delete', 'Deleted or moved to the Trash', list(gone)],
       system.length && ['system', 'Installed or changed settings', list(system)],
       changed.length && ['change', 'Changed files', list(changed)],
@@ -574,7 +574,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   const used = (x) => x && x.total ? 1 - x.free / x.total : null;
   const WIDGETS = {
     status: {
-      name: 'Connection', about: 'Online, and how long the Mac has been up', sizes: ['small', 'wide'],
+      name: 'Connection', about: 'Online, and how long the computer has been up', sizes: ['small', 'wide'],
       tone: () => (link.state === 'online' ? 'pink' : 'off'),
       data: () => link.state === 'unpaired' ? { value: 'Not paired', label: '' }
         : link.state === 'connecting' ? { value: 'Connecting', label: mac ? `up ${upFor()}` : '' }
@@ -596,16 +596,16 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       data: () => mac?.memory && { value: `${bytes(mac.memory.free)} free`, short: bytes(mac.memory.free), label: `of ${bytes(mac.memory.total)} memory`, meter: used(mac.memory) },
     },
     cpu: {
-      name: 'Processor', about: 'How busy the Mac is', sizes: ['small', 'wide', 'long'], tone: () => 'deep',
+      name: 'Processor', about: 'How busy the computer is', sizes: ['small', 'wide', 'long'], tone: () => 'deep',
       data: () => mac && typeof mac.cpu === 'number' && { value: `${mac.cpu}%`, label: 'Processor', meter: mac.cpu / 100 },
     },
     name: {
-      name: 'Name', about: 'What this phone calls the Mac', sizes: ['wide', 'long', 'small'], tone: () => 'lilac',
+      name: 'Name', about: 'What this phone calls the computer', sizes: ['wide', 'long', 'small'], tone: () => 'lilac',
       data: () => mac && { value: mac.name, label: mac.os === 'windows' ? 'Windows PC' : mac.os === 'linux' ? 'Linux' : 'Mac' },
       tap: () => openRename(),
     },
     uptime: {
-      name: 'Up Time', about: 'How long since the Mac last restarted', sizes: ['small', 'wide'], tone: () => 'deep',
+      name: 'Up Time', about: 'How long since the computer last restarted', sizes: ['small', 'wide'], tone: () => 'deep',
       data: () => mac && { value: upFor(), label: 'Up for', icon: 'clock' },
     },
     task: {
@@ -640,7 +640,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     },
   };
 
-  // What to call the model he picked, from the last list the Mac sent.
+  // What to call the model he picked, from the last list the computer sent.
   let modelList = null;
   const modelName = () => {
     const id = settings.model;
@@ -820,22 +820,22 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const show = link.state === 'offline' || link.state === 'unpaired';
     const stick = nearBottom();
     $('banner').hidden = !show;
-    $('banner-text').textContent = link.detail || "Can't reach the Mac.";
+    $('banner-text').textContent = link.detail || "Can't reach the computer.";
     $('banner-fix').hidden = link.fix !== 'tailscale';
     $('banner-retry').hidden = link.state === 'unpaired';
     if (stick && booted) toBottom();
     if (booted && was !== link.state) {
-      if (show) say(link.detail || "Can't reach the Mac.");
-      else if (link.state === 'online' && (was === 'offline' || was === 'unpaired')) say('Connected to the Mac again.');
+      if (show) say(link.detail || "Can't reach the computer.");
+      else if (link.state === 'online' && (was === 'offline' || was === 'unpaired')) say('Connected to the computer again.');
     }
   }
 
   // More: memory, schedules, always-allowed commands and the setup check
 
-  const call = (method, path, body) => lab.call ? lab.call(method, path, body) : Promise.reject(new Error('This version of the app is too old for that. Update it from the Mac.'));
-  const offline = (err) => `<p class="hint">${esc(err?.message && !/fetch|network/i.test(err.message) ? err.message : "Couldn't reach the Mac. Try again once it's back.")}</p>`;
+  const call = (method, path, body) => lab.call ? lab.call(method, path, body) : Promise.reject(new Error('This version of the app is too old for that. Update it from the computer.'));
+  const offline = (err) => `<p class="hint">${esc(err?.message && !/fetch|network/i.test(err.message) ? err.message : "Couldn't reach the computer. Try again once it's back.")}</p>`;
   const closeBtn = '<button type="button" data-close>Close</button>';
-  // Settings live in settings.json on the Mac, so the agent can change them
+  // Settings live in settings.json on the computer, so the agent can change them
   // too. Every row in the Settings sheet is an entry here.
   //   key      the field in settings.json, for switch and choice rows
   //   type     switch, choice (options are [value, label]) or open (runs open())
@@ -844,7 +844,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   const redrawTurns = () => { for (const it of items) if (it.type === 'turn' && it.el) dirty.add(it); want.side = true; schedule(); };
   const SETTINGS = [
     { head: 'Top Bar' },
-    { key: 'topBarHidden', type: 'switch', label: 'Hide the Top Bar', hint: 'Keeps the title and the name of the Mac' },
+    { key: 'topBarHidden', type: 'switch', label: 'Hide the Top Bar', hint: 'Keeps the title and the name of the computer' },
     { type: 'open', label: 'Edit the Top Bar', hint: 'Add, remove, resize and reorder widgets', open: () => openTopBar() },
     { head: 'Look' },
     { key: 'theme', type: 'choice', label: 'Theme', options: [['system', 'Like the Phone'], ['light', 'Light'], ['dark', 'Dark']] },
@@ -858,7 +858,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     { key: 'digest', type: 'switch', label: 'Sum Up What Happened While You Were Away' },
     { head: 'Agent' },
     { type: 'open', label: 'Model', hint: () => modelName(), open: () => openModels() },
-    { type: 'open', label: 'Rename This Mac', hint: () => mac?.name || '', open: () => openRename() },
+    { type: 'open', label: 'Rename This Computer', hint: () => mac?.name || '', open: () => openRename() },
     { type: 'open', label: 'Show the Welcome Card Again', open: async () => {
       closeSheet();
       await saveSettings({ welcomeDone: false });
@@ -886,7 +886,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       const now = settings;
       settings = was;
       settingsChanged(now);
-      toast(err.message || "Couldn't reach the Mac, so that setting wasn't saved.", true);
+      toast(err.message || "Couldn't reach the computer, so that setting wasn't saved.", true);
     }
   }
   function settingsChanged(was) {
@@ -911,7 +911,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   // The list comes from whatever provider the agent is set up with, so it's
   // asked for each time rather than written down here.
   async function openModels() {
-    openSheet('models', 'Model', '<p class="hint">Asking the Mac which models it has</p>', closeBtn);
+    openSheet('models', 'Model', '<p class="hint">Asking the computer which models it has</p>', closeBtn);
     try { modelList = await call('GET', '/models'); } catch (err) { if (sheetKind === 'models') $('sheet-body').innerHTML = offline(err); return; }
     if (sheetKind !== 'models') return;
     drawModels();
@@ -922,7 +922,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const listed = m.choices.some((c) => c.id === chosen);
     const choices = m.choices.some((c) => c.id === 'default') ? m.choices : [{ id: 'default', name: 'Default', description: 'Whatever the provider recommends' }, ...m.choices];
     refocus($('sheet-body'), () => {
-      $('sheet-body').innerHTML = `<p class="hint">These are the models ${m.engine === 'codex' ? 'Codex' : 'Claude'} on the Mac can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ''}. A change starts with your next message.</p>
+      $('sheet-body').innerHTML = `<p class="hint">These are the models ${m.engine === 'codex' ? 'Codex' : 'Claude'} on the computer can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ''}. A change starts with your next message.</p>
         <ul class="model-list" role="radiogroup" aria-label="Model">${choices.map((c) => `<li><button type="button" role="radio" class="model-row" aria-checked="${c.id === chosen}" data-model="${esc(c.id)}"><span class="radio" aria-hidden="true"></span><span><b>${esc(c.name)}</b>${c.description ? `<span>${esc(c.description)}</span>` : ''}</span></button></li>`).join('')}</ul>
         <label for="model-other">Another Model</label>
         <div class="model-other"><input id="model-other" value="${listed || chosen === 'default' ? '' : esc(chosen)}" placeholder="Its exact name" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"><button type="button" class="pill" data-modelother>Use It</button></div>
@@ -936,7 +936,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       if (sheetKind === 'models') drawModels();
       drawGlance();
       toast(`It will use ${modelName()} from your next message.`);
-    } catch (err) { toast(err.message || "Couldn't reach the Mac, so the model wasn't changed.", true); }
+    } catch (err) { toast(err.message || "Couldn't reach the computer, so the model wasn't changed.", true); }
   }
   let memo = null, plan = null, rules = null, wipeArmed = false;
   function openMenu() {
@@ -944,14 +944,14 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     openSheet('menu', 'More', `<ul class="menu-list">
       ${row('settings', 'edit', 'Settings', 'The top bar, text size, theme and model')}
       ${row('memory', 'star', 'Memory', 'What the agent remembers about you')}
-      ${row('schedules', 'clock', 'Schedules', 'Messages the Mac sends itself on a timer')}
+      ${row('schedules', 'clock', 'Schedules', 'Messages the computer sends itself on a timer')}
       ${row('allowed', 'shield', 'Always Allowed', 'Commands that run without asking')}
-      ${row('check', 'check', 'Check My Setup', 'Whether the Mac and this phone are ready')}
-      ${row('rename', 'edit', 'Rename This Mac', mac ? `It's called ${esc(mac.name)} on this phone` : 'What this phone calls it')}
+      ${row('check', 'check', 'Check My Setup', 'Whether the computer and this phone are ready')}
+      ${row('rename', 'edit', 'Rename This Computer', mac ? `It's called ${esc(mac.name)} on this phone` : 'What this phone calls it')}
     </ul>`, closeBtn);
   }
   async function load(kind, title, path, draw) {
-    openSheet(kind, title, '<p class="hint">Asking the Mac</p>', closeBtn);
+    openSheet(kind, title, '<p class="hint">Asking the computer</p>', closeBtn);
     try {
       const got = await call('GET', path);
       if (sheetKind === kind) draw(got);
@@ -972,7 +972,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     $('sheet-actions').innerHTML = '<button type="button" class="primary" data-close>Done</button>';
   }
   async function saveMemory(change, done) {
-    try { drawMemory(await call('POST', '/memory', change)); if (done) toast(done); } catch (err) { toast(err.message || "Couldn't reach the Mac, so memory wasn't changed.", true); }
+    try { drawMemory(await call('POST', '/memory', change)); if (done) toast(done); } catch (err) { toast(err.message || "Couldn't reach the computer, so memory wasn't changed.", true); }
   }
   const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
   const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -998,7 +998,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     }, () => $('sheet-title'));
   }
   async function saveSchedules(list, done) {
-    try { const r = await call('POST', '/schedules', { items: list }); if (done) toast(done); upcoming = r.items; drawGlance(); return r; } catch (err) { toast(err.message || "Couldn't reach the Mac, so the schedule wasn't changed.", true); return null; }
+    try { const r = await call('POST', '/schedules', { items: list }); if (done) toast(done); upcoming = r.items; drawGlance(); return r; } catch (err) { toast(err.message || "Couldn't reach the computer, so the schedule wasn't changed.", true); return null; }
   }
   function editSchedule(i) {
     const s = plan[i];
@@ -1018,7 +1018,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     }, () => $('sheet-title'));
   }
   async function openCheck() {
-    openSheet('check', 'Check My Setup', '<p class="hint">Checking the Mac and this phone</p>', closeBtn);
+    openSheet('check', 'Check My Setup', '<p class="hint">Checking the computer and this phone</p>', closeBtn);
     let got;
     try { got = lab.check ? await lab.check() : await call('GET', '/check'); } catch (err) { if (sheetKind === 'check') $('sheet-body').innerHTML = offline(err); return; }
     if (sheetKind !== 'check') return;
@@ -1073,7 +1073,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     restore(sheetFrom, text);
   }
   function openRename() {
-    openSheet('rename', 'Rename This Mac', `<label for="rename-to">Name</label><input id="rename-to" value="${esc(mac?.name ?? '')}" maxlength="40" autocomplete="off" enterkeyhint="done"><p class="hint">This is what the phone calls it, in the header and in notifications. Leave it blank to go back to the name the Mac gives itself.</p>`,
+    openSheet('rename', 'Rename This Computer', `<label for="rename-to">Name</label><input id="rename-to" value="${esc(mac?.name ?? '')}" maxlength="40" autocomplete="off" enterkeyhint="done"><p class="hint">This is what the phone calls it, in the header and in notifications. Leave it blank to go back to the name the computer gives itself.</p>`,
       `<button type="button" data-close>Cancel</button><button type="button" class="primary" data-savename>Save</button>`);
   }
   function openManage() {
@@ -1090,7 +1090,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   }
   async function saveList(list) {
     const ok = await lab.saveShortcuts(list);
-    if (!ok) { toast("Couldn't save the shortcuts because the Mac can't be reached. Try again once it's back.", true); return false; }
+    if (!ok) { toast("Couldn't save the shortcuts because the computer can't be reached. Try again once it's back.", true); return false; }
     return true;
   }
   $('sheet-body').addEventListener('change', (ev) => {
@@ -1180,7 +1180,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       for (const f of t.you?.files || []) if (f.name.toLowerCase().includes(needle)) out.push({ who: 'You', e: t.you, text: f.name });
       for (const o of t.out) {
         const text = o.kind === 'reply' ? o.text.replace(/\*\*|`/g, '') : `${o.name}${o.caption ? `, ${o.caption}` : ''}`;
-        if (text.toLowerCase().includes(needle)) out.push({ who: 'Mac', e: o, text });
+        if (text.toLowerCase().includes(needle)) out.push({ who: mac?.name || 'Computer', e: o, text });
       }
     }
     return out.reverse();
@@ -1201,7 +1201,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const list = hits(q);
     const none = `Nothing matches "${q.trim()}".`;
     const count = list.length > MAX_HITS ? `The newest ${MAX_HITS} of ${list.length} results` : `${list.length} result${list.length === 1 ? '' : 's'}`;
-    $('results').innerHTML = !q.trim() ? `<p class="empty-state">Search your requests, the Mac's replies and file names.</p>`
+    $('results').innerHTML = !q.trim() ? `<p class="empty-state">Search your requests, the computer's replies and file names.</p>`
       : !list.length ? `<p class="empty-state">${esc(none)}</p>`
       : `<p class="count">${count}</p><ol>${list.slice(0, MAX_HITS).map((h) => `<li><button type="button" class="hit" data-jump="${esc(h.e.id)}"><span class="hit-top"><b>${h.who}</b><span>${shortDay(h.e.at)}</span></span><span class="hit-text">${snippet(h.text, q.trim())}</span></button></li>`).join('')}</ol>`;
     clearTimeout(countTimer);
@@ -1279,15 +1279,15 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     for (const t of items) {
       if (t.type !== 'turn') continue;
       for (const f of t.you?.files || []) all.push({ ...f, at: t.you.at, who: 'You' });
-      for (const o of t.out) if (o.kind === 'file') all.push({ ...o, who: 'Mac' });
+      for (const o of t.out) if (o.kind === 'file') all.push({ ...o, who: 'computer' });
     }
     all.reverse();
     const photos = all.filter(isImage), files = all.filter((f) => !isImage(f));
     const body = $('files-body');
     refocus(body, () => {
-      body.innerHTML = !all.length && !loaded ? '' : !all.length ? `<p class="empty-state">Nothing yet. Photos and files you send to the Mac, and ones it sends you, show up here.</p>` :
-        (photos.length ? `<h3>Photos</h3><div class="grid">${photos.map((f) => `<button type="button" class="tile" data-open="${esc(f.url)}" aria-label="${esc(f.name)}, from ${f.who === 'You' ? 'you' : 'the Mac'}"><img src="${thumb(f.url, 180)}" alt="" loading="lazy" decoding="async"><span aria-hidden="true">${f.who}</span></button>`).join('')}</div>` : '')
-        + (files.length ? `<h3>Files</h3><ul class="flist">${files.map((f, i) => `<li><button type="button" class="file" data-open="${esc(f.url)}">${fileIcon(['flower', 'cookie', 'pentagon', 'clover'][i % 4])}<span><span class="fn">${esc(f.name)}</span><br><span class="fs"><span class="who-tag">${f.who === 'You' ? 'From you' : 'From the Mac'}</span> · ${bytes(f.size || 0)} · ${shortDay(f.at)}</span></span></button></li>`).join('')}</ul>` : '');
+      body.innerHTML = !all.length && !loaded ? '' : !all.length ? `<p class="empty-state">Nothing yet. Photos and files you send to the computer, and ones it sends you, show up here.</p>` :
+        (photos.length ? `<h3>Photos</h3><div class="grid">${photos.map((f) => `<button type="button" class="tile" data-open="${esc(f.url)}" aria-label="${esc(f.name)}, from ${f.who === 'You' ? 'you' : 'the computer'}"><img src="${thumb(f.url, 180)}" alt="" loading="lazy" decoding="async"><span aria-hidden="true">${f.who}</span></button>`).join('')}</div>` : '')
+        + (files.length ? `<h3>Files</h3><ul class="flist">${files.map((f, i) => `<li><button type="button" class="file" data-open="${esc(f.url)}">${fileIcon(['flower', 'cookie', 'pentagon', 'clover'][i % 4])}<span><span class="fn">${esc(f.name)}</span><br><span class="fs"><span class="who-tag">${f.who === 'You' ? 'From you' : 'From the computer'}</span> · ${bytes(f.size || 0)} · ${shortDay(f.at)}</span></span></button></li>`).join('')}</ul>` : '');
     }, () => $('close-files'));
   }
   let filesFrom = null;
@@ -1304,7 +1304,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     p.hidden = !pending.length && !uploading;
     refocus(p, () => {
       p.innerHTML = pending.map((f, i) => `<div class="att">${isImage(f) ? `<img src="${thumb(f.url, 48)}" alt="" width="48" height="48" decoding="async">` : `<span class="fi">${icon('doc')}</span>`}<span>${esc(f.name)}</span><button type="button" data-unattach="${i}" aria-label="Remove ${esc(f.name)}">${icon('close')}</button></div>`).join('')
-        + (uploading ? `<div class="att loading"><span class="loader">${loader()}</span>Sending to the Mac</div>` : '');
+        + (uploading ? `<div class="att loading"><span class="loader">${loader()}</span>Sending to the computer</div>` : '');
     }, () => p.querySelector('[data-unattach]') || text);
     canSend();
   }
@@ -1330,7 +1330,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       pending.push(...got);
       if (got.length) say(`Attached ${got.map((f) => f.name).join(', ')}.`);
     } catch (err) {
-      failed = err.message || "Couldn't send that to the Mac.";
+      failed = err.message || "Couldn't send that to the computer.";
     }
     uploading--;
     drawPending();
@@ -1474,7 +1474,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       return;
     }
     if (d.revoke) {
-      try { drawRules(await call('POST', '/allowed', { remove: Number(d.revoke) })); toast('It will ask before running that again.'); } catch (err) { toast(err.message || "Couldn't reach the Mac, so nothing changed.", true); }
+      try { drawRules(await call('POST', '/allowed', { remove: Number(d.revoke) })); toast('It will ask before running that again.'); } catch (err) { toast(err.message || "Couldn't reach the computer, so nothing changed.", true); }
       return;
     }
     if (d.checkfix) return lab.fix(d.checkfix);
@@ -1532,7 +1532,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
         const r = await call('POST', '/name', { name: $('rename-to').value });
         closeSheet();
         toast(`It's called ${r.name} now.`);
-      } catch (err) { toast(err.message || "Couldn't reach the Mac, so the name wasn't changed.", true); }
+      } catch (err) { toast(err.message || "Couldn't reach the computer, so the name wasn't changed.", true); }
       return;
     }
     if (d.savenew !== undefined) {
@@ -1618,7 +1618,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     toBottom();
   });
   addEventListener('resize', () => { measure(); fold(); fit(); if (pinned) toBottom(); });
-  // Ages in the glance go stale while the Mac is away.
+  // Ages in the glance go stale while the computer is away.
   setInterval(() => { if (link.state !== 'online' || glanceOpen) drawGlance(); }, 30000);
 
   document.fonts?.ready.then(() => { measure(); fold(); });
