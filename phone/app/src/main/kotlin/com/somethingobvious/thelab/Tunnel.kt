@@ -93,7 +93,8 @@ object Tunnel {
     private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).build()
 
     fun base(): String = synchronized(lock) {
-        val s = server ?: ServerSocket(0, 50, InetAddress.getLoopbackAddress()).also { ss ->
+        // Android's getLoopbackAddress() is ::1, and the address below is 127.0.0.1.
+        val s = server ?: ServerSocket(0, 50, InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))).also { ss ->
             server = ss
             thread(name = "tunnel", isDaemon = true) {
                 while (!ss.isClosed) {
@@ -128,7 +129,7 @@ object Tunnel {
         session?.takeIf { it.alive && it.spec === sp }?.let { return it }
         if (direct()) for (a in lan.ifEmpty { sp.lan }.take(4)) {
             try {
-                return Session.start(TcpLink(a), sp, 2000).also { session = it; route = "direct"; why = "" }
+                return Session.start(TcpLink(a), sp, 2000).also { session = it; route = "direct"; why = ""; Log.i(TAG, "tunnel: direct to $a") }
             } catch (e: IOException) {
                 Log.i(TAG, "tunnel: $a didn't answer (${e.message})")
             }
@@ -136,7 +137,7 @@ object Tunnel {
         val relay = sp.relay ?: run { why = "none"; throw IOException("no address answered and there is no relay") }
         try {
             return Session.start(WsLink("${relay.trimEnd('/').replaceFirst(Regex("^http"), "ws")}/r/${sp.room}", ws), sp, 10_000)
-                .also { session = it; route = "relay"; why = "" }
+                .also { session = it; route = "relay"; why = ""; Log.i(TAG, "tunnel: through the relay") }
         } catch (e: Away) {
             why = "away"; throw e
         } catch (e: WrongKey) {

@@ -58,7 +58,10 @@ export function lanAddresses(port: number): string[] {
   for (const list of Object.values(networkInterfaces())) for (const a of list ?? []) {
     if (a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.')) out.push(`${a.address}:${port}`);
   }
-  return out.slice(0, 6);
+  // A Tailscale address (100.64.0.0/10) only answers when the phone has
+  // Tailscale on, so the home network's address is tried before it.
+  const tailscale = (a: string) => { const [x, y] = a.split('.').map(Number); return x === 100 && y >= 64 && y < 128 ? 1 : 0; };
+  return out.sort((a, b) => tailscale(a) - tailscale(b)).slice(0, 6);
 }
 
 export const specOf = (k: Keys, relay: string | undefined, lan: string[]): Spec =>
