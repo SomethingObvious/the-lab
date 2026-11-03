@@ -38,6 +38,7 @@ class LinkService : Service() {
         running = this
         startForeground(Notifier.STATUS_ID, Notifier.status(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         Hub.start()
+        Retry.cancel(this)
         follow()
         return START_STICKY
     }
@@ -52,7 +53,7 @@ class LinkService : Service() {
 
         fun start(context: Context) {
             runCatching { context.startForegroundService(Intent(context, LinkService::class.java)) }
-                .onFailure { Log.w("Lab", "service not started from here", it) }
+                .onFailure { Log.w("Lab", "service not started from here: ${it.message}") }
         }
 
         private val main = android.os.Handler(android.os.Looper.getMainLooper())
@@ -72,10 +73,12 @@ class LinkService : Service() {
             val state = Hub.link.optString("state")
             if (state == "online") {
                 main.removeCallbacks(stepDown)
-                Retry.cancel(Hub.app)
                 if (running == null) start(Hub.app)
-            } else if (running != null && !main.hasCallbacks(stepDown)) {
-                main.postDelayed(stepDown, if (state == "unpaired") 0 else 2 * 60_000L)
+            } else if (running != null) {
+                if (!main.hasCallbacks(stepDown)) main.postDelayed(stepDown, if (state == "unpaired") 0 else 2 * 60_000L)
+            } else if (Hub.paired) {
+                // Android turned the service down, so the job keeps checking back.
+                Retry.schedule(Hub.app)
             }
         }
 
