@@ -38,6 +38,9 @@ import java.util.concurrent.TimeUnit
 // Everything that has to outlive the screen: the stream from the Mac, the
 // cached history, the outbox and the downloaded design. All state is touched
 // on the main thread only.
+// What every line the app writes calls the computer, set by the build.
+val PC: String = BuildConfig.COMPUTER
+
 object Hub {
     private const val TAG = "Lab"
     private const val KEEP = 2000
@@ -64,11 +67,11 @@ object Hub {
         private set
     var status = JSONObject().put("kind", "status").put("working", false).put("label", "")
         private set
-    // Kept across restarts so the page can show them while the Mac is away.
-    var mac: JSONObject? = null
-        private set
-    var shortcuts: JSONObject? = null
-        private set
+    // The newest event of every kind the server sends without an id, kept
+    // across restarts so the page can show them while the ${PC} is away. Any
+    // kind works, so a new one needs no change here.
+    val live = LinkedHashMap<String, JSONObject>()
+    val mac: JSONObject? get() = live["mac"]
     var foreground = false
     // The last run's end, so the status line can say Done for a while after.
     var lastDone: JSONObject? = null
@@ -106,8 +109,9 @@ object Hub {
         app = context.applicationContext
         prefs = app.getSharedPreferences("lab", Context.MODE_PRIVATE)
         loadEvents()
-        mac = prefs.getString("mac", null)?.let { runCatching { JSONObject(it) }.getOrNull() }
-        shortcuts = prefs.getString("shortcuts", null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        for ((k, v) in prefs.all) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") {
+            runCatching { JSONObject(v as String) }.getOrNull()?.let { live[it.optString("kind")] = it }
+        }
         if (outboxFile.exists()) runCatching { JSONArray(outboxFile.readText()) }.getOrNull()?.let { a -> for (i in 0 until a.length()) outbox.put(a.get(i)) }
         app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) { main.post { if (link.optString("state") != "online") reconnectNow() } }
@@ -116,7 +120,7 @@ object Hub {
                 main.post { if (link.optString("state") != "online") reconnectNow() }
             }
         })
-        if (!paired) setLink("unpaired", "This phone isn't paired with a Mac yet. Plug it into the Mac and let the agent run setup.")
+        if (!paired) setLink("unpaired", "This phone isn't paired with a ${PC} yet. Plug it into the ${PC} and let the agent run setup.")
     }
 
     // Reading and parsing 2,000 events takes long enough to drop frames, so
@@ -169,9 +173,8 @@ object Hub {
             disk.execute { eventsFile.delete() }
             lastId = 0
             designVersion = null
-            mac = null
-            shortcuts = null
-            prefs.edit().remove("mac").remove("shortcuts").apply()
+            live.clear()
+            prefs.edit().apply { for (k in prefs.all.keys) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") remove(k) }.apply()
             File(app.filesDir, "design").deleteRecursively()
         }
         Log.i(TAG, "paired with $newUrl")
@@ -195,7 +198,7 @@ object Hub {
             .header("Authorization", "Bearer $token")
             .apply { if (lastId > 0) header("Last-Event-ID", lastId.toString()) }
             .build()
-        if (link.optString("state") != "online") setLink("connecting", "Reaching the Mac")
+        if (link.optString("state") != "online") setLink("connecting", "Reaching the ${PC}")
         source = EventSources.createFactory(client).newEventSource(req, object : EventSourceListener() {
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 main.post { if (source === eventSource) onEvent(type, data) }
@@ -222,10 +225,11 @@ object Hub {
         val e = runCatching { JSONObject(data) }.getOrElse { return }
         if (type == "hello") {
             failures = 0
-            setLink("online", "Connected to the Mac")
+            setLink("online", "Connected to the ${PC}")
             e.optJSONObject("status")?.let { setStatus(it) }
             e.optJSONObject("mac")?.let { setLive(it) }
             e.optJSONArray("shortcuts")?.let { setLive(JSONObject().put("kind", "shortcuts").put("items", it)) }
+            e.optJSONArray("live")?.let { a -> for (i in 0 until a.length()) a.optJSONObject(i)?.let { setLive(it) } }
             if (e.optString("design") != designVersion) syncDesign()
             flush()
             return
@@ -233,15 +237,14 @@ object Hub {
         when (e.optString("kind")) {
             "status" -> setStatus(e)
             "design" -> if (e.optString("version") != designVersion) syncDesign()
-            "mac", "shortcuts" -> setLive(e)
-            else -> if (e.has("id")) store(e)
+            else -> if (e.has("id")) store(e) else if (e.optString("kind").isNotBlank()) setLive(e)
         }
     }
 
     private fun setLive(e: JSONObject) {
         val kind = e.optString("kind")
-        if (kind == "mac") mac = e else shortcuts = e
-        prefs.edit().putString(kind, e.toString()).apply()
+        live[kind] = e
+        prefs.edit().putString("live:$kind", e.toString()).apply()
         emit(e)
     }
 
@@ -269,12 +272,12 @@ object Hub {
         val cm = app.getSystemService(ConnectivityManager::class.java)
         val caps = cm.getNetworkCapabilities(cm.activeNetwork)
         when {
-            code == 401 -> setLink("unpaired", "The Mac doesn't recognise this phone any more. Plug it into the Mac and let the agent pair it again.")
+            code == 401 -> setLink("unpaired", "The ${PC} doesn't recognise this phone any more. Plug it into the ${PC} and let the agent pair it again.")
             caps == null -> setLink("offline", "This phone is offline.")
-            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> setLink("offline", "Tailscale is off on this phone, so it can't reach the Mac.", "tailscale")
-            code != null && code in 502..504 -> setLink("offline", "The Mac is on, but The Lab's server isn't answering. It restarts itself, so give it a minute.")
-            t is UnknownHostException -> setLink("offline", "This phone can't find the Mac on Tailscale. Check Tailscale is connected.", "tailscale")
-            else -> setLink("offline", "Can't reach the Mac. It may be asleep, switched off or offline.")
+            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> setLink("offline", "Tailscale is off on this phone, so it can't reach the ${PC}.", "tailscale")
+            code != null && code in 502..504 -> setLink("offline", "The ${PC} is on, but The Lab's server isn't answering. It restarts itself, so give it a minute.")
+            t is UnknownHostException -> setLink("offline", "This phone can't find the ${PC} on Tailscale. Check Tailscale is connected.", "tailscale")
+            else -> setLink("offline", "Can't reach the ${PC}. It may be asleep, switched off or offline.")
         }
         if (code == 401) return
         failures++
@@ -330,18 +333,18 @@ object Hub {
     // Any JSON route on the Mac, for the page's memory, schedules and setup
     // sheets. done gets the body, or null and an error in plain words.
     fun request(method: String, path: String, body: String?, done: (String?, String?) -> Unit) {
-        val base = url ?: return done(null, "This phone isn't paired with a Mac yet.")
-        if (!path.startsWith("/") || path.contains("..")) return done(null, "That isn't a route on the Mac.")
+        val base = url ?: return done(null, "This phone isn't paired with a ${PC} yet.")
+        if (!path.startsWith("/") || path.contains("..")) return done(null, "That isn't a route on the ${PC}.")
         val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
             .method(method, if (method == "GET") null else (body ?: "{}").toRequestBody(JSON_TYPE)).build()
         quick.newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { done(null, "Couldn't reach the Mac. Try again once it's back.") } }
+            override fun onFailure(call: Call, e: IOException) { main.post { done(null, "Couldn't reach the ${PC}. Try again once it's back.") } }
             override fun onResponse(call: Call, response: Response) {
                 val code = response.code
                 val text = response.use { it.body.string() }
                 main.post {
                     if (code in 200..299) done(text, null)
-                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The Mac answered $code."))
+                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} answered $code."))
                 }
             }
         })
@@ -353,19 +356,28 @@ object Hub {
         val req = Request.Builder().url("${base.trimEnd('/')}/pair/claim")
             .post(JSONObject().put("code", code).toString().toRequestBody(JSON_TYPE)).build()
         quick.newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { done("Couldn't reach the Mac. Check Tailscale is on, then scan the code again.") } }
+            override fun onFailure(call: Call, e: IOException) { main.post { done("Couldn't reach the ${PC}. Check Tailscale is on, then scan the code again.") } }
             override fun onResponse(call: Call, response: Response) {
                 val code2 = response.code
                 val text = response.use { it.body.string() }
                 main.post {
                     val token = runCatching { JSONObject(text).getString("token") }.getOrNull()
                     if (code2 == 200 && token != null) { pair(base, token); done(null) }
-                    else done(runCatching { JSONObject(text).getString("error") }.getOrDefault("The Mac turned the code down. Scan a new one."))
+                    else done(runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} turned the code down. Scan a new one."))
                 }
             }
         })
     }
     fun undoDesign(done: (Boolean) -> Unit) = post("/design/undo", JSONObject()) { done(it == 200) }
+    // Only for the version that's on the phone, so a report can't undo a newer one.
+    fun reportBroken(message: String) {
+        val v = designVersion ?: return
+        post("/app-error", JSONObject().put("message", message).put("where", "opening the app").put("version", v).put("fatal", true)) {}
+    }
+    fun reportError(message: String, where: String) {
+        val v = designVersion ?: return
+        post("/app-error", JSONObject().put("message", message).put("where", where).put("version", v)) {}
+    }
     fun saveShortcuts(items: JSONArray, done: (Boolean) -> Unit) = post("/shortcuts", JSONObject().put("items", items)) { done(it == 200) }
 
     // Blocking. Copies the pick into the file cache first, so the page can
@@ -380,7 +392,7 @@ object Hub {
             }
         } catch (_: SecurityException) {}
         if (size > 100L * 1024 * 1024) throw IOException("$name is over the 100 MB limit.")
-        val base = url ?: throw IOException("This phone isn't paired with a Mac yet.")
+        val base = url ?: throw IOException("This phone isn't paired with a ${PC} yet.")
         val type = cr.getType(uri) ?: "application/octet-stream"
         val dir = File(app.cacheDir, "files").apply { mkdirs() }
         val tmp = File.createTempFile("upload", ".part", dir)
@@ -394,9 +406,9 @@ object Hub {
             val (code, text) = try {
                 client.newCall(req).execute().use { it.code to it.body.string() }
             } catch (e: IOException) {
-                throw IOException("Couldn't reach the Mac, so $name wasn't attached.", e)
+                throw IOException("Couldn't reach the ${PC}, so $name wasn't attached.", e)
             }
-            if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The Mac didn't take $name (HTTP $code)."))
+            if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The ${PC} didn't take $name (HTTP $code)."))
             val j = JSONObject(text)
             tmp.renameTo(File(dir, Uri.decode(j.getString("url").removePrefix("/files/"))))
             return j

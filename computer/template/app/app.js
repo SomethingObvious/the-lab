@@ -3,6 +3,13 @@
   const root = document.documentElement;
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const icon = (id) => `<svg class="ic" aria-hidden="true"><use href="#i-${id}"/></svg>`;
+  // A part that throws is skipped and reported to the Mac, so the rest of
+  // the page keeps working and the agent hears what to fix.
+  const guard = (where, fn, fallback) => {
+    try { return fn(); } catch (err) { console.error(err); lab.reportError?.(err?.message || String(err), where); return fallback; }
+  };
+  const DEFAULT_SETTINGS = { topBar: [{ id: 'status', size: 'small' }, { id: 'battery', size: 'small' }, { id: 'storage', size: 'wide' }], topBarHidden: false, theme: 'system', textSize: 100, steps: 'live', times: true, enterSends: false, chips: true, digest: true, motion: 'full', model: null };
+  let settings = { ...DEFAULT_SETTINGS };
 
   // Every shape is the same 96 point polar outline, so CSS can morph any one
   // into any other by transitioning `d`.
@@ -238,6 +245,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
         return;
       }
       case 'mac': mac = e; drawGlance(); return;
+      case 'settings': { const was = settings; settings = { ...DEFAULT_SETTINGS, ...e.values }; settingsChanged(was); return; }
       case 'loaded': loaded = true; want.side = want.files = true; schedule(); return;
       case 'shortcuts': shortcuts = e.items || []; drawChips(); return;
       case 'outbox': outbox = e.items || []; drawQueue(); return;
@@ -318,10 +326,17 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     return d;
   }
 
+  const brokenEl = () => {
+    const d = document.createElement('div');
+    d.className = 'notice broken';
+    d.textContent = "This part couldn't be shown, and the Mac has been told about it.";
+    return d;
+  };
+  const safeEl = (item) => guard('drawing the conversation', () => elOf(item), null) || brokenEl();
   function draw(item) {
     dirty.delete(item);
     if (item.i < shownFrom) return;
-    const el = elOf(item);
+    const el = safeEl(item);
     if (item.el) { const old = item.el; refocus(old, () => { old.replaceWith(el); return el; }, () => el.querySelector('.bubble') || el); }
     else {
       if (needsDay(item.i)) log.insertBefore(dayEl(item), digestEl);
@@ -343,7 +358,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       const it = items[i];
       dirty.delete(it);
       if (needsDay(i)) frag.append(dayEl(it));
-      it.el = elOf(it);
+      it.el = safeEl(it);
       frag.append(it.el);
     }
     if (first.dayEl && dayKey(items[from - 1].at) === dayKey(first.at)) { first.dayEl.remove(); first.dayEl = null; }
@@ -379,8 +394,15 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
 
   function noticeEl(e) {
     const div = document.createElement('div');
-    div.className = 'notice';
     div.dataset.eid = e.id;
+    // The welcome card. Got It hides it, and Settings can bring it back.
+    if (e.points) {
+      div.className = 'welcome';
+      div.hidden = !!settings.welcomeDone;
+      div.innerHTML = `<h2>${esc(e.title || 'Before You Start')}</h2><ul>${e.points.map((p, i) => `<li class="w-${i % 5}"><span class="w-ic" aria-hidden="true">${icon(p.icon || 'check')}</span><span>${esc(p.text)}</span></li>`).join('')}</ul><button type="button" class="pill" data-welcome>Got It</button>`;
+      return div;
+    }
+    div.className = 'notice';
     div.innerHTML = `<div>${esc(e.text)}</div>${e.action ? `<button type="button" class="pill" data-send="${esc(e.action.send)}">${esc(e.action.label)}</button>` : ''}`;
     return div;
   }
@@ -388,6 +410,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   // A message sent mid-task joins the running turn, so every turn since the
   // last done belongs to the same run and ends with its done.
   const active = (t) => !t.done && t.i > settled && status.working;
+  const openByDefault = (t) => settings.steps === 'open' || (settings.steps !== 'closed' && active(t));
   const waitingAsk = (t) => t.asks.find((a) => !t.answers[a.ref]);
 
   function youEl(e, queued) {
@@ -403,14 +426,14 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     return `<div class="you${queued ? ' queued' : ''}" data-eid="${esc(e.id ?? '')}">
       ${files ? `<div class="you-files">${files}</div>` : ''}
       ${e.text ? `<button type="button" class="bubble" data-cid="${esc(e.cid)}" aria-expanded="${selected === e.cid}">${esc(e.text)}</button>` : ''}
-      <span class="meta">${meta}</span>${actions}</div>`;
+      <span class="meta${queued || e.scheduled ? '' : ' time'}">${meta}</span>${actions}</div>`;
   }
 
   function runEl(t) {
     const live = active(t);
     if (!t.steps.length && !live) return '';
     const ask = waitingAsk(t);
-    const open = t.open ?? live;
+    const open = t.open ?? openByDefault(t);
     let state, sum;
     const n = t.steps.length;
     const count = `<span class="nw">${n} step${n === 1 ? '' : 's'}</span>`;
@@ -499,7 +522,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   let digestFirst = null;
   function drawDigest(since) {
     const turns = items.filter((t) => t.type === 'turn' && t.done && Date.parse(t.done.at) > since);
-    if (!since || Date.now() - since < 10 * 60000 || !turns.length) return;
+    if (!since || Date.now() - since < 10 * 60000 || !turns.length || settings.digest === false) return;
     const of = (effect) => turns.flatMap((t) => t.steps.filter((s) => s.effect === effect));
     const sent = of('send'), gone = of('delete'), changed = of('change'), system = of('system');
     const missed = turns.flatMap((t) => t.asks.filter((a) => t.answers[a.ref]?.by === 'timeout'));
@@ -537,54 +560,172 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     if (booted) toBottom();
   }
 
-  // The header block. Built once so the shapes can morph between states.
+  // The top bar. Every widget is an entry in WIDGETS that says what to show,
+  // and one tile drawing handles every size, so adding a widget is adding an
+  // entry. `data` returns null to leave the tile out, and a widget that throws
+  // is skipped and reported instead of breaking the header.
+  //   name, about   how it's listed when he adds widgets
+  //   sizes         which of small, wide, long and big it fits, first is the default
+  //   tone          sun, mint, pink, lilac or deep (the header's own colour)
+  //   data()        { value, label, detail, meter (0 to 1), icon }
+  //   tap()         what a tap does. Without it, a tap opens the details.
+  const SIZE_NAMES = { small: 'Small', wide: 'Wide', long: 'Full Width', big: 'Big' };
+  const upFor = () => mac ? uptime(mac.uptime).split(',')[0] : '';
+  const used = (x) => x && x.total ? 1 - x.free / x.total : null;
+  const WIDGETS = {
+    status: {
+      name: 'Connection', about: 'Online, and how long the Mac has been up', sizes: ['small', 'wide'],
+      tone: () => (link.state === 'online' ? 'pink' : 'off'),
+      data: () => link.state === 'unpaired' ? { value: 'Not paired', label: '' }
+        : link.state === 'connecting' ? { value: 'Connecting', label: mac ? `up ${upFor()}` : '' }
+        : link.state !== 'online' ? { value: 'Offline', label: mac ? `seen ${ago(mac.at)}` : '' }
+        : { value: 'Online', label: mac ? `up ${upFor()}` : '', detail: mac?.name },
+    },
+    battery: {
+      name: 'Battery', about: 'Charge, and whether it is plugged in', sizes: ['small', 'wide', 'long'],
+      tone: () => (mac?.battery && mac.battery.percent <= 20 && !mac.battery.charging ? 'pink' : 'sun'),
+      data: () => !mac ? null : !mac.battery ? { value: 'Plugged in', label: 'No battery', icon: 'bolt' }
+        : { value: `${mac.battery.percent}%`, label: mac.battery.charging ? 'Charging' : 'On battery', icon: mac.battery.charging ? 'bolt' : '', meter: mac.battery.percent / 100 },
+    },
+    storage: {
+      name: 'Storage', about: 'Free space on the disk', sizes: ['wide', 'small', 'long', 'big'], tone: () => 'mint',
+      data: () => mac && { value: `${bytes(mac.disk.free)} free`, short: bytes(mac.disk.free), label: `of ${bytes(mac.disk.total)}`, meter: used(mac.disk) },
+    },
+    memory: {
+      name: 'Memory', about: 'Free memory for apps', sizes: ['wide', 'small', 'long', 'big'], tone: () => 'lilac',
+      data: () => mac?.memory && { value: `${bytes(mac.memory.free)} free`, short: bytes(mac.memory.free), label: `of ${bytes(mac.memory.total)} memory`, meter: used(mac.memory) },
+    },
+    cpu: {
+      name: 'Processor', about: 'How busy the Mac is', sizes: ['small', 'wide', 'long'], tone: () => 'deep',
+      data: () => mac && typeof mac.cpu === 'number' && { value: `${mac.cpu}%`, label: 'Processor', meter: mac.cpu / 100 },
+    },
+    name: {
+      name: 'Name', about: 'What this phone calls the Mac', sizes: ['wide', 'long', 'small'], tone: () => 'lilac',
+      data: () => mac && { value: mac.name, label: mac.os === 'windows' ? 'Windows PC' : mac.os === 'linux' ? 'Linux' : 'Mac' },
+      tap: () => openRename(),
+    },
+    uptime: {
+      name: 'Up Time', about: 'How long since the Mac last restarted', sizes: ['small', 'wide'], tone: () => 'deep',
+      data: () => mac && { value: upFor(), label: 'Up for', icon: 'clock' },
+    },
+    task: {
+      name: 'Agent', about: 'What the agent is doing right now', sizes: ['wide', 'long', 'small'], tone: () => (status.working ? 'mint' : 'deep'),
+      data: () => {
+        const last = items.findLast?.((t) => t.type === 'turn' && t.done);
+        return status.working ? { value: 'Working', label: status.label || '', icon: 'redo' }
+          : { value: 'Ready', label: last ? `Last task ${ago(last.done.at)}` : 'Nothing asked yet', icon: 'check' };
+      },
+      tap: () => { const t = cur || items.findLast?.((x) => x.type === 'turn'); if (t?.you) jump(t.you.id); },
+    },
+    model: {
+      name: 'Model', about: 'Which model the agent uses', sizes: ['wide', 'long', 'small'], tone: () => 'deep',
+      data: () => ({ value: modelName(), label: 'Model', icon: 'star' }),
+      tap: () => openModels(),
+    },
+    next: {
+      name: 'Next Schedule', about: 'The next scheduled message', sizes: ['wide', 'long', 'big'], tone: () => 'sun',
+      data: () => {
+        const n = (upcoming || []).filter((s) => s.next && !s.paused).sort((a, b) => Date.parse(a.next) - Date.parse(b.next))[0];
+        return n ? { value: n.label, label: `${dayLabel(n.next) === 'Today' ? 'Today' : shortDay(n.next)} at ${clock(n.next)}`, icon: 'clock' } : { value: 'Nothing scheduled', label: 'Schedules', icon: 'clock' };
+      },
+      tap: () => load('schedules', 'Schedules', '/schedules', drawSchedules),
+    },
+    today: {
+      name: 'Today', about: 'How much you asked for today', sizes: ['small', 'wide'], tone: () => 'lilac',
+      data: () => {
+        const key = new Date().toDateString();
+        const n = items.filter((t) => t.type === 'turn' && t.you && dayKey(t.you.at) === key).length;
+        return { value: String(n), label: n === 1 ? 'request today' : 'requests today' };
+      },
+    },
+  };
+
+  // What to call the model he picked, from the last list the Mac sent.
+  let modelList = null;
+  const modelName = () => {
+    const id = settings.model;
+    if (!id) return 'Default';
+    return modelList?.choices.find((m) => m.id === id)?.name || id;
+  };
+  // For the Next Schedule widget, asked for at start and after any change.
+  let upcoming = null;
+  const refreshSchedules = () => call('GET', '/schedules').then((r) => { upcoming = r.items; drawGlance(); }, () => {});
 
   const glance = $('glance');
-  glance.innerHTML = `<span class="stat batt" id="g-batt">${shape('burst', 'g-batt-shape')}<span class="stat-in"><span class="big" id="g-batt-big"></span><span class="small" id="g-batt-small"></span></span></span>
-    <span class="stat disk" id="g-disk"><span class="stat-in"><span class="big" id="g-disk-big"></span><span class="small" id="g-disk-small"></span><span class="bar"><i id="g-disk-bar"></i></span></span></span>
-    <span class="stat link" id="g-link">${shape('cookie', 'g-link-shape')}<span class="stat-in"><span class="small" id="g-link-a"></span><span class="sub" id="g-link-b"></span></span></span>`;
-  const setShape = (id, name) => { $(id).setAttribute('class', `shape s-${name}`); };
-
   let glanceOpen = false;
+  const tile = (w) => {
+    const def = WIDGETS[w.id];
+    if (!def) return '';
+    const d = def.data();
+    if (!d) return '';
+    const size = def.sizes.includes(w.size) ? w.size : def.sizes[0];
+    const meter = typeof d.meter === 'number' && size !== 'small' ? `<span class="t-meter"><i style="width:${Math.round(Math.min(1, Math.max(0, d.meter)) * 100)}%"></i></span>` : '';
+    const value = size === 'small' && d.short ? d.short : d.value;
+    const spoken = [d.value, d.label, d.detail].filter(Boolean).join(', ');
+    return `<button type="button" class="widget t-${size} tone-${def.tone()}" data-widget="${esc(w.id)}" aria-label="${esc(spoken)}">
+      <span class="t-value">${d.icon ? icon(d.icon) : ''}<span>${esc(value)}</span></span>
+      ${d.label ? `<span class="t-label">${esc(d.label)}</span>` : ''}
+      ${d.detail && (size === 'long' || size === 'big') ? `<span class="t-detail">${esc(d.detail)}</span>` : ''}${meter}</button>`;
+  };
   function drawGlance() {
-    const off = link.state !== 'online';
-    glance.classList.toggle('off', off);
-    const [a, b, s] = link.state === 'unpaired' ? ['Not paired', '', 'clover']
-      : link.state === 'connecting' ? ['Connecting', '', 'flower']
-      : off ? ['Offline', mac ? ago(mac.at) : '', 'clover']
-      : ['Online', mac ? `up ${uptime(mac.uptime).split(',')[0]}` : '', 'cookie'];
-    $('g-link-a').textContent = a;
-    $('g-link-b').textContent = b;
-    setShape('g-link-shape', s);
-    $('g-batt').hidden = !mac;
-    $('g-disk').hidden = !mac;
-    const spoken = [];
-    if (mac) {
-      const bt = mac.battery;
-      $('g-batt').classList.toggle('low', !!bt && bt.percent <= 20);
-      $('g-batt').classList.toggle('no-batt', !bt);
-      $('g-batt-big').innerHTML = bt ? `${bt.percent}%${bt.charging ? icon('bolt') : ''}` : icon('bolt');
-      $('g-batt-small').textContent = !bt ? 'Plugged in' : bt.charging ? 'Charging' : 'Battery';
-      setShape('g-batt-shape', bt && !bt.charging ? 'flower' : 'burst');
-      $('g-disk-big').textContent = `${bytes(mac.disk.free)} free`;
-      $('g-disk-small').textContent = `of ${bytes(mac.disk.total)}`;
-      $('g-disk-bar').style.width = `${Math.round((1 - mac.disk.free / mac.disk.total) * 100)}%`;
-      spoken.push(bt ? `Battery ${bt.percent}%, ${bt.charging ? 'charging' : 'on battery'}` : 'Plugged in, no battery', `${bytes(mac.disk.free)} free of ${bytes(mac.disk.total)}`);
-    }
-    spoken.push(b ? `${a}, ${b}` : a);
+    const hidden = !!settings.topBarHidden;
+    head.classList.toggle('bar-hidden', hidden);
+    glance.classList.toggle('off', link.state !== 'online');
+    // The title always says which computer this is and whether it's there.
+    const where = link.state === 'online' ? 'Online' : link.state === 'connecting' ? 'Connecting' : link.state === 'unpaired' ? 'Not paired' : 'Offline';
+    $('head-sub').textContent = mac ? `${mac.name} · ${where}` : where;
+    $('fold-head').setAttribute('aria-label', hidden ? 'Show the Top Bar' : 'Hide the Top Bar');
+    $('fold-head').setAttribute('aria-expanded', String(!hidden));
+    refocus(glance, () => { glance.innerHTML = hidden ? '' : settings.topBar.map((w) => guard(`the ${w.id} widget`, () => tile(w), '')).join(''); }, () => $('fold-head'));
+    glance.hidden = hidden || !glance.children.length;
     const more = $('glance-more');
-    more.hidden = !glanceOpen || !mac;
-    if (mac) {
-      more.innerHTML = `<span>Mac</span><b>${esc(mac.name)}</b>
-        <span>Battery</span><b>${mac.battery ? `${mac.battery.percent}%, ${mac.battery.charging ? 'charging' : 'on battery'}` : 'Plugged in, no battery'}</b>
-        <span>Disk</span><b>${bytes(mac.disk.free)} free of ${bytes(mac.disk.total)}</b>
-        <span>Up for</span><b>${uptime(mac.uptime)}</b>
-        <span>Updated</span><b>${ago(mac.at)}</b>`;
+    more.hidden = hidden || !glanceOpen || !mac;
+    if (!more.hidden) {
+      const row = (k, v) => `<span>${k}</span><b>${v}</b>`;
+      more.innerHTML = `${row('Name', `<span class="name-row"><span>${esc(mac.name)}</span><button type="button" class="link-btn rename" data-rename>${icon('edit')}Rename</button></span>`)}
+        ${row('Battery', mac.battery ? `${mac.battery.percent}%, ${mac.battery.charging ? 'charging' : 'on battery'}` : 'Plugged in, no battery')}
+        ${row('Storage', `${bytes(mac.disk.free)} free of ${bytes(mac.disk.total)}`)}
+        ${mac.memory ? row('Memory', `${bytes(mac.memory.free)} free of ${bytes(mac.memory.total)}`) : ''}
+        ${typeof mac.cpu === 'number' ? row('Processor', `${mac.cpu}% busy`) : ''}
+        ${row('Up for', uptime(mac.uptime))}
+        ${row('Updated', ago(mac.at))}
+        <div class="more-btns"><button type="button" class="link-btn" data-topbar>${icon('edit')}Edit the Top Bar</button><button type="button" class="link-btn" data-hidemore>${icon('chev')}Hide Details</button></div>`;
     }
-    glance.setAttribute('aria-expanded', String(glanceOpen && !!mac));
-    glance.setAttribute('aria-label', `${spoken.join('. ')}.${mac ? ` ${glanceOpen ? 'Hide' : 'Show'} details.` : ''}`);
   }
   function toggleGlance(open) { glanceOpen = open; drawGlance(); backing(); }
+
+  // Edit the Top Bar: each change saves at once, so the header behind the
+  // sheet shows it straight away.
+  function openTopBar() {
+    const bar = settings.topBar;
+    const inBar = new Set(bar.map((w) => w.id));
+    const rows = bar.map((w, i) => {
+      const def = WIDGETS[w.id];
+      if (!def) return `<li class="tb-row"><span class="tb-name"><b>${esc(w.id)}</b><span>This widget isn't in this version of the app.</span></span><button type="button" class="icon-btn" data-tbremove="${i}" aria-label="Remove ${esc(w.id)}">${icon('trash')}</button></li>`;
+      const size = def.sizes.includes(w.size) ? w.size : def.sizes[0];
+      return `<li class="tb-row">
+        <span class="tb-name"><b>${esc(def.name)}</b><span>${esc(def.about)}</span></span>
+        <span class="tb-tools">
+          <button type="button" class="icon-btn" data-tbmove="${i}:-1" aria-label="Move ${esc(def.name)} earlier"${i === 0 ? ' disabled' : ''}><svg class="ic up" aria-hidden="true"><use href="#i-chev"/></svg></button>
+          <button type="button" class="icon-btn" data-tbmove="${i}:1" aria-label="Move ${esc(def.name)} later"${i === bar.length - 1 ? ' disabled' : ''}>${icon('chev')}</button>
+          <button type="button" class="icon-btn" data-tbremove="${i}" aria-label="Remove ${esc(def.name)}">${icon('trash')}</button>
+        </span>
+        ${def.sizes.length > 1 ? `<span class="seg" role="radiogroup" aria-label="Size of ${esc(def.name)}">${def.sizes.map((s) => `<button type="button" role="radio" aria-checked="${s === size}" data-tbsize="${i}:${s}">${SIZE_NAMES[s]}</button>`).join('')}</span>` : ''}
+      </li>`;
+    }).join('');
+    const spare = Object.entries(WIDGETS).filter(([id]) => !inBar.has(id));
+    openSheet('topbar', 'Edit the Top Bar', `${bar.length ? `<ul class="tb-list">${rows}</ul>` : '<p class="hint">The top bar is empty. Add a widget below.</p>'}
+      ${spare.length ? `<h3>Add a Widget</h3><ul class="tb-list">${spare.map(([id, def]) => `<li class="tb-row add"><span class="tb-name"><b>${esc(def.name)}</b><span>${esc(def.about)}</span></span><button type="button" class="pill" data-tbadd="${esc(id)}">${icon('plus')}Add</button></li>`).join('')}</ul>` : ''}
+      <button type="button" class="link-btn tb-reset" data-tbreset>${icon('redo')}Put Back the Usual Widgets</button>`,
+      '<button type="button" class="primary" data-close>Done</button>');
+  }
+  const editBar = (fn, focus) => {
+    const next = settings.topBar.map((w) => ({ ...w }));
+    fn(next);
+    saveSettings({ topBar: next });
+    openTopBar();
+    (focus && sheet.querySelector(focus) || $('sheet-title')).focus();
+  };
 
   // The header gives its height to the conversation while reading history,
   // while search or files are open, with large text, and whenever the screen
@@ -594,11 +735,11 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   // A view that's animating closed is drawn but counts as closed.
   const shown = (el) => !el.hidden && !el.leaving;
   const overlay = () => shown($('files-view')) || !$('search-row').hidden;
-  // The probe is "Message your Mac" set at 16 px, which is 133 px wide in
+  // The probe is "Write a message" set at 16 px, which is 117 px wide in
   // Roboto Flex. Drawn wider than that, the phone's font size is turned up.
   let bigText = false;
   function measure() {
-    bigText = $('probe').getBoundingClientRect().width > 133 * 1.15 || parseFloat(getComputedStyle($('probe')).fontSize) > 18;
+    bigText = $('probe').getBoundingClientRect().width > 117 * 1.15 || parseFloat(getComputedStyle($('probe')).fontSize) > 18 || (Number(settings.textSize) || 100) >= 130;
     root.classList.toggle('big-text', bigText);
   }
   function fold() {
@@ -689,14 +830,113 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   const call = (method, path, body) => lab.call ? lab.call(method, path, body) : Promise.reject(new Error('This version of the app is too old for that. Update it from the Mac.'));
   const offline = (err) => `<p class="hint">${esc(err?.message && !/fetch|network/i.test(err.message) ? err.message : "Couldn't reach the Mac. Try again once it's back.")}</p>`;
   const closeBtn = '<button type="button" data-close>Close</button>';
+  // Settings live in settings.json on the Mac, so the agent can change them
+  // too. Every row in the Settings sheet is an entry here.
+  //   key      the field in settings.json, for switch and choice rows
+  //   type     switch, choice (options are [value, label]) or open (runs open())
+  //   hint     a line under the label, or a function that returns one
+  //   apply    what changing it redraws, if anything beyond applySettings()
+  const redrawTurns = () => { for (const it of items) if (it.type === 'turn' && it.el) dirty.add(it); want.side = true; schedule(); };
+  const SETTINGS = [
+    { head: 'Top Bar' },
+    { key: 'topBarHidden', type: 'switch', label: 'Hide the Top Bar', hint: 'Keeps the title and the name of the Mac' },
+    { type: 'open', label: 'Edit the Top Bar', hint: 'Add, remove, resize and reorder widgets', open: () => openTopBar() },
+    { head: 'Look' },
+    { key: 'theme', type: 'choice', label: 'Theme', options: [['system', 'Like the Phone'], ['light', 'Light'], ['dark', 'Dark']] },
+    { key: 'textSize', type: 'choice', label: 'Text Size', options: [[100, 'Default'], [115, 'Large'], [130, 'Largest']], apply: () => { measure(); fold(); } },
+    { key: 'motion', type: 'choice', label: 'Animations', options: [['full', 'All'], ['calm', 'Fewer']] },
+    { head: 'Conversation' },
+    { key: 'steps', type: 'choice', label: 'Steps', hint: 'When the steps of a task show', options: [['live', 'While Working'], ['open', 'Always'], ['closed', 'Tapped']], apply: redrawTurns },
+    { key: 'times', type: 'switch', label: 'Show the Time on Messages' },
+    { key: 'chips', type: 'switch', label: 'Show Shortcuts Above the Message Box', apply: () => drawChips() },
+    { key: 'enterSends', type: 'switch', label: 'Enter Key Sends', hint: 'Otherwise Enter starts a new line', apply: () => { text.enterKeyHint = settings.enterSends ? 'send' : 'enter'; } },
+    { key: 'digest', type: 'switch', label: 'Sum Up What Happened While You Were Away' },
+    { head: 'Agent' },
+    { type: 'open', label: 'Model', hint: () => modelName(), open: () => openModels() },
+    { type: 'open', label: 'Rename This Mac', hint: () => mac?.name || '', open: () => openRename() },
+    { type: 'open', label: 'Show the Welcome Card Again', open: () => { closeSheet(); saveSettings({ welcomeDone: false }); } },
+  ];
+  const urlTheme = root.dataset.theme;
+  function applySettings() {
+    const s = settings;
+    if (s.theme === 'light' || s.theme === 'dark') root.dataset.theme = s.theme;
+    else if (urlTheme) root.dataset.theme = urlTheme;
+    else delete root.dataset.theme;
+    root.style.setProperty('--ts', String(Math.min(1.6, Math.max(0.8, (Number(s.textSize) || 100) / 100))));
+    root.classList.toggle('calm', s.motion === 'calm');
+    root.classList.toggle('no-times', s.times === false);
+  }
+  async function saveSettings(patch) {
+    const was = settings;
+    settings = { ...settings, ...patch };
+    settingsChanged(was);
+    try { await call('POST', '/settings', { values: patch }); }
+    catch (err) {
+      const now = settings;
+      settings = was;
+      settingsChanged(now);
+      toast(err.message || "Couldn't reach the Mac, so that setting wasn't saved.", true);
+    }
+  }
+  function settingsChanged(was) {
+    applySettings();
+    for (const row of SETTINGS) if (row.apply && was[row.key] !== settings[row.key]) guard(`the ${row.label} setting`, row.apply);
+    if (was.welcomeDone !== settings.welcomeDone) for (const it of items) if (it.type === 'notice' && it.e.points) { dirty.add(it); schedule(); }
+    drawGlance();
+    fold();
+  }
+  function settingRow(row) {
+    if (row.head) return `<h3>${esc(row.head)}</h3>`;
+    const hint = typeof row.hint === 'function' ? row.hint() : row.hint;
+    const sub = hint ? `<span>${esc(hint)}</span>` : '';
+    if (row.type === 'switch') return `<label class="set-row"><span class="set-text"><b>${esc(row.label)}</b>${sub}</span><input type="checkbox" role="switch" class="switch" data-set="${esc(row.key)}"${settings[row.key] ? ' checked' : ''}></label>`;
+    if (row.type === 'choice') return `<div class="set-row choice"><span class="set-text"><b id="set-${esc(row.key)}">${esc(row.label)}</b>${sub}</span><span class="seg" role="radiogroup" aria-labelledby="set-${esc(row.key)}">${row.options.map(([v, l]) => `<button type="button" role="radio" aria-checked="${String(settings[row.key]) === String(v)}" data-setkey="${esc(row.key)}" data-setval="${esc(JSON.stringify(v))}">${esc(l)}</button>`).join('')}</span></div>`;
+    return `<button type="button" class="set-row open" data-setopen="${SETTINGS.indexOf(row)}"><span class="set-text"><b>${esc(row.label)}</b>${sub}</span>${icon('chev')}</button>`;
+  }
+  function openSettings() {
+    openSheet('settings', 'Settings', `<div class="set-list">${SETTINGS.map((r) => guard(`the ${r.label || r.head} setting`, () => settingRow(r), '')).join('')}</div>`, closeBtn);
+  }
+
+  // The list comes from whatever provider the agent is set up with, so it's
+  // asked for each time rather than written down here.
+  async function openModels() {
+    openSheet('models', 'Model', '<p class="hint">Asking the Mac which models it has</p>', closeBtn);
+    try { modelList = await call('GET', '/models'); } catch (err) { if (sheetKind === 'models') $('sheet-body').innerHTML = offline(err); return; }
+    if (sheetKind !== 'models') return;
+    drawModels();
+  }
+  function drawModels() {
+    const m = modelList;
+    const chosen = settings.model || 'default';
+    const listed = m.choices.some((c) => c.id === chosen);
+    const choices = m.choices.some((c) => c.id === 'default') ? m.choices : [{ id: 'default', name: 'Default', description: 'Whatever the provider recommends' }, ...m.choices];
+    refocus($('sheet-body'), () => {
+      $('sheet-body').innerHTML = `<p class="hint">These are the models ${m.engine === 'codex' ? 'Codex' : 'Claude'} on the Mac can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ''}. A change starts with your next message.</p>
+        <ul class="model-list" role="radiogroup" aria-label="Model">${choices.map((c) => `<li><button type="button" role="radio" class="model-row" aria-checked="${c.id === chosen}" data-model="${esc(c.id)}"><span class="radio" aria-hidden="true"></span><span><b>${esc(c.name)}</b>${c.description ? `<span>${esc(c.description)}</span>` : ''}</span></button></li>`).join('')}</ul>
+        <label for="model-other">Another Model</label>
+        <div class="model-other"><input id="model-other" value="${listed || chosen === 'default' ? '' : esc(chosen)}" placeholder="Its exact name" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"><button type="button" class="pill" data-modelother>Use It</button></div>
+        <p class="hint">For a model your provider has that isn't listed. Type its name exactly as the provider writes it.</p>`;
+    }, () => $('sheet-title'));
+  }
+  async function pickModel(id) {
+    try {
+      await call('POST', '/model', { model: id === 'default' ? null : id });
+      settings = { ...settings, model: id === 'default' ? null : id };
+      if (sheetKind === 'models') drawModels();
+      drawGlance();
+      toast(`It will use ${modelName()} from your next message.`);
+    } catch (err) { toast(err.message || "Couldn't reach the Mac, so the model wasn't changed.", true); }
+  }
   let memo = null, plan = null, rules = null, wipeArmed = false;
   function openMenu() {
     const row = (k, ic, title, sub) => `<li><button type="button" class="menu-row" data-menu="${k}"><span class="mr-ic">${icon(ic)}</span><span><b>${title}</b><span>${sub}</span></span></button></li>`;
     openSheet('menu', 'More', `<ul class="menu-list">
+      ${row('settings', 'edit', 'Settings', 'The top bar, text size, theme and model')}
       ${row('memory', 'star', 'Memory', 'What the agent remembers about you')}
       ${row('schedules', 'clock', 'Schedules', 'Messages the Mac sends itself on a timer')}
       ${row('allowed', 'shield', 'Always Allowed', 'Commands that run without asking')}
       ${row('check', 'check', 'Check My Setup', 'Whether the Mac and this phone are ready')}
+      ${row('rename', 'edit', 'Rename This Mac', mac ? `It's called ${esc(mac.name)} on this phone` : 'What this phone calls it')}
     </ul>`, closeBtn);
   }
   async function load(kind, title, path, draw) {
@@ -747,7 +987,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     }, () => $('sheet-title'));
   }
   async function saveSchedules(list, done) {
-    try { const r = await call('POST', '/schedules', { items: list }); if (done) toast(done); return r; } catch (err) { toast(err.message || "Couldn't reach the Mac, so the schedule wasn't changed.", true); return null; }
+    try { const r = await call('POST', '/schedules', { items: list }); if (done) toast(done); upcoming = r.items; drawGlance(); return r; } catch (err) { toast(err.message || "Couldn't reach the Mac, so the schedule wasn't changed.", true); return null; }
   }
   function editSchedule(i) {
     const s = plan[i];
@@ -786,7 +1026,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
 
   function drawChips() {
     const c = $('chips');
-    c.hidden = !shortcuts.length;
+    c.hidden = !shortcuts.length || settings.chips === false;
     refocus(c, () => {
       c.innerHTML = shortcuts.map((s) => `<button type="button" class="chip" data-sc="${esc(s.id)}" title="${esc(s.text)}">${esc(s.label)}</button>`).join('')
         + (shortcuts.length ? `<button type="button" class="chip edit" id="manage">${icon('edit')}Edit</button>` : '');
@@ -811,8 +1051,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     arrive(sheet);
     arrive($('scrim'));
     backing();
-    // Only New Shortcut opens straight into typing. Elsewhere the keyboard would cover the actions.
-    if (!again) (kind === 'new' && $('sheet-body').querySelector('input, textarea') || $('sheet-title')).focus();
+    // Only New Shortcut and Rename open straight into typing. Elsewhere the keyboard would cover the actions.
+    if (!again) ((kind === 'new' || kind === 'rename') && $('sheet-body').querySelector('input, textarea') || $('sheet-title')).focus();
   }
   function closeSheet() {
     sheetKind = null;
@@ -820,6 +1060,10 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     leave($('scrim'), '', true);
     backing();
     restore(sheetFrom, text);
+  }
+  function openRename() {
+    openSheet('rename', 'Rename This Mac', `<label for="rename-to">Name</label><input id="rename-to" value="${esc(mac?.name ?? '')}" maxlength="40" autocomplete="off" enterkeyhint="done"><p class="hint">This is what the phone calls it, in the header and in notifications. Leave it blank to go back to the name the Mac gives itself.</p>`,
+      `<button type="button" data-close>Cancel</button><button type="button" class="primary" data-savename>Save</button>`);
   }
   function openManage() {
     if (sheetKind !== 'manage') draft = shortcuts.map((s) => ({ ...s }));
@@ -838,6 +1082,10 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     if (!ok) { toast("Couldn't save the shortcuts because the Mac can't be reached. Try again once it's back.", true); return false; }
     return true;
   }
+  $('sheet-body').addEventListener('change', (ev) => {
+    const k = ev.target.dataset?.set;
+    if (k) saveSettings({ [k]: ev.target.checked });
+  });
   $('sheet-body').addEventListener('input', (ev) => {
     const i = ev.target.dataset?.label;
     if (i !== undefined && draft[i]) draft[i].label = ev.target.value;
@@ -1167,6 +1415,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       if (d.menu === 'schedules') return load('schedules', 'Schedules', '/schedules', drawSchedules);
       if (d.menu === 'allowed') return load('allowed', 'Always Allowed', '/allowed', drawRules);
       if (d.menu === 'check') return openCheck();
+      if (d.menu === 'rename') return openRename();
+      if (d.menu === 'settings') return openSettings();
       return;
     }
     if (d.forget) {
@@ -1219,7 +1469,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     if (d.checkfix) return lab.fix(d.checkfix);
     if (d.send) return send(d.send);
     if (d.sc) { if (longFired) { longFired = false; return; } const s = shortcuts.find((x) => x.id === d.sc); if (s) send(s.text); return; }
-    if (d.run) { const t = items.find((x) => x.id === d.run); if (t) { t.open = !(t.open ?? active(t)); draw(t); } return; }
+    if (d.run) { const t = items.find((x) => x.id === d.run); if (t) { t.open = !(t.open ?? openByDefault(t)); draw(t); } return; }
     if (d.raw) { const t = byRef.get(d.raw); if (t) { t.raw.has(d.raw) ? t.raw.delete(d.raw) : t.raw.add(d.raw); draw(t); } return; }
     if (d.copyraw) { const t = byRef.get(d.copyraw); const s = t?.steps.find((x) => x.ref === d.copyraw); if (s) { navigator.clipboard?.writeText(s.detail || '').catch(() => {}); toast('Copied the command.'); } return; }
     if (d.cid !== undefined && b.classList.contains('bubble')) {
@@ -1252,6 +1502,28 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       if (await saveList(draft)) closeSheet();
       return;
     }
+    if (d.rename !== undefined) return openRename();
+    if (d.widget) { if (longFired) { longFired = false; return; } const w = WIDGETS[d.widget]; return w?.tap ? guard(`the ${d.widget} widget`, w.tap) : toggleGlance(!glanceOpen); }
+    if (d.hidemore !== undefined) { toggleGlance(false); return; }
+    if (d.topbar !== undefined) return openTopBar();
+    if (d.tbmove) { const [i, by] = d.tbmove.split(':').map(Number); return editBar((b) => { const [w] = b.splice(i, 1); b.splice(i + by, 0, w); }, `[data-tbmove="${i + by}:${by}"]`); }
+    if (d.tbremove) { const i = Number(d.tbremove); return editBar((b) => b.splice(i, 1), `[data-tbremove="${Math.max(0, i - 1)}"]`); }
+    if (d.tbsize) { const [i, size] = d.tbsize.split(':'); return editBar((b) => { b[Number(i)].size = size; }, `[data-tbsize="${d.tbsize}"]`); }
+    if (d.tbadd) { const def = WIDGETS[d.tbadd]; return editBar((b) => b.push({ id: d.tbadd, size: def.sizes[0] }), `[data-tbremove="${settings.topBar.length}"]`); }
+    if (d.tbreset !== undefined) return editBar((b) => b.splice(0, b.length, ...DEFAULT_SETTINGS.topBar.map((w) => ({ ...w }))));
+    if (d.setkey) { await saveSettings({ [d.setkey]: JSON.parse(d.setval) }); if (sheetKind === 'settings') { openSettings(); sheet.querySelector(`[data-setkey="${d.setkey}"][aria-checked="true"]`)?.focus(); } return; }
+    if (d.setopen) return guard('a setting', () => SETTINGS[Number(d.setopen)].open());
+    if (d.model) return pickModel(d.model);
+    if (d.modelother !== undefined) { const v = $('model-other').value.trim(); if (!v) { $('model-other').focus(); return toast('Type the name of the model first.', true); } return pickModel(v); }
+    if (d.welcome !== undefined) { saveSettings({ welcomeDone: true }); text.focus(); return; }
+    if (d.savename !== undefined) {
+      try {
+        const r = await call('POST', '/name', { name: $('rename-to').value });
+        closeSheet();
+        toast(`It's called ${r.name} now.`);
+      } catch (err) { toast(err.message || "Couldn't reach the Mac, so the name wasn't changed.", true); }
+      return;
+    }
     if (d.savenew !== undefined) {
       const label = $('sc-label').value.trim(), body = $('sc-text').value.trim();
       if (!label || !body) {
@@ -1270,7 +1542,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       case 'open-files': return openFiles();
       case 'open-menu': return openMenu();
       case 'close-files': return closeFiles();
-      case 'glance': return toggleGlance(!glanceOpen);
+      case 'fold-head': return saveSettings({ topBarHidden: !settings.topBarHidden });
       case 'now-stop': return lab.stop();
       case 'now-jump': { const a = cur && waitingAsk(cur); if (a) jump(a.id); return; }
       case 'banner-fix': return lab.fix(link.fix);
@@ -1290,6 +1562,14 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     press = setTimeout(() => { longFired = true; openManage(); }, 500);
   });
   for (const t of ['pointerup', 'pointercancel', 'pointerleave']) $('chips').addEventListener(t, () => clearTimeout(press));
+  // Long-press a widget to edit the top bar, the way a home screen does.
+  glance.addEventListener('pointerdown', (ev) => {
+    if (!ev.target.closest('[data-widget]')) return;
+    longFired = false;
+    press = setTimeout(() => { longFired = true; openTopBar(); }, 500);
+  });
+  for (const t of ['pointerup', 'pointercancel', 'pointerleave']) glance.addEventListener(t, () => clearTimeout(press));
+  glance.addEventListener('contextmenu', (ev) => { if (ev.target.closest('[data-widget]')) ev.preventDefault(); });
   $('chips').addEventListener('contextmenu', (ev) => { if (ev.target.closest('[data-sc]')) ev.preventDefault(); });
 
   $('scrim').addEventListener('click', closeSheet);
@@ -1313,7 +1593,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   text.addEventListener('input', () => { fit(); canSend(); keep(text.value); });
   if (lab.platform === 'android') text.enterKeyHint = 'enter';
   text.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Enter' && !ev.shiftKey && lab.platform !== 'android') { ev.preventDefault(); $('form').requestSubmit(); }
+    if (ev.key === 'Enter' && !ev.shiftKey && (lab.platform !== 'android' || settings.enterSends)) { ev.preventDefault(); $('form').requestSubmit(); }
   });
   $('form').addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -1336,8 +1616,11 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   thread.append(log);
   log.append(older, digestEl, queue);
   const away = lastSeen();
-  lab.subscribe((e) => { take(e); if (e.kind === 'loaded') { flushNow(); drawDigest(away); markSeen(); } });
+  lab.subscribe((e) => guard(`a ${e.kind} event`, () => { take(e); if (e.kind === 'loaded') { flushNow(); drawDigest(away); markSeen(); } }));
   booted = true;
+  applySettings();
+  refreshSchedules();
+  setInterval(refreshSchedules, 10 * 60000);
   threadH = thread.clientHeight;
   measure();
   flush();

@@ -71,9 +71,19 @@ class MainActivity : Activity() {
     private val layout by lazy { WindowInfoTrackerCallbackAdapter(WindowInfoTracker.getOrCreate(this)) }
     private val onLayout = Consumer<WindowLayoutInfo> { onFold(it) }
     private val watchdog = Runnable {
-        if (!ready && rescueReason == null) rescue("The design didn't finish loading, so this is the safe screen.")
+        if (!ready && rescueReason == null) {
+            Hub.reportBroken(pageError ?: "The page didn't call lab.ready() within 8 seconds.")
+            autoRescue = true
+            rescue("The design didn't finish loading, so this is the safe screen. The ${PC} is putting the version before it back.")
+        }
     }
-    private val onDesign = { if (rescueReason == null) load() }
+    private var autoRescue = false
+    // The first error the page reported before it was ready, sent with the report.
+    private var pageError: String? = null
+    private val onDesign = {
+        if (autoRescue) { autoRescue = false; rescueReason = null }
+        if (rescueReason == null) load()
+    }
     private var backRegistered = false
     // Only registered while the page has something to close, so otherwise the
     // system plays its own back-to-home preview. On 14 and up the page also
@@ -166,10 +176,10 @@ class MainActivity : Activity() {
         if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.addAll(it) }
         else intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
         if (uris.isEmpty()) return toCompose(JSONObject().put("kind", "compose").put("text", text))
-        Toast.makeText(this, "Sending to the Mac", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Sending to the ${PC}", Toast.LENGTH_SHORT).show()
         Hub.later {
             val out = JSONArray()
-            val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't send that to the Mac." }
+            val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't send that to the ${PC}." }
             Hub.onMain {
                 if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
                 toCompose(JSONObject().put("kind", "compose").put("text", text).put("files", out))
@@ -182,10 +192,10 @@ class MainActivity : Activity() {
         val base = uri.getQueryParameter("u")?.trimEnd('/') ?: return
         val code = uri.getQueryParameter("c") ?: return
         val host = Uri.parse(base).host ?: return
-        if (Uri.parse(base).scheme != "https") return Toast.makeText(this, "That pairing link isn't for a Mac on Tailscale.", Toast.LENGTH_LONG).show()
+        if (Uri.parse(base).scheme != "https") return Toast.makeText(this, "That pairing link isn't for a ${PC} on Tailscale.", Toast.LENGTH_LONG).show()
         AlertDialog.Builder(this)
-            .setTitle("Pair With This Mac?")
-            .setMessage("The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own Mac.")
+            .setTitle("Pair With This ${PC}?")
+            .setMessage("The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own ${PC}.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Pair") { _, _ ->
                 Hub.claim(base, code) { err ->
@@ -200,7 +210,7 @@ class MainActivity : Activity() {
     private fun check(id: String) {
         Hub.request("GET", "/check", null) { text, err ->
             val items = text?.let { runCatching { JSONObject(it).getJSONArray("items") }.getOrNull() }
-                ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the Mac").put("detail", err ?: "Check the Mac is awake and Tailscale is on."))
+                ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the ${PC}").put("detail", err ?: "Check the ${PC} is awake and Tailscale is on."))
             val nm = getSystemService(NotificationManager::class.java)
             val asks = nm.getNotificationChannel("asks")
             if (!nm.areNotificationsEnabled() || asks?.importance == NotificationManager.IMPORTANCE_NONE)
@@ -209,7 +219,7 @@ class MainActivity : Activity() {
             val cm = getSystemService(ConnectivityManager::class.java)
             val vpn = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
             if (vpn) items.put(JSONObject().put("ok", true).put("title", "Tailscale is running on this phone"))
-            else items.put(JSONObject().put("ok", false).put("title", "Tailscale is off on this phone").put("detail", "The phone can only reach the Mac through Tailscale.").put("fix", "tailscale"))
+            else items.put(JSONObject().put("ok", false).put("title", "Tailscale is off on this phone").put("detail", "The phone can only reach the ${PC} through Tailscale.").put("fix", "tailscale"))
             answer(id, JSONObject().put("items", items).toString())
         }
     }
@@ -303,11 +313,12 @@ class MainActivity : Activity() {
     private fun load() {
         val w = web ?: return
         ready = false
+        pageError = null
         wantsBack(false)
         frame.removeCallbacks(watchdog)
         val hasDesign = Hub.designDir.resolve("index.html").exists()
         if (rescueReason != null || !hasDesign || !Hub.paired) {
-            w.loadUrl("$ORIGIN/shell/rescue.html")
+            w.loadUrl("$ORIGIN/shell/rescue.html?pc=$PC")
         } else {
             w.loadUrl("$ORIGIN/app/index.html")
             frame.postDelayed(watchdog, 8000)
@@ -333,10 +344,9 @@ class MainActivity : Activity() {
                 // The header and chips draw from this straight away, and the
                 // history follows once it's off the disk.
                 val batch = JSONArray().put(Hub.link).put(Hub.status).put(Hub.outboxEvent()).put(insets).put(fold)
-                Hub.mac?.let { batch.put(it) }
-                Hub.shortcuts?.let { batch.put(it) }
+                for (e in Hub.live.values) batch.put(e)
                 val hasDesign = Hub.designDir.resolve("index.html").exists()
-                val reason = rescueReason ?: if (!hasDesign && Hub.paired) "Your design hasn't arrived from the Mac yet. It loads as soon as the Mac is reachable." else null
+                val reason = rescueReason ?: if (!hasDesign && Hub.paired) "Your design hasn't arrived from the ${PC} yet. It loads as soon as the ${PC} is reachable." else null
                 if (reason != null) batch.put(JSONObject().put("kind", "rescue").put("reason", reason).put("hasDesign", hasDesign && rescueReason != null))
                 reply.postMessage(JSONObject().put("batch", batch).toString())
                 Hub.onLoaded {
@@ -374,7 +384,7 @@ class MainActivity : Activity() {
             }
             "call" -> {
                 val id = m.optString("id")
-                val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the Mac.")
+                val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the ${PC}.")
                 Hub.request(method, m.optString("path"), m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
             }
             "check" -> check(m.optString("id"))
@@ -382,7 +392,12 @@ class MainActivity : Activity() {
                 send(JSONObject().put("kind", "undone").put("ok", ok))
                 if (ok) { rescueReason = null }
             }
-            "leaveRescue" -> { rescueReason = null; load() }
+            "leaveRescue" -> { rescueReason = null; autoRescue = false; load() }
+            "pageError" -> {
+                val text = m.optString("message").take(500)
+                if (!ready && pageError == null) pageError = text
+                Hub.reportError(text, m.optString("where"))
+            }
             "rescue" -> rescue(m.optString("reason", "Opened the safe screen."))
             "ready" -> {
                 ready = true

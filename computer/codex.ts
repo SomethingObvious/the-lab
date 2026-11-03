@@ -23,8 +23,14 @@ export const codexBin = () => process.env.LAB_CODEX_BIN ?? createRequire(import.
 // `bash -lc '...'` is how every command arrives, which is noise on a phone.
 export function unwrap(command: string): string {
   const m = /^(?:\S*\/)?(?:ba|z)?sh -lc (['"])([\s\S]*)\1$/.exec(command.trim());
-  return m ? m[2].replace(/'\\''/g, "'") : command;
+  if (m) return m[2].replace(/'\\''/g, "'");
+  // On Windows it runs everything through PowerShell.
+  const ps = /^"?(?:[^"]*[\\/])?(?:powershell|pwsh)(?:\.exe)?"?(?:\s+-\w+)*?\s+-Command\s+(['"]?)([\s\S]*)\1$/i.exec(command.trim());
+  return ps ? ps[2] : command;
 }
+
+// The tool name its commands are judged as, since Windows runs them in PowerShell.
+const SHELL = process.platform === 'win32' ? 'PowerShell' : 'Bash';
 
 // One line for a command item, from Codex's own parse of it where it has one.
 export function commandTitle(item: { command: string; commandActions?: any[] }): string {
@@ -71,6 +77,14 @@ export class Codex {
   send(text: string, images: string[], you: number) {
     this.queue.push({ text, images, you });
     this.pump().catch((e) => this.broke(e));
+  }
+
+  setModel(model: string | undefined) { this.model = model; }
+
+  async models() {
+    await this.start();
+    const r = await this.call('model/list', { limit: 100 });
+    return (r.data ?? []).map((m: any) => ({ id: String(m.model ?? m.id), name: String(m.displayName ?? m.model ?? m.id), description: String(m.description ?? '') }));
   }
 
   close() {
@@ -166,6 +180,7 @@ export class Codex {
       if (saved && !r) this.lab.store.add({ kind: 'notice', text: 'The last conversation could not be reopened, so this is a fresh one.' });
       const thread = r ?? await this.call('thread/start', { ...opts, serviceName: 'the_lab' });
       this.lab.state.threadId = thread.thread.id;
+      this.lab.modelInUse = thread.model ?? null;
       this.lab.save();
       console.log(`codex thread ${thread.thread.id} model=${thread.model}`);
     })().catch((e) => { this.ready = null; this.proc?.kill(); throw e; });
@@ -224,7 +239,7 @@ export class Codex {
 
   private begin(item: any) {
     switch (item.type) {
-      case 'commandExecution': return this.step(item.id, 'Bash', { command: unwrap(item.command) }, commandTitle(item), unwrap(item.command));
+      case 'commandExecution': return this.step(item.id, SHELL, { command: unwrap(item.command) }, commandTitle(item), unwrap(item.command));
       case 'fileChange': {
         const paths: string[] = item.changes.map((c: any) => c.path);
         const t = paths.length === 1 ? title('Edit', { file_path: paths[0] }) : `Editing ${paths.length} files`;
@@ -297,9 +312,9 @@ export class Codex {
         const cwd = String(p.cwd ?? this.home);
         const where = { ...lab.where, cwd };
         const host = p.networkApprovalContext?.host;
-        const j: Judgement = cmd ? judge('Bash', { command: cmd }, where) : { effect: 'read', plain: `Reach ${host ?? 'the internet'}`, touches: [host ?? ''], undo: null, leaves: false };
+        const j: Judgement = cmd ? judge(SHELL, { command: cmd }, where) : { effect: 'read', plain: `Reach ${host ?? 'the internet'}`, touches: [host ?? ''], undo: null, leaves: false };
         if (j.source && !lab.taint) lab.taint = j.source;
-        if (j.block) { lab.blocked(ref, 'Bash', j); return reply({ decision: 'decline' }); }
+        if (j.block) { lab.blocked(ref, SHELL, j); return reply({ decision: 'decline' }); }
         // Its instructions say to use the trash command, so a plain rm is
         // turned down quietly and it tries again that way.
         if (j.rm) { lab.hushed.add(ref); return reply({ decision: 'decline' }); }
@@ -309,8 +324,8 @@ export class Codex {
           return reply({ decision: 'accept' });
         }
         if (risky) await lab.snap(60_000);
-        const card = lab.card('Bash', { command: cmd || host || '' }, j, p.reason ? String(p.reason) : undefined, cwd);
-        return reply({ decision: (await ask(ref, 'Bash', card)) ? 'accept' : 'decline' });
+        const card = lab.card(SHELL, { command: cmd || host || '' }, j, p.reason ? String(p.reason) : undefined, cwd);
+        return reply({ decision: (await ask(ref, SHELL, card)) ? 'accept' : 'decline' });
       }
       case 'item/fileChange/requestApproval': {
         // A change outside his Lab folder. Edits go ahead, as they do for

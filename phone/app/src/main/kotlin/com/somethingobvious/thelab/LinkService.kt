@@ -75,11 +75,11 @@ object Notifier {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannels(listOf(
             NotificationChannel("status", "Connection", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Shows whether the Mac is reachable and what it's working on"
+                description = "Shows whether the ${PC} is reachable and what it's working on"
                 setShowBadge(false)
             },
             NotificationChannel("replies", "Replies", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Replies and files from the Mac"
+                description = "Replies and files from the ${PC}"
             },
             NotificationChannel("asks", "Approvals", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "When the agent needs your go-ahead"
@@ -153,10 +153,10 @@ object Notifier {
                 .setWhen(runCatching { Instant.parse(d.optString("at")).toEpochMilli() }.getOrDefault(0)).setShowWhen(true)
         } else {
             val title = when (link.optString("state")) {
-                "online" -> "Connected to the Mac"
-                "connecting" -> "Reaching the Mac"
+                "online" -> "Connected to the ${PC}"
+                "connecting" -> "Reaching the ${PC}"
                 "unpaired" -> "Not paired"
-                else -> "Can't reach the Mac"
+                else -> "Can't reach the ${PC}"
             }
             b.setContentTitle(title).setShowWhen(false)
             if (link.optString("state") != "online") b.setContentText(link.optString("detail"))
@@ -191,12 +191,12 @@ object Notifier {
         if (Hub.foreground || e.optBoolean("onMac")) return
         val b = when (kind) {
             "reply", "file" -> {
-                val mac = Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your Mac").setKey("mac").build()
+                val mac = Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your ${PC}").setKey("mac").build()
                 val me = Person.Builder().setName("You").setKey("me").build()
                 conversation(context, mac)
                 val style = Notification.MessagingStyle(me)
                 for ((text, time, mine) in recent) style.addMessage(text, time, if (mine) null else mac)
-                val input = RemoteInput.Builder(AnswerReceiver.TEXT).setLabel("Message your Mac").build()
+                val input = RemoteInput.Builder(AnswerReceiver.TEXT).setLabel("Message your ${PC}").build()
                 val reply = PendingIntent.getBroadcast(
                     context, 20, Intent(context, AnswerReceiver::class.java).setAction(AnswerReceiver.REPLY),
                     PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -247,7 +247,7 @@ object Notifier {
     private fun conversation(context: Context, mac: Person) {
         val open = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_MAIN)
         val info = ShortcutInfo.Builder(context, "mac")
-            .setShortLabel(mac.name ?: "Your Mac")
+            .setShortLabel(mac.name ?: "Your ${PC}")
             .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
             .setPerson(mac)
             .setLongLived(true)
@@ -258,7 +258,7 @@ object Notifier {
         runCatching { context.getSystemService(ShortcutManager::class.java).pushDynamicShortcut(info) }
     }
 
-    fun shareTarget(context: Context) = conversation(context, Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your Mac").setKey("mac").build())
+    fun shareTarget(context: Context) = conversation(context, Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your ${PC}").setKey("mac").build())
     const val SHARE_CATEGORY = "com.somethingobvious.thelab.category.SHARE"
 
 
@@ -267,7 +267,7 @@ object Notifier {
         context.getSystemService(NotificationManager::class.java).notify(code, Notification.Builder(context, "asks")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("Your answer didn't go through")
-            .setContentText("Couldn't reach the Mac. Open The Lab to answer.")
+            .setContentText("Couldn't reach the ${PC}. Open The Lab to answer.")
             .setContentIntent(open(context)).setAutoCancel(true)
             .build())
     }
@@ -275,7 +275,7 @@ object Notifier {
     fun stopFailed(context: Context) {
         context.getSystemService(NotificationManager::class.java).notify(STOP_ID, Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
-            .setContentTitle("Couldn't reach the Mac to stop it")
+            .setContentTitle("Couldn't reach the ${PC} to stop it")
             .setContentText("It's probably still working. Open The Lab to try again.")
             .setContentIntent(open(context)).setAutoCancel(true)
             .build())

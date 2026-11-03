@@ -2,6 +2,8 @@
 
 These are instructions for the agent on the owner's Mac. Read the whole file first, then work through it top to bottom. Do every step yourself. The owner only needs to act where a step says so, and when that happens tell him exactly what to tap or click, one thing at a time, and wait for him to say it's done.
 
+On a Windows PC the steps are the same with three differences. Install Node 24 or later with `winget install OpenJS.NodeJS` instead of the download below (he clicks Yes when Windows asks), use `curl.exe` and `tar` (both come with Windows 10 and 11) to fetch the source into `%USERPROFILE%\.thelab\source`, and read `~` as `%USERPROFILE%` throughout. Git Bash is optional. Setup and the server use PowerShell and cmd where they need a shell, and the agent's commands run in whichever shell it already has.
+
 Every command in `computer/setup.ts` can be run again safely, so if something fails, fix the cause and rerun that step. `node setup.ts check` prints what is done and what is left at any point.
 
 ## What Gets Installed
@@ -9,7 +11,7 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 - `~/TheLab/`, the workspace and the only folder the agent on the phone can change. It holds `app/` (the phone app's interface, which you can edit later when he asks), `CLAUDE.md` (also linked as `AGENTS.md`), `DESIGN.md`, `memory.md`, `shortcuts.json` and `schedules.json`.
 - `~/.thelab/`, the server's own state: its token, history, log, the files he sends and the tools setup downloads. It sits outside the workspace so the agent can't loosen its own limits.
 - `~/.thelab/source/`, this repository.
-- A login item that keeps the server running (`~/Library/LaunchAgents/com.somethingobvious.thelab.plist`).
+- A login item that keeps the server running (`~/Library/LaunchAgents/com.somethingobvious.thelab.plist` on a Mac, a `TheLab` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows, which starts it hidden when he signs in).
 - Tailscale on the Mac and on the phone.
 - The Lab on the phone, built on this Mac and installed over a USB cable.
 
@@ -54,7 +56,7 @@ node setup.ts computer
 node setup.ts selftest
 ```
 
-The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the Mac awake while it's plugged in (it uses `caffeinate -s`, so on battery it sleeps as usual). The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
+The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the Mac awake while it's plugged in (it uses `caffeinate -s` on a Mac and `SetThreadExecutionState` on Windows, so on battery it sleeps as usual, except while a task is running). The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
 
 ## 4. Tailscale on the Mac
 
@@ -99,7 +101,8 @@ Have him send a message from The Lab on the phone, something like "What's my Mac
 
 - He can ask for changes to how the app looks, in plain words, and they show up on the phone right away.
 - If a design change ever breaks the app, holding the app icon shows Safe Mode, which has Undo Last Design Change.
-- The Mac has to be on and plugged in. Closing a MacBook's lid puts it to sleep unless it's connected to a display.
+- The computer has to be on, and plugged in for anything scheduled. Closing a laptop's lid puts it to sleep unless it's connected to a display.
+- Settings, in More, changes the look, the top bar's widgets and the model, and holding a widget goes straight to Edit the Top Bar.
 - More, in the app's header, has Check My Setup, which says what isn't working and how to fix it.
 
 On Android he can also make The Lab the phone's assistant (Settings, Apps, Default apps, Digital assistant app), so holding the power button opens it ready to type. The Lab also adds an Ask the Mac tile to Quick Settings and a home screen widget, which he can add from the usual places.

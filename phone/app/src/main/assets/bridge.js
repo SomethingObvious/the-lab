@@ -91,6 +91,17 @@
       if (key !== lastTheme) { lastTheme = key; call('theme', t); }
     }, delay);
   }
+  // Whatever the design throws goes to the Mac for the agent to fix, even
+  // when its own script never got as far as running.
+  const reported = new Set();
+  const report = (message, where) => {
+    message = String(message || '').slice(0, 500);
+    if (!message || reported.has(message) || reported.size >= 20) return;
+    reported.add(message);
+    call('pageError', { message, where: String(where || 'the page').slice(0, 80) });
+  };
+  addEventListener('error', (e) => report(e.error?.message || e.message, e.filename ? `${e.filename.split('/').pop()} line ${e.lineno}` : 'the page'));
+  addEventListener('unhandledrejection', (e) => report(e.reason?.message || e.reason, 'a promise'));
   addEventListener('scroll', () => retheme(), { capture: true, passive: true });
   addEventListener('transitionend', () => retheme(30), true);
   addEventListener('animationend', () => retheme(30), true);
@@ -128,6 +139,9 @@
     fix: (fix) => call('fix', { fix }),
     retry: () => call('retry'),
     safeMode: (reason) => call('rescue', { reason }),
+    // For an error the page caught itself, so one broken part can be skipped
+    // and still get fixed.
+    reportError: (message, where) => report(message, where),
     leaveSafeMode: () => call('leaveRescue'),
     // Back goes to fn while one is set, and closes the app otherwise.
     onBack(fn) { backFn = fn || null; call('back', { on: !!fn }); },

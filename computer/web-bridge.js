@@ -5,10 +5,21 @@
   const outbox = [];
   let link = { kind: 'link', state: 'connecting' };
   let status = null;
-  let mac = null;
-  let shortcuts = null;
+  // The newest event of each kind that has no id, given to a page as it subscribes.
+  const live = new Map();
+  // History that lands before the page subscribes is kept for it, as the phone does.
+  const backlog = [];
   let lastId = null;
 
+  const reported = new Set();
+  const report = (message, where) => {
+    message = String(message || '').slice(0, 500);
+    if (!message || reported.has(message) || reported.size >= 20) return;
+    reported.add(message);
+    post('/app-error', { message, where: String(where || 'the page').slice(0, 80) }).catch(() => {});
+  };
+  addEventListener('error', (e) => report(e.error?.message || e.message, e.filename ? `${e.filename.split('/').pop()} line ${e.lineno}` : 'the page'));
+  addEventListener('unhandledrejection', (e) => report(e.reason?.message || e.reason, 'a promise'));
   const emit = (e) => { for (const fn of listeners) { try { fn(e); } catch (err) { console.error(err); } } };
   const post = (path, body) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
 
@@ -20,18 +31,17 @@
       emit(link);
       status = { kind: 'status', ...hello.status };
       emit(status);
-      if (hello.mac) emit(mac = hello.mac);
-      emit(shortcuts = { kind: 'shortcuts', items: hello.shortcuts ?? [] });
+      for (const e of [hello.mac, { kind: 'shortcuts', items: hello.shortcuts ?? [] }, ...(hello.live ?? [])]) if (e) { live.set(e.kind, e); emit(e); }
       flush();
     });
-    es.addEventListener('loaded', () => emit({ kind: 'loaded' }));
+    es.addEventListener('loaded', () => { backlog.push({ kind: 'loaded' }); emit({ kind: 'loaded' }); });
     es.onmessage = (m) => {
       const e = JSON.parse(m.data);
       if (e.id) lastId = e.id;
       if (e.kind === 'status') status = e;
-      if (e.kind === 'mac') mac = e;
-      if (e.kind === 'shortcuts') shortcuts = e;
       if (e.kind === 'design') return location.reload();
+      if (!e.id && e.kind !== 'status') live.set(e.kind, e);
+      if (e.id) { backlog.push(e); if (backlog.length > 6000) backlog.splice(0, 1000); }
       emit(e);
     };
     es.onerror = () => {
@@ -60,8 +70,8 @@
       listeners.add(fn);
       fn(link);
       if (status) fn(status);
-      if (mac) fn(mac);
-      if (shortcuts) fn(shortcuts);
+      for (const e of live.values()) fn(e);
+      for (const e of backlog) fn(e);
       fn({ kind: 'outbox', items: [...outbox] });
       return () => listeners.delete(fn);
     },
@@ -107,6 +117,7 @@
     fix() {},
     retry() { location.reload(); },
     safeMode() {},
+    reportError: (message, where) => report(message, where),
     leaveSafeMode() {},
     onBack() {},
     ready() {},

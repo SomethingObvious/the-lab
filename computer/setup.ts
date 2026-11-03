@@ -5,13 +5,14 @@
 //   node setup.ts auth         sign the agent in with the owner's plan, if it isn't
 //                              (--engine claude|codex picks which one runs his messages)
 //   node setup.ts computer     workspace, server, start at login
+//   node setup.ts workspace    copy the template into the workspace, without touching login items
 //   node setup.ts selftest     send a real message through the server and wait for the reply
 //   node setup.ts tailscale    HTTPS address for the phone through tailscale serve
 //   node setup.ts phone        build the app, install it over USB and pair it
 //   node setup.ts pair         open a QR code on the Mac that pairs the phone again
 //   node setup.ts bundle       build the app as an .aab for Play Console internal testing
-import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -19,8 +20,9 @@ import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { config, home, labDir } from './config.ts';
+import { config, home, labDir, words } from './config.ts';
 import { codexBin } from './codex.ts';
+import { launchers } from './trash.ts';
 import { agentBin, claudeSignedIn as signedIn, codexSignedIn, run, tailscaleState } from './checks.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +35,7 @@ const LABEL = 'com.somethingobvious.thelab';
 const PLIST = join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const MAC = process.platform === 'darwin';
 const WIN = process.platform === 'win32';
+const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const args = process.argv.slice(3);
 const flag = (name: string) => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
 
@@ -121,9 +124,23 @@ function workspace() {
   mkdirSync(HOME, { recursive: true });
   const template = join(HERE, 'template');
   for (const name of readdirSync(template)) {
+    if (name === 'skill') continue;
     const dest = join(HOME, name);
     // His app folder and notes are his after the first copy, so they're never overwritten.
-    if (!existsSync(dest)) cpSync(join(template, name), dest, { recursive: true });
+    if (existsSync(dest)) continue;
+    cpSync(join(template, name), dest, { recursive: true });
+    const files = statSync(dest).isDirectory() ? readdirSync(dest, { recursive: true }).map((f) => join(dest, String(f))) : [dest];
+    for (const f of files) fit(f);
+  }
+  // Claude finds project skills in .claude/skills and Codex in .agents/skills.
+  // Copied one by one, since .claude may already be there for other reasons.
+  for (const name of readdirSync(join(template, 'skill'))) {
+    for (const where of ['.claude', '.agents']) {
+      const dest = join(HOME, where, 'skills', name);
+      if (existsSync(dest)) continue;
+      cpSync(join(template, 'skill', name), dest, { recursive: true });
+      for (const f of readdirSync(dest, { recursive: true })) fit(join(dest, String(f)));
+    }
   }
   // Codex reads AGENTS.md where Claude reads CLAUDE.md, so both see one file.
   const agents = join(HOME, 'AGENTS.md');
@@ -131,18 +148,22 @@ function workspace() {
   config();
 }
 
-// The command the agent deletes with, which moves things to the Trash. The
-// server writes the same file on every start.
-function trashCommand() {
-  mkdirSync(join(LAB, 'bin'), { recursive: true });
-  const file = join(LAB, 'bin', 'trash');
-  writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "${join(HERE, 'trash.ts')}" "$@"\n`);
-  if (!WIN) chmodSync(file, 0o755);
+// The template is written for a Mac. Each copy keeps only the blocks for its
+// own system, and on Windows it names the PC and the Recycle Bin.
+function fit(file: string) {
+  if (!/\.(md|js|html|json|css)$/.test(file)) return;
+  const other = WIN ? 'mac' : 'windows';
+  const text = readFileSync(file, 'utf8')
+    .replace(new RegExp(`<!-- ${other} -->[\\s\\S]*?<!-- end -->\\n?`, 'g'), '')
+    .replace(/<!-- (mac|windows|end) -->\n?/g, '')
+    .replace(/\n{3,}/g, '\n\n');
+  writeFileSync(file, words(text));
 }
 
 async function computer() {
   workspace();
-  trashCommand();
+  // The server writes these on every start too.
+  launchers(join(LAB, 'bin'));
   say(`Messages go to ${engine() === 'codex' ? 'Codex' : 'Claude'}.`);
   if (MAC) {
     const nodeDir = dirname(process.execPath);
@@ -175,8 +196,17 @@ async function computer() {
     const boot = run('launchctl', ['bootstrap', `gui/${uid}`, PLIST]);
     if (!boot.ok && !/already/i.test(boot.out)) fail(`launchctl bootstrap failed: ${boot.out}`);
     run('launchctl', ['kickstart', '-k', `gui/${uid}/${LABEL}`]);
+  } else if (WIN) {
+    // A Run entry starts it at sign-in with no admin rights. conhost --headless
+    // keeps the console window from ever showing.
+    const start = join(LAB, 'start.cmd');
+    writeFileSync(start, `@echo off\r\nset "LAB_HOME=${HOME}"\r\ncd /d "${HERE}"\r\n"${process.execPath}" "${join(HERE, 'server.ts')}" >> "${join(LAB, 'server.log')}" 2>&1\r\n`);
+    const line = `conhost.exe --headless cmd.exe /c "${start}"`;
+    const reg = run('reg', ['add', RUN_KEY, '/v', 'TheLab', '/t', 'REG_SZ', '/d', line, '/f']);
+    if (!reg.ok) fail(`Couldn't add The Lab to the sign-in items: ${reg.out}`);
+    if (!(await health())) spawn('conhost.exe', ['--headless', 'cmd.exe', '/c', start], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   } else {
-    say(`Start at login is only set up on a Mac. Run the server by hand with: node ${join(HERE, 'server.ts')}`);
+    say(`Start at login is only set up on a Mac or Windows. Run the server by hand with: node ${join(HERE, 'server.ts')}`);
   }
   if (!(await health(30_000))) fail(`The server didn't come up within 30 seconds. Its log is ${join(LAB, 'server.log')}.`);
   say(`The server is running and starts at login. Workspace: ${HOME}`);
@@ -186,7 +216,7 @@ async function computer() {
 
 async function tailscale() {
   const ts = tailscaleState();
-  if (!ts.installed) fail(MAC ? 'Tailscale is not installed. Install it from https://tailscale.com/download/mac, open it, and sign in.' : 'Tailscale is not installed.');
+  if (!ts.installed) fail(MAC || WIN ? `Tailscale is not installed. Install it from https://tailscale.com/download/${MAC ? 'mac' : 'windows'}, open it, and sign in.` : 'Tailscale is not installed.');
   if (!ts.running || !('dns' in ts) || !ts.dns) fail(`Tailscale is installed but not signed in (state: ${'state' in ts ? ts.state : 'unknown'}). Open Tailscale and sign in, then run this again.`);
   const { port } = config();
   const r = run(ts.bin!, ['serve', '--bg', '--https=443', `http://127.0.0.1:${port}`]);
@@ -308,7 +338,7 @@ async function phone() {
   say('Building the app');
   const gradlew = join(project, WIN ? 'gradlew.bat' : 'gradlew');
   if (!WIN) chmodSync(gradlew, 0o755);
-  const build = spawnSync(gradlew, ['assembleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`],
+  const build = spawnSync(gradlew, ['assembleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`, `-Plab.computer=${words('Mac')}`],
     { cwd: project, env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk }, stdio: 'inherit', shell: WIN });
   if (build.status !== 0) fail('The app build failed. The Gradle output above says why.');
   const apk = join(project, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk');
@@ -360,7 +390,7 @@ async function check() {
   const status = {
     node: process.version,
     workspace: existsSync(join(HOME, 'app', 'index.html')),
-    startsAtLogin: MAC ? existsSync(PLIST) : null,
+    startsAtLogin: MAC ? existsSync(PLIST) : WIN ? run('reg', ['query', RUN_KEY, '/v', 'TheLab']).ok : null,
     serverRunning: await health(),
     engine: engine(),
     agentSignedIn: engine() === 'codex' ? codexSignedIn() : signedIn().loggedIn,
@@ -379,6 +409,7 @@ async function pair() {
   if (!existsSync(join(LAB, 'url'))) fail('Run `node setup.ts tailscale` first, so the code can point at this Mac.');
   const link = `http://127.0.0.1:${port}/pair?t=${encodeURIComponent(token)}&next=/pair-phone`;
   if (MAC) run('open', [link]);
+  else if (WIN) run('explorer.exe', [link]);
   else say(`Open this on the Mac: ${link}`);
   say('The pairing code is open in the browser. On the phone, turn Tailscale on, then point the camera at the code and tap the link. It works once and lasts 10 minutes.');
 }
@@ -393,13 +424,13 @@ async function bundle() {
   writeFileSync(join(project, 'local.properties'), `sdk.dir=${sdk.replace(/\\/g, '/')}\n`);
   const gradlew = join(project, WIN ? 'gradlew.bat' : 'gradlew');
   if (!WIN) chmodSync(gradlew, 0o755);
-  const build = spawnSync(gradlew, ['bundleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`, `-Plab.versionCode=${Math.floor(Date.now() / 60000)}`],
+  const build = spawnSync(gradlew, ['bundleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`, `-Plab.computer=${words('Mac')}`, `-Plab.versionCode=${Math.floor(Date.now() / 60000)}`],
     { cwd: project, env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk }, stdio: 'inherit', shell: WIN });
   if (build.status !== 0) fail('The bundle build failed. The Gradle output above says why.');
   say(join(project, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab'));
 }
 
-const steps: Record<string, () => Promise<void>> = { check, auth, computer, selftest, tailscale, phone, pair, bundle, 'phone-vpn': phoneVpn };
+const steps: Record<string, () => Promise<void>> = { check, auth, computer, workspace: async () => workspace(), selftest, tailscale, phone, pair, bundle, 'phone-vpn': phoneVpn };
 const step = steps[process.argv[2] ?? ''];
 if (!step) fail(`Usage: node setup.ts ${Object.keys(steps).join('|')}`);
 await step();

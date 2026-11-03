@@ -3,9 +3,27 @@
 // whole folder as one bundle whenever the version changes.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, watch } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { join, relative, sep } from 'node:path';
 
 const KEEP = 30;
+
+// What would leave the phone with a blank screen: no index.html, a script
+// that doesn't parse, or JSON that doesn't. `only` checks one file.
+export function checkApp(dir: string, only?: string): string | null {
+  if (!existsSync(join(dir, 'index.html'))) return 'app/index.html is missing, and the phone needs it to open the app.';
+  for (const f of only ? [only] : walk(dir)) {
+    const name = 'app/' + relative(dir, f).split(sep).join('/');
+    if (!existsSync(f)) continue;
+    if (/\.m?js$/.test(f)) {
+      const r = spawnSync(process.execPath, ['--check', f], { encoding: 'utf8', timeout: 15_000, windowsHide: true });
+      if (r.status !== 0) return `${name} has a mistake that stops it running: ${(r.stderr || '').replace(f, name).trim().split('\n').filter(Boolean).slice(0, 6).join(' | ').slice(0, 600)}`;
+    } else if (f.endsWith('.json')) {
+      try { JSON.parse(readFileSync(f, 'utf8')); } catch (e) { return `${name} isn't valid JSON: ${(e as Error).message}`; }
+    }
+  }
+  return null;
+}
 const MAX_BYTES = 25 * 1024 * 1024;
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -24,11 +42,15 @@ export class Design {
   private dir: string;
   private history: string;
   private onChange: (version: string) => void;
+  private onBroken: (problem: string) => void;
+  // Why the newest change was held back, until a later one fixes it.
+  broken: string | null = null;
 
-  constructor(dir: string, history: string, onChange: (version: string) => void) {
+  constructor(dir: string, history: string, onChange: (version: string) => void, onBroken: (problem: string) => void = () => {}) {
     this.dir = dir;
     this.history = history;
     this.onChange = onChange;
+    this.onBroken = onBroken;
     mkdirSync(this.history, { recursive: true });
     this.version = this.hash();
     if (this.snapshots().length === 0) this.snapshot();
@@ -61,7 +83,13 @@ export class Design {
   private settle() {
     let v: string;
     try { v = this.hash(); } catch { return; } // a file vanished mid-walk, the next event retries
-    if (v === this.version) return;
+    if (v === this.version) { this.broken = null; return; }
+    const problem = checkApp(this.dir);
+    if (problem) {
+      if (problem !== this.broken) { this.broken = problem; this.onBroken(problem); }
+      return;
+    }
+    this.broken = null;
     this.version = v;
     this.snapshot();
     this.onChange(v);
@@ -89,6 +117,7 @@ export class Design {
       if (!name.startsWith('.')) rmSync(join(this.dir, name), { recursive: true, force: true });
     }
     cpSync(prev, this.dir, { recursive: true });
+    this.broken = null;
     this.version = this.hash();
     this.onChange(this.version);
     return true;

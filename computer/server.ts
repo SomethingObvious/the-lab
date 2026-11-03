@@ -1,10 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { chmodSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, watch, writeFileSync } from 'node:fs';
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, watch, writeFileSync } from 'node:fs';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { extname, join, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { config, home, labDir } from './config.ts';
+import { config, home, labDir, setConfig, words } from './config.ts';
+import { awake } from './mac.ts';
+import { launchers } from './trash.ts';
+import { cleanSettings, DEFAULTS, type Settings } from './settings.ts';
 import { cleanSchedules, due, GRACE, missed, next, type Schedule } from './schedule.ts';
 
 const TYPES: Record<string, string> = {
@@ -19,7 +21,6 @@ const TYPES: Record<string, string> = {
 const typeOf = (p: string) => TYPES[extname(p).toLowerCase()] ?? 'application/octet-stream';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
-const HERE = fileURLToPath(new URL('.', import.meta.url));
 
 type Shortcut = { id: string; label: string; text: string };
 // The agent edits shortcuts.json by hand too, so bad entries are dropped
@@ -37,12 +38,12 @@ const writeJson = (file: string, value: unknown) => {
 if (process.env.LAB_CHILD) serve();
 else supervise();
 
-// Keeps one server child alive and, on a Mac, holds off system sleep while
-// on power for as long as this process lives.
+// Keeps one server child alive and holds off system sleep while on power
+// for as long as this process lives.
 function supervise() {
   const log = join(labDir(), 'server.log');
   if (existsSync(log) && statSync(log).size > 5 * 1024 * 1024) truncateSync(log, 0);
-  if (process.platform === 'darwin') spawn('caffeinate', ['-s', '-w', String(process.pid)], { stdio: 'ignore' });
+  awake(true);
 
   let child: ReturnType<typeof spawn> | null = null;
   let quickExits = 0;
@@ -72,16 +73,17 @@ async function serve() {
   const HOME = home();
   const DIR = labDir();
   const appDir = join(HOME, 'app');
-  const lab = new Lab({ home: HOME, dir: DIR, model: process.env.LAB_MODEL || undefined, engine });
+  const settingsFile = join(HOME, 'settings.json');
+  const readSettings = () => { try { return cleanSettings(JSON.parse(readFileSync(settingsFile, 'utf8'))); } catch { return null; } };
+  let settings: Settings = readSettings() ?? { ...DEFAULTS };
+  const picked = () => (typeof settings.model === 'string' && settings.model) || process.env.LAB_MODEL || undefined;
+  const lab = new Lab({ home: HOME, dir: DIR, model: picked(), engine });
 
   // The agent deletes with this, which moves files to the Trash.
-  mkdirSync(join(DIR, 'bin'), { recursive: true });
-  writeFileSync(lab.trashCmd, `#!/bin/sh\nexec "${process.execPath}" "${join(HERE, 'trash.ts')}" "$@"\n`);
-  if (process.platform !== 'win32') chmodSync(lab.trashCmd, 0o755);
+  launchers(join(DIR, 'bin'));
 
   // Codex has no send_to_phone tool, so it copies files in here instead.
   const toPhone = join(HOME, 'to-phone');
-  mkdirSync(toPhone, { recursive: true });
   const drop = async (name: string) => {
     const p = join(toPhone, name);
     if (name.startsWith('.') || !existsSync(p) || !statSync(p).isFile()) return;
@@ -92,16 +94,37 @@ async function serve() {
     rmSync(p, { force: true });
   };
   const sending = new Set<string>();
+  let watcher: ReturnType<typeof watch> | null = null;
+  // Deleting the folder used to take the server down, so it's put back, and
+  // watched again, whenever it goes missing.
   const sweep = () => {
-    for (const name of readdirSync(toPhone)) {
-      if (sending.has(name)) continue;
-      sending.add(name);
-      drop(name).catch((e) => console.error('to-phone:', e)).finally(() => sending.delete(name));
-    }
+    try {
+      if (!existsSync(toPhone)) { watcher?.close(); watcher = null; }
+      mkdirSync(toPhone, { recursive: true });
+      watcher ??= watch(toPhone, { persistent: false }, sweep).on('error', () => { watcher?.close(); watcher = null; });
+      for (const name of readdirSync(toPhone)) {
+        if (sending.has(name)) continue;
+        sending.add(name);
+        drop(name).catch((e) => console.error('to-phone:', e)).finally(() => sending.delete(name));
+      }
+    } catch (e) { console.error('to-phone:', e); }
   };
-  watch(toPhone, { persistent: false }, sweep);
   sweep();
-  const design = new Design(appDir, join(DIR, 'design-history'), (version) => lab.store.live({ kind: 'design', version }));
+  setInterval(sweep, 60_000).unref();
+  // A change to app/ that can't run stays on the Mac. The agent hears why,
+  // and he hears about it once the turn is over.
+  let told = '';
+  const design = new Design(appDir, join(DIR, 'design-history'), (version) => lab.store.live({ kind: 'design', version }),
+    (problem) => lab.note(`Your last change to app/ was held back from the phone because ${problem} Fix that first.`));
+  lab.store.listen((e) => {
+    if (e.kind !== 'done' || !design.broken || told === design.broken) return;
+    told = design.broken;
+    lab.store.add({ kind: 'notice', text: 'The last change to this app had a mistake in it, so your phone kept the version before. Ask for it again, or tap Fix It.', action: { label: 'Fix It', send: 'Your last change to the app had a mistake in it, so my phone kept the version before. Fix it and tell me what was wrong.' } });
+  });
+
+  // What the page on the phone reports going wrong, for the agent to fix.
+  const errorsFile = join(DIR, 'app-errors.log');
+  const reported = new Set<string>();
   const bridge = readFileSync(new URL('./web-bridge.js', import.meta.url));
   const want = Buffer.from(token);
 
@@ -127,12 +150,22 @@ async function serve() {
     sent = JSON.stringify(shortcuts);
     lab.store.live({ kind: 'shortcuts', items: shortcuts });
   };
-  let settle: NodeJS.Timeout | undefined;
+  let sentSettings = JSON.stringify(settings);
+  const pushSettings = () => {
+    lab.setModel(picked());
+    if (JSON.stringify(settings) === sentSettings) return;
+    sentSettings = JSON.stringify(settings);
+    lab.store.live({ kind: 'settings', values: settings });
+  };
+  const settle: Record<string, NodeJS.Timeout> = {};
   watch(HOME, { persistent: false }, (_, name) => {
-    if (name !== 'shortcuts.json') return;
-    clearTimeout(settle);
-    // A half-written or broken file keeps the last good list.
-    settle = setTimeout(() => { shortcuts = readShortcuts() ?? shortcuts; pushShortcuts(); }, 300);
+    if (name !== 'shortcuts.json' && name !== 'settings.json') return;
+    clearTimeout(settle[name]);
+    // A half-written or broken file keeps the last good one.
+    settle[name] = setTimeout(() => {
+      if (name === 'shortcuts.json') { shortcuts = readShortcuts() ?? shortcuts; pushShortcuts(); }
+      else { settings = readSettings() ?? settings; pushSettings(); }
+    }, 300);
   });
 
   // ---------- schedules ----------
@@ -248,13 +281,13 @@ async function serve() {
     return got.length === want.length && timingSafeEqual(got, want) && sameLogin(req);
   };
 
-  const json = (res: ServerResponse, status: number, body: unknown) => {
+  const json = (res: ServerResponse, status: number, body: any) => {
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-    res.end(JSON.stringify(body));
+    res.end(JSON.stringify(typeof body?.error === 'string' ? { ...body, error: words(body.error) } : body));
   };
   const html = (res: ServerResponse, status: number, title: string, body: string) => {
     res.writeHead(status, { 'content-type': TYPES['.html'], 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
-    res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><style>body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:#1d1b20;background:#fdf7ff}h1{font-size:1.6rem;line-height:1.2}a.btn{display:inline-block;background:#5a2ee6;color:#fff;padding:.9rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}img{width:100%;max-width:22rem;display:block;margin:1.5rem 0;image-rendering:pixelated}@media (prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}}</style></head><body>${body}</body></html>`);
+    res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${words(title)}</title><style>body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:#1d1b20;background:#fdf7ff}h1{font-size:1.6rem;line-height:1.2}a.btn{display:inline-block;background:#5a2ee6;color:#fff;padding:.9rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}img{width:100%;max-width:22rem;display:block;margin:1.5rem 0;image-rendering:pixelated}@media (prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}}</style></head><body>${words(body)}</body></html>`);
   };
 
   const body = (req: IncomingMessage): Promise<any> => new Promise((ok, fail) => {
@@ -279,7 +312,7 @@ async function serve() {
     const raw = req.headers['last-event-id'] ?? url.searchParams.get('after');
     const after = raw === undefined || raw === null || raw === '' ? null : Number(raw);
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
-    res.write(`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, mac: macNow, shortcuts })}\n\n`);
+    res.write(`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, mac: macNow, shortcuts, live: [{ kind: 'settings', values: settings }] })}\n\n`);
     // Replay and subscribe in the same tick, so nothing can land in between.
     for (const e of lab.store.since(Number.isFinite(after) ? after : null)) res.write(`id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`);
     res.write('event: loaded\ndata: {}\n\n');
@@ -394,7 +427,52 @@ async function serve() {
         // The page shows where each rule applies, so the agent's own folder gets a name.
         return json(res, 200, { items: lab.rules.map((r) => ({ ...r, where: r.cwd === HOME ? 'In your Lab folder' : r.cwd.startsWith(HOME + sep) ? `In ${r.cwd.slice(HOME.length + 1)} in your Lab folder` : `In ${r.cwd}` })) });
       }
-      if (req.method === 'GET' && path === '/check') return json(res, 200, { items: await check() });
+      if (path === '/settings') {
+        if (req.method === 'POST') {
+          const { values } = await body(req);
+          const next = cleanSettings({ ...settings, ...(values && typeof values === 'object' ? values : {}) });
+          if (!next) return json(res, 400, { error: 'values must be an object of settings.' });
+          writeJson(settingsFile, next);
+          settings = next;
+          pushSettings();
+        }
+        return json(res, 200, { values: settings });
+      }
+      if (req.method === 'GET' && path === '/models') return json(res, 200, await lab.models());
+      if (req.method === 'POST' && path === '/model') {
+        const { model } = await body(req);
+        if (model !== null && (typeof model !== 'string' || !/^[\w.:/@\[\]-]{1,120}$/.test(model))) return json(res, 400, { error: `That isn't a model name: ${JSON.stringify(model)}.` });
+        settings = cleanSettings({ ...settings, model: model === 'default' ? null : model })!;
+        writeJson(settingsFile, settings);
+        pushSettings();
+        return json(res, 200, { chosen: settings.model });
+      }
+      if (req.method === 'POST' && path === '/app-error') {
+        const { message, where, version, fatal } = await body(req);
+        const text = String(message ?? '').slice(0, 500);
+        // Reports from an older version of the app are already gone.
+        if (!text || (version && version !== design.version)) return json(res, 200, {});
+        appendFileSync(errorsFile, `${new Date().toISOString()} ${design.version} ${String(where ?? '').slice(0, 80)} ${text}\n`);
+        if (statSync(errorsFile).size > 1024 * 1024) truncateSync(errorsFile, 0);
+        if (fatal === true && design.undo()) {
+          lab.store.add({ kind: 'notice', text: "The last change to this app didn't open on your phone, so the version before it is back." });
+          lab.note(`Your last change to app/ stopped the phone app from opening (${text}), so the server put the version before it back. Find what broke before trying again.`);
+        } else if (!reported.has(text) && reported.size < 20) {
+          reported.add(text);
+          lab.note(`The phone app hit an error in ${String(where ?? 'the page').slice(0, 80)}: "${text}". If it comes from a change you made to app/, fix it.`);
+        }
+        return json(res, 200, {});
+      }
+      if (req.method === 'POST' && path === '/name') {
+        const { name } = await body(req);
+        if (typeof name !== 'string' || name.trim().length > 40) return json(res, 400, { error: 'A name has to be 40 characters or fewer.' });
+        // A blank name goes back to the one the Mac calls itself.
+        setConfig({ name: name.trim() || undefined });
+        macNow = await mac().catch(() => macNow);
+        if (macNow) lab.store.live(macNow);
+        return json(res, 200, { name: macNow?.name ?? name.trim() });
+      }
+      if (req.method === 'GET' && path === '/check') return json(res, 200, { items: (await check()).map((i) => ({ ...i, title: words(i.title), ...(i.detail ? { detail: words(i.detail) } : {}) })) });
       if (req.method === 'POST' && path === '/presence') {
         // Only counts when someone is actually at the keyboard, so a browser
         // tab left open in front doesn't silence the phone all evening.

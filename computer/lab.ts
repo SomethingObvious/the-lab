@@ -2,24 +2,32 @@ import { query, tool, createSdkMcpServer, type Query, type SDKMessage, type SDKU
 import { z } from 'zod';
 import { closeSync, copyFileSync, existsSync, fdatasyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, delimiter, join, resolve } from 'node:path';
+import { basename, delimiter, join, resolve, sep } from 'node:path';
+import { checkApp } from './design.ts';
 import { randomUUID } from 'node:crypto';
 import { clip, detail, title } from './steps.ts';
 import { Codex } from './codex.ts';
 import { judge, needsOk, type Judgement, type Where } from './guard.ts';
-import { snapshot } from './mac.ts';
+import { awake, snapshot } from './mac.ts';
+import { WIN, words } from './config.ts';
 import { CAP, diff, parse, render, suspect, type Memory } from './memory.ts';
 
 export type Ev = { id: number; at: string; kind: string; [k: string]: unknown };
 type Listener = (e: Ev | Live) => void;
 // Live events go to whoever is connected and are never stored or replayed.
-export type Live = { kind: 'status' | 'design' | 'mac' | 'shortcuts'; [k: string]: unknown };
+// The phone keeps the newest of each kind and hands it to the page as it opens.
+export type Live = { kind: 'status' | 'design' | 'mac' | 'shortcuts' | 'settings'; [k: string]: unknown };
 export type Attached = { name: string; url: string; size: number; type: string };
 
 const KEEP = 5000;
 // Kinds that notify on the phone, which skip the notification while he's
 // using The Lab on the Mac itself.
 const LOUD = new Set(['reply', 'file', 'ask', 'notice']);
+// Events whose words the server wrote, not the agent or him.
+const OURS = new Set(['ask', 'blocked', 'notice']);
+const localize = <T extends Record<string, unknown>>(e: T): T => Object.fromEntries(Object.entries(e).map(([k, v]) =>
+  [k, typeof v === 'string' && ['text', 'title', 'plain', 'label'].includes(k) ? words(v) : k === 'facts' && Array.isArray(v) ? v.map((f) => words(String(f)))
+    : k === 'points' && Array.isArray(v) ? v.map((p) => ({ ...p, text: words(String(p.text)) })) : v])) as T;
 
 export class Store {
   events: Ev[] = [];
@@ -49,6 +57,7 @@ export class Store {
   }
 
   add(e: { kind: string; [k: string]: unknown }, durable = false): Ev {
+    if (WIN && OURS.has(e.kind)) e = localize(e);
     const ev = { id: this.next++, at: new Date().toISOString(), ...e, ...(LOUD.has(e.kind) && this.atMac() ? { onMac: true } : {}) } as Ev;
     writeSync(this.fd, JSON.stringify(ev) + '\n');
     if (durable) fdatasyncSync(this.fd);
@@ -107,7 +116,21 @@ export const DENIED: Record<string, string> = {
   stop: 'He stopped the task.',
 };
 
-const LIMITS = 'A few things to know before you start. The Lab only works while your Mac is awake, so a closed lid or a flat battery pauses it until the Mac is back. It asks here before it deletes, sends or installs anything, and what it deletes goes to the Trash on the Mac, where you can get it back. It can get things wrong, so check anything that matters. If a change to this app looks worse, say "undo".';
+// The first thing in a new conversation. `text` is for a design that only
+// knows plain notices, and for the notification.
+const WELCOME = {
+  kind: 'notice',
+  first: true,
+  title: 'Before You Start',
+  text: 'The Lab works while your Mac is awake, asks before it deletes, sends or installs anything, and puts what it deletes in the Trash.',
+  points: [
+    { icon: 'bolt', text: 'It works while your Mac is awake. A closed lid or a flat battery pauses it.' },
+    { icon: 'shield', text: 'It asks you here before it deletes, sends or installs anything.' },
+    { icon: 'trash', text: 'What it deletes goes to the Trash, so you can get it back.' },
+    { icon: 'check', text: 'It can get things wrong, so check anything that matters.' },
+    { icon: 'redo', text: 'If a change to this app looks worse, say "undo".' },
+  ],
+};
 
 // Variables that look like credentials stay out of the agent's shell, as
 // Hermes does. The engine's own sign-in is kept.
@@ -141,6 +164,7 @@ export class Lab {
   // result isn't drawn again.
   readonly hushed = new Set<string>();
   private titles = new Map<string, string>();
+  private release?: () => void;
   // Where outside content got into this task, which labels any send after it.
   taint: string | null = null;
   private noes = 0;
@@ -150,6 +174,8 @@ export class Lab {
   private memoryText = '';
   // Said to the agent at the top of its next message.
   private nextNote = '';
+  // What the engine said it's running, which can differ from the one picked.
+  modelInUse: string | null = null;
   rules: Rule[] = [];
   readonly where: Where;
   readonly trashCmd: string;
@@ -164,14 +190,15 @@ export class Lab {
     this.stateFile = join(opts.dir, 'state.json');
     this.rulesFile = join(opts.dir, 'allowed.json');
     this.where = { user: homedir().replace(/\\/g, '/'), home: opts.home.replace(/\\/g, '/'), lab: opts.dir.replace(/\\/g, '/') };
-    this.trashCmd = join(opts.dir, 'bin', 'trash');
+    // PowerShell would open a file with no extension instead of running it.
+    this.trashCmd = join(opts.dir, 'bin', WIN ? 'trash.cmd' : 'trash');
     this.memoryFile = join(opts.home, 'memory.md');
     this.state = existsSync(this.stateFile) ? JSON.parse(readFileSync(this.stateFile, 'utf8')) : {};
     try { this.rules = JSON.parse(readFileSync(this.rulesFile, 'utf8')); } catch { /* none yet */ }
     const fresh = !existsSync(join(opts.dir, 'events.jsonl'));
     this.store = new Store(join(opts.dir, 'events.jsonl'));
     for (const e of this.store.events) if (e.kind === 'you') this.seen.add(String(e.cid));
-    if (fresh) this.store.add({ kind: 'notice', text: LIMITS, first: true });
+    if (fresh) this.store.add(WELCOME);
 
     if (this.state.open) {
       // Without a done the cut-off turn's approvals would stay live.
@@ -196,6 +223,9 @@ export class Lab {
     if (working === this.status.working && label === this.status.label) return;
     const since = working === this.status.working ? this.status.since : new Date().toISOString();
     this.status = { ...this.status, working, label, since };
+    // A laptop on battery would otherwise doze off partway through a task.
+    if (working && !this.release) this.release = awake();
+    if (!working) { this.release?.(); this.release = undefined; }
     this.store.live({ kind: 'status', ...this.status });
   }
 
@@ -241,6 +271,7 @@ export class Lab {
   }
 
   close() {
+    this.release?.();
     this.codex?.close();
     this.q?.close();
     this.store.close();
@@ -253,7 +284,7 @@ export class Lab {
     if (!finish) return false;
     const card = this.cards.get(ref);
     if (allow && always && card?.always) {
-      this.rules = [...this.rules.filter((r) => !(r.command === card.always!.command && r.cwd === card.always!.cwd)), { tool: 'Bash', ...card.always, plain: card.plain || card.title, at: new Date().toISOString() }];
+      this.rules = [...this.rules.filter((r) => !(r.command === card.always!.command && r.cwd === card.always!.cwd)), { tool: WIN ? 'PowerShell' : 'Bash', ...card.always, plain: card.plain || card.title, at: new Date().toISOString() }];
       this.saveRules();
     }
     finish(allow, 'phone');
@@ -302,7 +333,7 @@ export class Lab {
     if (j.secret) facts.push('It reads a saved password or key.');
     if (j.unsure) facts.push("Exactly which files isn't known until it runs.");
     const plain = j.plain || title(tool, input);
-    const command = tool === 'Bash' ? String(input.command ?? '') : '';
+    const command = tool === 'Bash' || tool === 'PowerShell' ? String(input.command ?? '') : '';
     const offer = !!command && !j.secret && !j.leaves && j.effect !== 'send';
     return {
       title: `Allow: ${plain}?`,
@@ -347,11 +378,11 @@ export class Lab {
     }
     if (j.rm) {
       this.hushed.add(ref);
-      return decide('deny', `On this Mac files are deleted by moving them to the Trash, so he can get them back. Run ${this.trashCmd} with every path in one command instead. List what you'll delete first if it's more than a handful.`);
+      return decide('deny', words(`On this Mac files are deleted by moving them to the Trash, so he can get them back. Run ${this.trashCmd} with every path in one command instead. List what you'll delete first if it's more than a handful.`));
     }
     const mem = this.memoryGate(tool, args);
     if (mem) { this.hushed.add(ref); return decide('deny', mem); }
-    if (tool === 'Bash' && this.allowedBefore(String(args.command ?? ''), String(input.cwd ?? ''))) return decide('allow');
+    if ((tool === 'Bash' || tool === 'PowerShell') && this.allowedBefore(String(args.command ?? ''), String(input.cwd ?? ''))) return decide('allow');
     if (needsOk(j, w, !!this.taint)) {
       if (j.effect === 'delete' || j.effect === 'system') await this.snap(60_000);
       const { allow, by } = await this.waitFor(ref, tool, this.card(tool, args, j, args.description, input.cwd), signal);
@@ -364,13 +395,50 @@ export class Lab {
 
   // An email's sender, once the agent has read it, so a card can say which
   // email a request came up in.
+  // Adds to what the agent hears at the top of its next message.
+  note(text: string) {
+    if (!this.nextNote.includes(text)) this.nextNote = [this.nextNote, text].filter(Boolean).join(' ');
+  }
+
   private after(input: any): HookJSONOutput {
+    // A mistake in app/ is held back from the phone, and said straight away
+    // so it gets fixed in the same turn.
+    const file = String(input.tool_input?.file_path ?? '');
+    const app = join(this.opts.home, 'app');
+    if (['Write', 'Edit', 'MultiEdit'].includes(input.tool_name) && file && resolve(file).startsWith(resolve(app) + sep)) {
+      const problem = checkApp(app, resolve(file));
+      if (problem) return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `${problem} The phone stays on the last version that worked until this is fixed, so fix it now.` } };
+    }
     if (this.taint === 'your email') {
       const text = JSON.stringify(input.tool_response ?? '').slice(0, 20000);
       const from = /"?from"?\s*[:=]\s*\\?"?([^"\\,<]*<?[\w.+-]+@[\w-]+\.[\w.]+>?)/i.exec(text);
       if (from) this.taint = `an email from ${clip(from[1].trim(), 80)}`;
     }
     return {};
+  }
+
+  // ---------- models ----------
+
+  // What the engine's provider offers right now, whichever provider that is.
+  async models(): Promise<{ engine: string; chosen: string | null; inUse: string | null; choices: { id: string; name: string; description: string }[] }> {
+    let choices: { id: string; name: string; description: string }[];
+    if (this.opts.engine === 'codex') {
+      this.codex ??= new Codex(this, this.opts.home, PROMPT(this.trashCmd), this.opts.model);
+      choices = await this.codex.models();
+    } else {
+      this.ensureRunning();
+      const got = await Promise.race([this.q!.supportedModels(), new Promise<never>((_, no) => setTimeout(() => no(new Error("Claude didn't list its models within 20 seconds.")), 20_000))]);
+      choices = got.map((m) => ({ id: m.value, name: m.displayName, description: m.description }));
+    }
+    return { engine: this.opts.engine ?? 'claude', chosen: this.opts.model ?? null, inUse: this.modelInUse, choices };
+  }
+
+  // Takes effect from the next message. Undefined goes back to the default.
+  setModel(model: string | undefined) {
+    if (model === this.opts.model) return;
+    this.opts.model = model;
+    this.q?.setModel(model).catch((e) => console.error('setModel:', e));
+    this.codex?.setModel(model);
   }
 
   // ---------- memory ----------
@@ -577,6 +645,7 @@ export class Lab {
           this.state.sessionId = m.session_id;
           this.save();
           this.status.mode = m.permissionMode;
+          this.modelInUse = m.model;
           console.log(`session ${m.session_id} model=${m.model} mode=${m.permissionMode}`);
         } else if (m.subtype === 'api_retry') {
           this.setStatus(true, `Waiting on the API (try ${m.attempt} of ${m.max_retries})`);
@@ -728,4 +797,4 @@ export class Lab {
   }
 }
 
-const PROMPT = (trash: string) => `You are talking to the owner of this Mac through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app. Delete files with ${trash} PATH..., which moves them to the Trash, never with rm. Write web addresses out in full rather than hiding them behind link text.`;
+const PROMPT = (trash: string) => words(`You are talking to the owner of this Mac through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app. Delete files with ${trash} PATH..., which moves them to the Trash, never with rm. Write web addresses out in full rather than hiding them behind link text.`);

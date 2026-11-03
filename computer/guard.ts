@@ -3,7 +3,7 @@
 // anything leaves the Mac, and whether it is never allowed at all. Every Allow
 // card on the phone and every rule the server enforces is built from this, so
 // an agent talked round by a web page or an email can't explain its way past it.
-import { basename, dirname, isAbsolute, resolve } from 'node:path';
+import { basename, dirname, posix, win32 } from 'node:path';
 
 export type Effect = 'read' | 'change' | 'delete' | 'send' | 'system' | 'run';
 
@@ -36,35 +36,53 @@ export type Where = { user: string; home: string; lab: string; cwd?: string };
 const READ = new Set(['ls', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'du', 'df', 'wc', 'stat', 'file', 'mdls', 'mdfind', 'pwd', 'echo', 'printf', 'which', 'whereis', 'type', 'date', 'cal', 'sw_vers', 'system_profiler', 'uname', 'whoami', 'id', 'hostname', 'uptime', 'ps', 'pgrep', 'lsof', 'jq', 'sort', 'uniq', 'cut', 'tr', 'awk', 'sed', 'tree', 'diff', 'cmp', 'md5', 'shasum', 'sha256sum', 'basename', 'dirname', 'realpath', 'readlink', 'test', '[', 'true', 'false', 'sleep', 'ioreg', 'pbpaste', 'say', 'afplay', 'cd', 'exit', 'wait', 'strings', 'xxd', 'od', 'hexdump', 'column', 'nl', 'fold', 'base64', 'bc', 'expr', 'seq', 'locale', 'sysctl', 'vm_stat', 'top', 'w', 'last', 'getconf', 'sips', 'plutil', 'pdftotext', 'exiftool', 'ffprobe', 'identify', 'printenv', 'set', 'export', 'source', '.', 'read', 'local', 'shift', 'return']);
 const CHANGE = new Set(['mv', 'cp', 'ditto', 'mkdir', 'touch', 'ln', 'chmod', 'chown', 'chflags', 'tee', 'install', 'zip', 'unzip', 'tar', 'gzip', 'gunzip', 'bzip2', 'xz', '7z', 'xattr', 'screencapture', 'convert', 'magick', 'ffmpeg', 'pandoc', 'textutil', 'qlmanage', 'iconutil', 'pbcopy', 'open', 'mkfifo', 'split', 'patch', 'rename', 'sqlite3', 'osascript', 'shortcuts']);
 const DELETE = new Set(['rm', 'rmdir', 'unlink', 'shred', 'srm', 'truncate']);
-const SYSTEM = new Set(['su', 'launchctl', 'systemsetup', 'networksetup', 'softwareupdate', 'installer', 'killall', 'kill', 'pkill', 'shutdown', 'reboot', 'halt', 'nvram', 'dscl', 'chsh', 'crontab', 'tccutil', 'profiles', 'kextload', 'kextunload', 'fdesetup', 'diskutil', 'dd', 'mount', 'mount_apfs', 'umount', 'hdiutil', 'pmset', 'scutil', 'csrutil', 'spctl', 'tmutil', 'mas', 'port', 'systemextensionsctl', 'kmutil', 'bless', 'passwd', 'sysadminctl', 'dseditgroup', 'pfctl', 'mkfs', 'newfs', 'fsck', 'mdutil']);
+const SYSTEM = new Set(['reg', 'schtasks', 'sc', 'netsh', 'wmic', 'powercfg', 'setx', 'takeown', 'icacls', 'runas', 'rundll32', 'mshta', 'regsvr32', 'certutil', 'dism', 'sfc', 'net', 'cmdkey', 'su', 'launchctl', 'systemsetup', 'networksetup', 'softwareupdate', 'installer', 'killall', 'kill', 'pkill', 'shutdown', 'reboot', 'halt', 'nvram', 'dscl', 'chsh', 'crontab', 'tccutil', 'profiles', 'kextload', 'kextunload', 'fdesetup', 'diskutil', 'dd', 'mount', 'mount_apfs', 'umount', 'hdiutil', 'pmset', 'scutil', 'csrutil', 'spctl', 'tmutil', 'mas', 'port', 'systemextensionsctl', 'kmutil', 'bless', 'passwd', 'sysadminctl', 'dseditgroup', 'pfctl', 'mkfs', 'newfs', 'fsck', 'mdutil']);
 const SEND = new Set(['scp', 'sftp', 'ssh', 'mail', 'sendmail', 'mutt', 'nc', 'ncat', 'netcat', 'telnet', 'ftp', 'socat']);
 // Wrappers whose real command is the rest of the line.
 const WRAP = new Set(['env', 'command', 'builtin', 'nohup', 'time', 'nice', 'exec', 'caffeinate', 'stdbuf', 'timeout', 'gtimeout', 'xcrun', 'sudo', 'doas']);
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh']);
+// PowerShell and cmd names for things the lists above already cover, so a
+// Remove-Item is judged exactly like an rm.
+const ALIAS: Record<string, string> = {
+  'remove-item': 'rm', ri: 'rm', del: 'rm', erase: 'rm', rd: 'rm',
+  'copy-item': 'cp', copy: 'cp', cpi: 'cp', xcopy: 'cp', 'move-item': 'mv', move: 'mv', mi: 'mv', 'rename-item': 'mv', ren: 'mv', rni: 'mv',
+  'new-item': 'touch', ni: 'touch', md: 'mkdir', 'set-content': 'tee', 'add-content': 'tee', 'out-file': 'tee', 'tee-object': 'tee', 'clear-content': 'tee',
+  'expand-archive': 'unzip', 'compress-archive': 'zip', 'set-clipboard': 'pbcopy', clip: 'pbcopy',
+  'get-childitem': 'ls', gci: 'ls', dir: 'ls', 'get-content': 'cat', gc: 'cat', 'select-string': 'grep', sls: 'grep', findstr: 'grep',
+  'write-output': 'echo', 'write-host': 'echo', 'set-location': 'cd', sl: 'cd', chdir: 'cd', 'push-location': 'cd', 'get-process': 'ps', gps: 'ps', tasklist: 'ps', where: 'which',
+  'stop-process': 'kill', spps: 'kill', taskkill: 'kill', 'start-process': 'open', saps: 'open', start: 'open', 'invoke-item': 'open', ii: 'open',
+  'invoke-expression': 'eval', iex: 'eval', iwr: 'invoke-webrequest', irm: 'invoke-restmethod', 'stop-computer': 'shutdown', 'restart-computer': 'reboot',
+};
+// The rest of PowerShell goes by its verb. Reading verbs pass, file verbs
+// change files, and anything else that sets, stops or installs asks first.
+const PS_READ = /^(get|test|select|measure|format|write|resolve|convertto|convertfrom|compare|sort|where|foreach|group|join|split|find|search|show|read|wait|import|out|add-type|new-object|new-variable|set-variable|clear-variable|remove-variable|set-strictmode|set-alias|clear-host|start-sleep|start-job|start-threadjob|receive|invoke-command|pop-location|trace|debug|use)(-|$)/;
+const PS_SYSTEM = /^(set|enable|disable|install|uninstall|register|unregister|stop|restart|start|remove|clear|reset|update|add|grant|revoke|suspend|resume|publish|initialize|format|mount|dismount|repair|lock|unlock|block|unblock|protect|unprotect|invoke|new|rename|move|copy|export|send)-/;
+// Names a command is known by, whatever folder or extension it was run from.
+export const nameOf = (argv0: string) => { const raw = (argv0.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.(exe|cmd|bat|com)$/, ''); return ALIAS[raw] ?? raw; };
 // Folders whose whole contents going would wreck the Mac or his files.
-const BIG = ['Desktop', 'Documents', 'Downloads', 'Pictures', 'Movies', 'Music', 'Library', 'Applications', 'Public', 'Sites'];
-const SYSTEM_DIRS = ['/', '/System', '/Library', '/Applications', '/Users', '/usr', '/bin', '/sbin', '/private', '/etc', '/var', '/opt', '/cores', '/Volumes', '/tmp'];
-const SECRET = /(\/\.ssh\/(id_|.*key)|\/\.aws\/credentials|\/\.netrc|\/\.gnupg\/|\/Keychains\/|\/\.config\/gh\/hosts|\/\.docker\/config\.json|\/Cookies(\.binarycookies)?$|\/Login Data$|\/\.npmrc$|\/\.pypirc$|\.pem$|\.p12$|\/\.env(\.\w+)?$)/;
+const BIG = ['Desktop', 'Documents', 'Downloads', 'Pictures', 'Movies', 'Music', 'Library', 'Applications', 'Public', 'Sites', 'Videos', 'AppData', 'OneDrive'];
+const SYSTEM_DIRS = ['/', '/System', '/Library', '/Applications', '/Users', '/usr', '/bin', '/sbin', '/private', '/etc', '/var', '/opt', '/cores', '/Volumes', '/tmp', 'C:', 'C:/Windows', 'C:/Program Files', 'C:/Program Files (x86)', 'C:/ProgramData', 'C:/Users'];
+const SECRET = /(\/\.ssh\/(id_|.*key)|\/\.aws\/credentials|\/\.netrc|\/\.gnupg\/|\/Keychains\/|\/\.config\/gh\/hosts|\/\.docker\/config\.json|\/Cookies(\.binarycookies)?$|\/Login Data$|\/\.npmrc$|\/\.pypirc$|\.pem$|\.p12$|\/\.env(\.\w+)?$|\/Microsoft\/(Credentials|Protect|Vault)\/)/i;
 const TOKEN = /config\.json$|password$|\.jks$/;
 
-type Seg = { argv: string[]; out: string[]; pipedIn: boolean };
+type Seg = { argv: string[]; out: string[]; pipedIn: boolean; ps?: boolean };
 
 // Splits a shell line into simple commands. Quotes are honoured, and
 // $(...) and backticks count as command breaks, so a delete hidden inside
 // one is still seen.
-export function segments(line: string): Seg[] {
+export function segments(line: string, ps = false): Seg[] {
   const segs: Seg[] = [];
   let argv: string[] = [], out: string[] = [], word: string | null = null, redirect = false, piped = false;
   // A lone brace opens or closes a group, but find's {} is just a word.
   const push = () => {
     if (!redirect && (word === '{' || word === '}')) { word = null; end(); return; }
-    if (redirect) { if (word !== '/dev/null') out.push(word!); redirect = false; }
+    if (redirect) { if (word !== '/dev/null' && word!.toLowerCase() !== '$null') out.push(word!); redirect = false; }
     else argv.push(word!);
     word = null;
   };
   const end = (pipe = false) => {
     if (word !== null) push();
-    if (argv.length) segs.push({ argv, out, pipedIn: piped });
+    if (argv.length) segs.push({ argv, out, pipedIn: piped, ps });
     argv = []; out = []; piped = pipe; redirect = false;
   };
   for (let i = 0; i < line.length; i++) {
@@ -76,12 +94,13 @@ export function segments(line: string): Seg[] {
     } else if (c === '"') {
       let s = '';
       for (i++; i < line.length && line[i] !== '"'; i++) {
-        if (line[i] === '\\' && i + 1 < line.length) s += line[++i];
-        else if (line[i] === '`' || (line[i] === '$' && line[i + 1] === '(')) { word = (word ?? '') + s; s = ''; end(); if (line[i] === '$') i++; }
+        // Inside bash double quotes a backslash only escapes these, so C:\Windows keeps its own.
+        if (ps ? line[i] === '`' && i + 1 < line.length : line[i] === '\\' && '$`"\\\n'.includes(line[i + 1] ?? 'x')) s += line[++i];
+        else if ((!ps && line[i] === '`') || (line[i] === '$' && line[i + 1] === '(')) { word = (word ?? '') + s; s = ''; end(); if (line[i] === '$') i++; }
         else s += line[i];
       }
       word = (word ?? '') + s;
-    } else if (c === '\\') { word = (word ?? '') + (line[i + 1] ?? ''); i++; }
+    } else if (c === (ps ? '`' : '\\')) { word = (word ?? '') + (line[i + 1] ?? ''); i++; }
     else if (c === '$' && line[i + 1] === '(') { end(); i++; }
     else if ('`;\n()'.includes(c)) end();
     else if (c === '&') {
@@ -106,7 +125,10 @@ export function segments(line: string): Seg[] {
 const args = (argv: string[]) => argv.slice(1).filter((a) => !a.startsWith('-'));
 // A flag, whether on its own or bundled like -rf.
 const has = (argv: string[], ...f: string[]) => argv.some((a) => f.includes(a) || (/^-[a-zA-Z]+$/.test(a) && f.some((x) => /^-[a-zA-Z]$/.test(x) && a.includes(x[1]))));
-const within = (p: string, dir: string) => p === dir || p.startsWith(dir.replace(/\/$/, '') + '/');
+// Windows paths compare without case, the way NTFS treats them.
+const fold = (p: string) => (/^[a-z]:(\/|$)/i.test(p) ? p.toLowerCase() : p);
+const same = (a: string, b: string) => fold(a) === fold(b);
+const within = (p: string, dir: string) => { const a = fold(p), d = fold(dir).replace(/\/$/, ''); return a === d || a.startsWith(d + '/'); };
 const hostOf = (u: string) => { try { return new URL(/^\w+:/.test(u) ? u : `https://${u}`).host; } catch { return ''; } };
 // An address carrying a long query or path, which is how data gets smuggled
 // out in a plain page load.
@@ -115,16 +137,20 @@ const clip = (s: string) => (s.length > 60 ? s.slice(0, 59) + '…' : s);
 const count = (k: number, one: string) => `${k} ${k === 1 ? one : one + 's'}`;
 
 function expand(p: string, w: Where): { path: string; unsure: boolean } {
-  let s = p.replace(/^~(?=$|\/)/, w.user).replace(/\$\{?HOME\}?/g, w.user);
-  const unsure = /\$|`/.test(s);
-  if (!isAbsolute(s) && !unsure) s = resolve(w.cwd ?? w.home, s).replace(/\\/g, '/');
+  const win = /^[a-z]:\//i.test(w.user);
+  let s = p.replace(/^~(?=$|[\/\\])/, w.user).replace(/\$\{?HOME\}?|\$env:USERPROFILE|%USERPROFILE%/gi, w.user);
+  // Git Bash writes C:\Users as /c/Users.
+  if (win) s = s.replace(/\\/g, '/').replace(/^\/([a-z])(?=\/|$)/i, (_, d) => `${d.toUpperCase()}:`);
+  const unsure = /\$|`|%\w+%/.test(s);
+  const path = win ? win32 : posix;
+  if (!path.isAbsolute(s) && !unsure) s = path.resolve(w.cwd ?? w.home, s).replace(/\\/g, '/');
   return { path: s.replace(/(.)\/+$/, '$1'), unsure };
 }
 
 // The folder a path is in, in the words he'd use: "Downloads", or "your home folder".
 export function place(p: string, w: Where): string {
-  if (p === w.user || dirname(p) === w.user && !BIG.includes(basename(p))) return 'your home folder';
-  if (dirname(p) === w.user) return basename(p);
+  if (same(p, w.user) || same(dirname(p), w.user) && !BIG.includes(basename(p))) return 'your home folder';
+  if (same(dirname(p), w.user)) return basename(p);
   const top = p.slice(w.user.length + 1).split('/')[0];
   if (within(p, w.user) && BIG.includes(top)) return top;
   return basename(dirname(p));
@@ -142,10 +168,11 @@ function protectedPath(p: string, w: Where): string | null {
 // cleanup should ever reach. The Codex home-folder wipe in July 2026 was a
 // cleanup like this.
 function wipes(p: string, w: Where): string | null {
-  if (p === w.user) return 'your whole home folder';
-  if (within(w.user, p) || SYSTEM_DIRS.includes(p)) return `${p}, which macOS needs`;
-  if (dirname(p) === w.user && BIG.includes(basename(p))) return `your whole ${basename(p)} folder`;
-  if (p.endsWith('/*') && (dirname(p) === w.user || SYSTEM_DIRS.includes(dirname(p)))) return `everything in ${dirname(p) === w.user ? 'your home folder' : dirname(p)}`;
+  const system = (d: string) => SYSTEM_DIRS.some((x) => same(x, d));
+  if (same(p, w.user)) return 'your whole home folder';
+  if (within(w.user, p) || system(p)) return `${p}, which macOS needs`;
+  if (same(dirname(p), w.user) && BIG.some((b) => same(b, basename(p)))) return `your whole ${basename(p)} folder`;
+  if (p.endsWith('/*') && (same(dirname(p), w.user) || system(dirname(p)))) return `everything in ${same(dirname(p), w.user) ? 'your home folder' : dirname(p)}`;
   return null;
 }
 
@@ -153,7 +180,7 @@ const blank = (): Judgement => ({ effect: 'read', plain: '', touches: [], undo: 
 
 function deletion(cmd: string, sub: string, argv: string[], rest: string[], w: Where): Judgement {
   const trashing = cmd === 'trash' || cmd === 'mv' || (cmd === 'find' && /-exec(dir)?\s+(\S*\/)?trash\s/.test(argv.join(' ')));
-  const targets = cmd === 'find' ? [rest[0] ?? '.'] : cmd === 'mv' ? rest.slice(0, -1) : cmd === 'git' || cmd === 'rsync' ? [rest.at(-1) ?? '.'] : rest;
+  const targets = cmd === 'find' ? [rest[0] ?? '.'] : cmd === 'mv' ? rest.slice(0, -1) : cmd === 'git' || cmd === 'rsync' ? [rest.at(-1) ?? '.'] : cmd === 'robocopy' ? [rest[1] ?? '.'] : rest;
   const ps = targets.map((a) => expand(a, w));
   const known = ps.filter((p) => !p.unsure);
   const j: Judgement = { ...blank(), effect: 'delete', touches: ps.map((p) => p.path), undo: trashing ? 'trash' : 'no', rm: !trashing, unsure: known.length < ps.length || cmd === 'find' || cmd === 'git' };
@@ -162,7 +189,7 @@ function deletion(cmd: string, sub: string, argv: string[], rest: string[], w: W
   for (const p of known) {
     const lost = picks ? null : wipes(p.path, w);
     if (lost && !j.block) { j.block = `That would delete ${lost}. That's never allowed.`; j.plain = `Delete ${lost}`; return j; }
-    j.block ??= /\/\.Trash(\/|$)/.test(p.path) && !trashing ? 'Emptying the Trash takes away your undo, so only you do that.' : undefined;
+    j.block ??= /\/(\.Trash|\$Recycle\.Bin)(\/|$)/i.test(p.path) && !trashing ? 'Emptying the Trash takes away your undo, so only you do that.' : undefined;
     j.block ??= protectedPath(p.path, w) ?? undefined;
   }
   const where = [...new Set(known.map((p) => place(p.path, w)))];
@@ -179,6 +206,9 @@ function deletion(cmd: string, sub: string, argv: string[], rest: string[], w: W
 function command(seg: Seg, w: Where): Judgement {
   let argv = seg.argv;
   let sudo = false;
+  // $x = Get-ChildItem runs what's on the right.
+  if (/^\$[\w:]+$/.test(argv[0] ?? '') && argv[1] === '=') argv = argv.slice(2);
+  else if (/^\$[\w:]+=./.test(argv[0] ?? '')) argv = [argv[0].replace(/^\$[\w:]+=/, ''), ...argv.slice(1)];
   while (argv.length && (WRAP.has(basename(argv[0])) || /^\w+=/.test(argv[0]))) {
     if (argv[0] === 'sudo' || argv[0] === 'doas') sudo = true;
     const timed = /timeout$/.test(argv[0]);
@@ -186,7 +216,7 @@ function command(seg: Seg, w: Where): Judgement {
     while (argv[0]?.startsWith('-')) argv = argv.slice(argv[0] === '-u' || argv[0] === '-n' ? 2 : 1);
     if (timed && /^\d/.test(argv[0] ?? '')) argv = argv.slice(1);
   }
-  const cmd = basename(argv[0] ?? '');
+  const cmd = nameOf(argv[0] ?? '');
   const sub = argv[1] ?? '';
   const rest = args(argv);
   const line = argv.join(' ');
@@ -198,16 +228,29 @@ function command(seg: Seg, w: Where): Judgement {
     if (flag > 0) return judgeShell(argv[flag + 1] ?? '', w);
     if (seg.pipedIn) return { ...j, effect: 'system', plain: 'Run a script it just downloaded' };
   }
-  if (cmd === 'eval') return judgeShell(argv.slice(1).join(' '), w);
+  if (cmd === 'powershell' || cmd === 'pwsh') {
+    const enc = argv.findIndex((a) => /^-(e|ec|enc|encodedcommand)$/i.test(a));
+    if (enc > 0) return judgeShell(Buffer.from(argv[enc + 1] ?? '', 'base64').toString('utf16le'), w, true);
+    const at = argv.findIndex((a) => /^-(c|command)$/i.test(a));
+    if (at > 0) return judgeShell(argv.slice(at + 1).join(' '), w, true);
+  }
+  if (cmd === 'cmd') {
+    const at = argv.findIndex((a) => /^\/[ck]$/i.test(a));
+    if (at > 0) return judgeShell(argv.slice(at + 1).join(' '), w, true);
+  }
+  if (cmd === 'eval') return judgeShell(argv.slice(1).join(' '), w, seg.ps);
+  // .NET calls delete for good, the same as rm.
+  if (/^\[(system\.)?io\.(file|directory)(info)?\]::delete$|^\.delete$|::delete(file|directory)$/.test(cmd)) return { ...j, effect: 'delete', undo: 'no', rm: true, unsure: true, plain: 'Permanently delete something' };
   if (cmd === 'xargs') {
-    const inner = command({ argv: argv.slice(1).filter((a) => !/^-/.test(a)), out: [], pipedIn: false }, w);
+    const inner = command({ argv: argv.slice(1).filter((a) => !/^-/.test(a)), out: [], pipedIn: false, ps: seg.ps }, w);
     return { ...inner, unsure: true };
   }
 
   const deleting = DELETE.has(cmd)
     || (cmd === 'find' && (argv.includes('-delete') || /-exec(dir)?\s+(\S*\/)?(rm|unlink|shred|trash)\s/.test(argv.join(' '))))
     || (cmd === 'git' && (sub === 'clean' || (sub === 'reset' && argv.includes('--hard'))))
-    || (cmd === 'rsync' && argv.some((a) => a.startsWith('--delete')));
+    || (cmd === 'rsync' && argv.some((a) => a.startsWith('--delete')))
+    || (cmd === 'robocopy' && argv.some((a) => /^\/(mir|purge)$/i.test(a)));
   if (deleting || cmd === 'trash' || (cmd === 'mv' && rest.length >= 2 && /\.Trash\/?$/.test(rest.at(-1)!))) return deletion(cmd, sub, argv, rest, w);
 
   // Never allowed, whatever it's for.
@@ -219,13 +262,18 @@ function command(seg: Seg, w: Where): Judgement {
   if (cmd === 'spctl' && /--(master|global)-disable|--disable/.test(line)) return never('Turn off Gatekeeper', 'Turning off macOS security is never allowed.');
   if (cmd === 'tmutil' && /^(delete|deletelocalsnapshots|thinlocalsnapshots|disable|disablelocal|removedestination)/.test(sub)) return never('Delete Time Machine snapshots', 'Time Machine snapshots are how you undo a mistake, so they are never deleted or turned off.');
   if (cmd === 'osascript' && /empty\s+(the\s+)?trash/i.test(line)) return never('Empty the Trash', 'Emptying the Trash takes away your undo, so only you do that.', 'delete');
-  if (['launchctl', 'pkill', 'killall', 'kill'].includes(cmd) && /thelab|server\.ts/i.test(line)) return never('Stop The Lab', 'The agent may never stop or change The Lab itself.');
+  if (['launchctl', 'pkill', 'killall', 'kill'].includes(cmd) && /thelab|server\.ts|\bnode(\.exe)?\b/i.test(line)) return never('Stop The Lab', 'The agent may never stop or change The Lab itself.');
+  if (/thelab/i.test(line) && (/\\run\b|currentversion/i.test(line) || ['reg', 'schtasks', 'sc'].includes(cmd) || /-(itemproperty|scheduledtask)$/.test(cmd))) return never('Stop The Lab', 'The agent may never stop or change The Lab itself.');
+  if ((cmd === 'vssadmin' && /delete|resize/i.test(line)) || (cmd === 'wmic' && /shadowcopy.*delete/i.test(line)) || (cmd === 'wbadmin' && /delete/i.test(line)) || cmd === 'remove-computerrestorepoint') return never('Delete restore points', 'Restore points and backups are how you undo a mistake, so they are never deleted.');
+  if (['format', 'diskpart', 'clear-disk', 'format-volume', 'initialize-disk', 'remove-partition'].includes(cmd) || (cmd === 'cipher' && /\/w/i.test(line))) return never('Erase a disk', 'Erasing or repartitioning a disk is never allowed.');
+  if (cmd === 'bcdedit' || (/^(set|add)-mppreference$/.test(cmd) && /-(disable|exclusion)/i.test(line)) || (cmd === 'set-executionpolicy' && /unrestricted|bypass/i.test(line))) return never('Turn off Windows security', 'Turning off Windows security is never allowed.');
+  if (cmd === 'clear-recyclebin') return never('Empty the Recycle Bin', 'Emptying the Trash takes away your undo, so only you do that.', 'delete');
   if (cmd === 'chmod' && has(argv, '-R') && rest.some((a) => wipes(expand(a, w).path, w))) return never('Change permissions on everything', 'Changing permissions across the whole Mac is never allowed.');
 
   // Anything naming The Lab's own folder or the agent's settings, other
   // than reading the log.
   const named = [...rest, ...seg.out].map((a) => expand(a, w)).filter((p) => !p.unsure);
-  const readOnly = READ.has(cmd) && !seg.out.length && !(cmd === 'sed' && has(argv, '-i'));
+  const readOnly = (READ.has(cmd) || PS_READ.test(cmd)) && !seg.out.length && !(cmd === 'sed' && has(argv, '-i'));
   const owned = named.find((p) => protectedPath(p.path, w));
   if (owned && !readOnly) return { ...never(`Change ${basename(owned.path)}`, protectedPath(owned.path, w)!, 'change'), touches: [owned.path] };
   if (named.some((p) => within(p.path, w.lab) && TOKEN.test(p.path))) return { ...never("Read The Lab's token", 'The token that pairs your phone is never read by the agent.', 'read'), secret: true };
@@ -235,7 +283,7 @@ function command(seg: Seg, w: Where): Judgement {
   if (cmd === 'curl' || cmd === 'wget') {
     const url = rest.find((a) => /^https?:\/\//.test(a)) ?? rest.find((a) => /^[\w-]+(\.[\w-]+)+(:\d+)?(\/\S*)?$/.test(a) && !/\.(json|txt|html?|zip|png|jpe?g|csv|md|pdf|gz)$/.test(a)) ?? '';
     const host = hostOf(url);
-    const upload = argv.some((a) => /^(-d|--data.*|-F|--form.*|-T|--upload-file|--json)$/.test(a)) || /(-X|--request)\s*(POST|PUT|PATCH|DELETE)/.test(line);
+    const upload = argv.some((a) => /^(-d|--data.*|-F|--form.*|-T|--upload-file|--json)$/.test(a)) || /(-X|--request)\s*(POST|PUT|PATCH|DELETE)/.test(line) || /-method\s+(post|put|patch|delete)|-(body|infile|form)\b/i.test(line);
     if (upload) {
       const file = argv.includes('-T') ? argv[argv.indexOf('-T') + 1] : argv.map((a) => /(?:^|=)@([^;\s]+)/.exec(a)?.[1]).find(Boolean);
       return { ...j, effect: 'send', leaves: true, touches: [host], undo: 'no', plain: file ? `Send ${basename(file)} to ${host}` : `Send data to ${host}` };
@@ -243,6 +291,14 @@ function command(seg: Seg, w: Where): Judgement {
     const saves = cmd === 'wget' || argv.some((a) => /^(-o|-O|--output|--remote-name)$/.test(a));
     return { ...j, effect: saves ? 'change' : 'read', touches: [host], source: `a web page on ${host}`, leaves: smuggles(url), plain: smuggles(url) ? `Open ${host} with data in the address` : `Download from ${host}` };
   }
+  if (cmd === 'invoke-webrequest' || cmd === 'invoke-restmethod' || cmd === 'start-bitstransfer') {
+    const url = argv.find((a) => /^https?:\/\//i.test(a)) ?? '';
+    const host = hostOf(url);
+    if (/-method\s+(post|put|patch|delete)|-(body|infile|form)\b|-transfertype\s+upload/i.test(line)) return { ...j, effect: 'send', leaves: true, touches: [host], undo: 'no', plain: `Send data to ${host}` };
+    const saves = cmd === 'start-bitstransfer' || /-outfile\b/i.test(line);
+    return { ...j, effect: saves ? 'change' : 'read', touches: [host], source: `a web page on ${host}`, leaves: smuggles(url), plain: smuggles(url) ? `Open ${host} with data in the address` : `Download from ${host}` };
+  }
+  if (cmd === 'send-mailmessage') return { ...j, effect: 'send', leaves: true, undo: 'no', plain: 'Send an email' };
   if (cmd === 'git' && sub === 'push') {
     const force = argv.some((a) => /^(-f|--force.*)$/.test(a)) || rest.some((a) => a.startsWith('+'));
     return { ...j, effect: 'send', leaves: true, undo: force ? 'no' : 'yes', touches: [rest[1] ?? 'origin'], plain: force ? "Force-push code, replacing what's online" : `Push code to ${rest[1] ?? 'origin'}` };
@@ -264,7 +320,9 @@ function command(seg: Seg, w: Where): Judgement {
   const installs = (cmd === 'brew' && /^(install|uninstall|reinstall|upgrade|remove|rm|tap|untap|services)$/.test(sub))
     || (cmd === 'npm' && /^(i|install|add|uninstall|remove|rm|update)$/.test(sub) && has(argv, '-g', '--global'))
     || (/^pip3?$|^pipx$/.test(cmd) && /^(install|uninstall)$/.test(sub)) || (cmd === 'gem' && sub === 'install')
-    || ['mas', 'port', 'installer', 'softwareupdate'].includes(cmd);
+    || ['mas', 'port', 'installer', 'softwareupdate', 'msiexec'].includes(cmd)
+    || (/^(winget|choco|scoop)$/.test(cmd) && /^(install|uninstall|upgrade|remove|add)$/.test(sub))
+    || /^(install|uninstall|update)-(module|package|script|psresource)$|^(add|remove)-appxpackage$/.test(cmd);
   if (installs) {
     const what = clip(rest.slice(1).join(' ') || sub);
     return { ...j, effect: 'system', undo: 'yes', plain: /^(uninstall|remove|rm)$/.test(sub) ? `Uninstall ${what}` : `Install ${what}${cmd === 'brew' ? ' with Homebrew' : ''}` };
@@ -282,11 +340,15 @@ function command(seg: Seg, w: Where): Judgement {
   if (cmd === 'security' && /^(find-.*-password|dump-keychain|export)$/.test(sub)) return { ...look('Read a saved password from the keychain'), secret: true };
   if (cmd === 'security' && /^delete-/.test(sub)) return { ...j, effect: 'delete', undo: 'no', plain: 'Delete a saved password' };
   if (cmd === 'security') return look('Check the keychain');
+  if ((cmd === 'reg' && /^query$/i.test(sub)) || (cmd === 'schtasks' && /^\/query$/i.test(sub)) || (cmd === 'sc' && /^(query|qc)/i.test(sub)) || (cmd === 'powercfg' && /^\/(l|list|q|query|a|availablesleepstates)$/i.test(sub)) || (cmd === 'netsh' && /\bshow\b/i.test(line))) return look('Check a Windows setting');
+  if (cmd === 'cmdkey') return { ...look('Read saved passwords'), secret: true };
+  if (cmd === 'open' && /-verb\s+runas/i.test(line)) return { ...j, effect: 'system', plain: `Run as administrator: ${clip(line)}` };
   if (sudo) return { ...j, effect: 'system', plain: `Run as administrator: ${clip(line)}` };
   if (SYSTEM.has(cmd)) {
     const plain = cmd === 'killall' || cmd === 'pkill' ? `Quit ${rest.join(', ')}` : cmd === 'kill' ? 'Stop a running program'
       : cmd === 'launchctl' ? 'Change what starts with the Mac' : cmd === 'crontab' ? 'Schedule something to run by itself'
-      : cmd === 'pmset' ? 'Change power settings' : /^(shutdown|reboot|halt)$/.test(cmd) ? 'Restart or shut down the Mac'
+      : cmd === 'pmset' || cmd === 'powercfg' ? 'Change power settings' : /^(shutdown|reboot|halt)$/.test(cmd) ? 'Restart or shut down the Mac'
+      : cmd === 'schtasks' ? 'Schedule something to run by itself' : cmd === 'reg' ? 'Change a Windows setting'
       : `Change a system setting (${cmd})`;
     return { ...j, effect: 'system', plain };
   }
@@ -306,6 +368,8 @@ function command(seg: Seg, w: Where): Judgement {
     const o = [...to, ...seg.out].map((a) => expand(a, w).path);
     return { ...j, effect: 'change', touches: o, plain: cmd === 'mv' && rest.length >= 2 ? `Move ${rest.length > 2 ? count(rest.length - 1, 'item') : basename(rest[0])} to ${basename(rest.at(-1)!)}` : '' };
   }
+  if (PS_READ.test(cmd)) return seg.out.length ? { ...j, effect: 'change', touches: seg.out.map((a) => expand(a, w).path), plain: `Write ${basename(seg.out[0])}` } : j;
+  if (PS_SYSTEM.test(cmd)) return { ...j, effect: 'system', plain: `Change a system setting (${argv[0]})` };
   return { ...j, effect: seg.out.length ? 'change' : 'run', touches: seg.out.map((a) => expand(a, w).path) };
 }
 
@@ -313,13 +377,13 @@ function command(seg: Seg, w: Where): Judgement {
 const BOMB = /(\w+|:)\s*\(\)\s*\{[^}]*\1\s*\|\s*\1\s*&/;
 const RANK: Effect[] = ['read', 'run', 'change', 'system', 'delete', 'send'];
 
-export function judgeShell(line: string, w: Where): Judgement {
+export function judgeShell(line: string, w: Where, ps = false): Judgement {
   if (BOMB.test(line)) return { ...blank(), effect: 'system', plain: 'Start a fork bomb', block: 'That would lock the Mac up, so it is never allowed.' };
   // A cd carries to the commands after it, so relative paths land where they will.
   let cwd = w.cwd;
-  const parts = segments(line).map((s) => {
+  const parts = segments(line, ps).map((s) => {
     const j = command(s, { ...w, cwd });
-    if (s.argv[0] === 'cd') cwd = s.argv[1] ? expand(s.argv[1], { ...w, cwd }).path : w.user;
+    if (nameOf(s.argv[0]) === 'cd') cwd = s.argv[1] ? expand(s.argv[1], { ...w, cwd }).path : w.user;
     return j;
   });
   if (!parts.length) return blank();
@@ -333,7 +397,7 @@ export function judgeShell(line: string, w: Where): Judgement {
   out.unsure = parts.some((p) => p.unsure);
   out.source = parts.find((p) => p.source)?.source;
   const fetched = parts.find((p) => p.source && p.touches[0]);
-  if (fetched && /\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/.test(line)) {
+  if (fetched && (/\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/.test(line) || /\b(iex|invoke-expression)\b/i.test(line))) {
     out.effect = 'system';
     out.plain = `Download a script from ${fetched.touches[0]} and run it`;
   }
@@ -380,7 +444,7 @@ function mcp(tool: string, input: Record<string, any>): Judgement {
 
 // The one entry point for a tool call from either engine.
 export function judge(tool: string, input: Record<string, any>, w: Where): Judgement {
-  if (tool === 'Bash' || tool === 'PowerShell') return judgeShell(String(input.command ?? ''), w);
+  if (tool === 'Bash' || tool === 'PowerShell') return judgeShell(String(input.command ?? ''), w, tool === 'PowerShell');
   if (/^mcp__/.test(tool)) return mcp(tool, input);
   const file = input.file_path ?? input.notebook_path ?? input.path;
   const p = file ? expand(String(file), w).path : '';

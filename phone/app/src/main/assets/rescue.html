@@ -68,6 +68,10 @@
 </form>
 <script>
   const $ = (id) => document.getElementById(id);
+  // The app passes what it calls the computer, Mac or PC.
+  const PC = new URLSearchParams(location.search).get('pc') || 'Mac';
+  $('linkText').textContent = `Reaching the ${PC}`;
+  $('text').placeholder = $('text').ariaLabel = `Message the ${PC}`;
   const log = $('log');
   const items = [];
   let outbox = [];
@@ -101,7 +105,7 @@
     if (text && e.at && Date.now() - Date.parse(e.at) < 30000) $('sr').textContent = text;
   };
   lab.subscribe((e) => {
-    if (e.kind === 'reply') say(e, `The Mac replied: ${e.text.slice(0, 160)}`);
+    if (e.kind === 'reply') say(e, `The ${PC} replied: ${e.text.slice(0, 160)}`);
     if (e.kind === 'ask') say(e, `Needs your OK: ${e.title}`);
     if (e.kind === 'failed') say(e, `A step failed: ${e.text}`);
     switch (e.kind) {
@@ -114,7 +118,7 @@
         $('link').className = `link ${e.state}`;
         $('linkText').textContent = e.detail || e.state;
         $('fix').hidden = e.fix !== 'tailscale';
-        if (e.state === 'unpaired') $('why').textContent = 'This phone is not paired with a Mac yet.';
+        if (e.state === 'unpaired') $('why').textContent = `This phone is not paired with a ${PC} yet.`;
         return;
       }
       case 'status': $('stop').hidden = !e.working; return;

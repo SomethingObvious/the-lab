@@ -39,7 +39,7 @@ class Widget : AppWidgetProvider() {
             val working = Hub.link.optString("state") == "online" && Hub.status.optBoolean("working")
             val line = when {
                 !Hub.paired -> "Not paired yet"
-                Hub.link.optString("state") != "online" -> "Can't reach the Mac right now"
+                Hub.link.optString("state") != "online" -> "Can't reach the ${PC} right now"
                 working && Hub.status.optString("label") == "Waiting for you" -> "Needs your OK"
                 working -> Hub.status.optString("label").ifBlank { "Working" }
                 else -> "Ready"

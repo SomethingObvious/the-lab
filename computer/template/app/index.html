@@ -46,14 +46,17 @@
 <div class="app" id="app">
   <header class="head" id="head">
     <div class="head-row" id="head-main">
-      <h1 class="title">The Lab</h1>
+      <div class="title-wrap"><h1 class="title">The Lab</h1><span class="head-sub" id="head-sub"></span></div>
       <button type="button" class="icon-btn on-head" id="open-search" aria-label="Search">
         <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
       </button>
       <button type="button" class="icon-btn on-head" id="open-files" aria-label="Files and Photos">
         <svg class="ic" aria-hidden="true"><use href="#i-files"/></svg>
       </button>
-      <button type="button" class="icon-btn on-head" id="open-menu" aria-label="More: Memory, Schedules and Setup">
+      <button type="button" class="icon-btn on-head fold-head" id="fold-head" aria-label="Hide the Top Bar" aria-expanded="true" aria-controls="glance">
+        <svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg>
+      </button>
+      <button type="button" class="icon-btn on-head" id="open-menu" aria-label="More: Settings, Memory, Schedules and Setup">
         <svg class="ic" aria-hidden="true"><use href="#i-more"/></svg>
       </button>
     </div>
@@ -66,7 +69,7 @@
         <svg class="ic" aria-hidden="true"><use href="#i-close"/></svg>
       </button>
     </form>
-    <button type="button" class="glance" id="glance" aria-expanded="false" aria-controls="glance-more"></button>
+    <div class="glance" id="glance" role="group" aria-label="Top bar"></div>
     <div class="glance-more" id="glance-more" hidden></div>
   </header>
 
@@ -146,6 +149,6 @@
 <div class="toast" id="toast" aria-hidden="true" hidden></div>
 <div class="sr" id="sr" role="status"></div>
 <div class="sr" id="sr-alert" role="alert"></div>
-<span class="probe" id="probe" aria-hidden="true">Message your Mac</span>
+<span class="probe" id="probe" aria-hidden="true">Write a message</span>
 </body>
 </html>

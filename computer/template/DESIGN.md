@@ -159,12 +159,13 @@ components:
     rounded: "{rounded.pill-52}"
     height: "52px"
     padding: "0 20px"
-  stat-disk:
-    backgroundColor: "{colors.mint}"
-    textColor: "{colors.on-mint}"
-    typography: "{typography.headline}"
-    rounded: "{rounded.disk}"
-    padding: "8px 22px"
+  widget:
+    backgroundColor: "{colors.sun}"
+    textColor: "{colors.on-sun}"
+    typography: "{typography.title-large}"
+    rounded: "{rounded.pill-48}"
+    height: "60px"
+    padding: "8px 16px"
   bubble-mine:
     backgroundColor: "{colors.primary}"
     textColor: "{colors.on-primary}"
@@ -310,6 +311,12 @@ components:
     rounded: "{rounded.pill-48}"
     height: "48px"
     padding: "0 20px"
+  welcome:
+    backgroundColor: "{colors.surface-1}"
+    textColor: "{colors.ink}"
+    typography: "{typography.body-medium}"
+    rounded: "{rounded.approval}"
+    padding: "18px"
   notice:
     backgroundColor: "{colors.primary-c}"
     textColor: "{colors.on-primary-c}"
@@ -348,7 +355,7 @@ It's a working tool he uses all day, one-handed on the outer screen. Density is 
 Motion is springy and short, and it's tied to state. Shapes morph when the state behind them changes, corners tighten under a finger, and nothing loops unless the Mac is actually busy or waiting on him.
 
 **Key Characteristics:**
-- Violet header block with The Lab in heavy, wide Roboto Flex and three stat shapes
+- Violet header block with The Lab in heavy, wide Roboto Flex, the Mac's name under it, and a row of pastel widgets he picks himself
 - Tonal cards with 28 px corners, no borders, depth from tone rather than shadow
 - One morphing shape library where each shape names a state
 - Fat pill composer with colour-cycled shortcut chips riding on top
@@ -366,13 +373,13 @@ Saturated violet and four fixed pastels on a cool lilac paper, with green, amber
 - **Link Violet** (`link`): links, text buttons, list markers, the "From you" and "From the Mac" tags.
 
 ### Secondary
-- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header stats (sun battery, mint disk, pink link), cycle across the shortcut chips in that order with lilac fourth, and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every stat colour while the Mac is offline.
+- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header widgets (each widget picks one as its tone), the marks on the welcome card, cycle across the shortcut chips in that order with lilac fourth, and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every widget colour while the Mac is offline. A widget can also take `deep`, which is `head-deep` with `on-head`.
 
 ### Tertiary
 - **Work Green** (`work`, container `work-c`): the live run card and the working loaders.
 - **Ask Amber** (`ask`, container `ask-c`, ink `ask-ink`): the approval card, a run card waiting on him, and the whole toolbar while it says Needs Your OK. `wait-mark` and `on-wait-mark` draw the waiting burst, dark brown with a sun icon in light and amber in dark, so it reads on amber containers too.
 - **Done Green** (`done`): the done mark only.
-- **Fail Red** (`fail`, container `fail-c`): Stop, failed marks, error lines under a step, the offline banner and its main button. `off-c` is the link stat's colour while offline.
+- **Fail Red** (`fail`, container `fail-c`): Stop, failed marks, error lines under a step, the offline banner and its main button. `off-c` is the Connection widget's colour while offline.
 
 ### Neutral
 - **Lilac Paper** (`bg`): the page behind everything, and the composer strip.
@@ -400,14 +407,14 @@ Both fonts are local `.woff2` files in `app/fonts/`. Roboto Flex is loaded with 
 
 ### Hierarchy
 - **Display** (860, 36 px, 1, width 116%): The Lab in the header. Drops to the headline size when the header is compact.
-- **Headline** (820, 24 px, width 110 to 112%): sheet and Files and Photos titles, and the big header stat numbers (narrowed to 92%, battery to 84% at 22 px).
+- **Headline** (820, 24 px, width 110 to 112%): sheet and Files and Photos titles, and the value on a big widget (narrowed to 90%). Other widget values are Title Large (22 px), or Title Medium on a small one.
 - **Title Large** (750, 22 px, 1.25): the approval card's question.
 - **Title Medium** (750, 16 px, width 104%): the toolbar's current step, Allow and Deny.
 - **Title Small** (750, 14 px): section headings in Files.
 - **Body Large** (450, 16 px, 1.45): messages, replies, steps, the message field. This is the root size.
 - **Body Medium** (450, 14 px): run summaries, notices, the snackbar, answered lines.
 - **Body Small** (550, 12 px): file sizes and photo captions.
-- **Label Large, Medium, Small** (650, 14, 12 and 11 px): buttons and chips, times and day dividers, the link stat's second line.
+- **Label Large, Medium, Small** (650, 14, 12 and 11 px): buttons and chips, the Mac's name under the title, times and day dividers, a widget's second line. Every size is multiplied by `--ts`, which the Text Size setting sets (1, 1.15 or 1.3).
 - **Code** (Roboto Mono 400, 13 px, 1.5 to 1.55): raw commands, the approval's detail, error lines, code in replies.
 
 ### Named Rules
@@ -425,22 +432,22 @@ Spacing runs on 4 px steps with a few fixed habits: 3 px between the halves of a
 The page draws behind the status bar, gesture bar and cutout. The header reaches under the top inset and pads its contents by `--lab-inset-top`. The left and right insets pad the whole grid. The composer's bottom padding is `--lab-inset-bottom` plus 10 px, and that variable is the keyboard's height while it's open, updated every frame. The sheet and the snackbar ride on the same variable. None of them have a transition on that padding.
 
 ### Folded (Under 720 px)
-One column. The header is tall with the stats on their own row. While the agent works, the toolbar floats 12 px above the composer over the conversation, and the thread pads its bottom by the toolbar's measured height plus 32 px so the last message is never hidden under it.
+One column. The widgets sit on their own rows under the title, four columns across. While the agent works, the toolbar floats 12 px above the composer over the conversation, and the thread pads its bottom by the toolbar's measured height plus 32 px so the last message is never hidden under it.
 
 ### Compact Header
-The header gives its height back (title at 24 px, stats at 48 px with their second lines dropped) when he scrolls more than 300 px up from the newest message, when search or Files is open, when the phone's text size is turned up, and when the screen is short. It comes back below 60 px from the bottom. The switch snaps, then the stats settle in, so no layout animates.
+The header gives its height back (title at 24 px, widgets at 40 px showing only their values) when he scrolls more than 300 px up from the newest message, when search or Files is open, when the phone's text size is turned up, and when the screen is short. It comes back below 60 px from the bottom. The switch snaps, then the widgets settle in, so no layout animates.
 
 ### Short Screen and Keyboard
-When the height is under 560 px or `html` has `data-keyboard`, the app goes tight. The toolbar stops floating and docks in its own row above the composer, at 56 px with no shadow. On the outer screen the header also drops its stats, so the message box and the conversation keep the room. The offline banner still shows. Sideways under 500 px tall, while he types a message with the keyboard up, the header, the shortcut chips and the request list hide as well. A search keeps its field, and the message tray hides while it has focus so the results get the room.
+When the height is under 560 px or `html` has `data-keyboard`, the app goes tight. The toolbar stops floating and docks in its own row above the composer, at 56 px with no shadow. On the outer screen the header also drops its widgets, so the message box and the conversation keep the room. The offline banner still shows. Sideways under 500 px tall, while he types a message with the keyboard up, the header, the shortcut chips and the request list hide as well. A search keeps its field, and the message tray hides while it has focus so the results get the room.
 
 ### Large Text
-If "Message your Mac" at 16 px draws more than 15% wider than it should, or the root font is over 18 px, `html` gets `big-text`. The battery and link stats become squares that grow with their text and the disk pill takes a row of its own, so nothing overflows sideways.
+If "Write a message" at 16 px draws more than 15% wider than it should, the root font is over 18 px, or Text Size is Largest, `html` gets `big-text`. The widget grid drops to two columns and anything wider than small takes a whole row, so nothing overflows sideways.
 
 ### Unfolded (720 px and Up)
-Two columns. A 320 px requests list with its own search sits on the left, the conversation on the right. The header becomes one row with the title left and the stats right (at most 520 px). The header's search button is hidden because the side list has search. Files show four tiles across instead of three.
+Two columns. A 320 px requests list with its own search sits on the left, the conversation on the right. The header becomes one row with the title left and the widgets right (six columns, at most 560 px). The header's search button is hidden because the side list has search. Files show four tiles across instead of three.
 
 ### Book
-With `data-fold="book"` (or two horizontal viewport segments), the requests list ends at the hinge's left edge and the conversation starts at its right edge. The column gap is exactly the hinge. The header splits on the same line, with the stats right of the hinge. Sheets and the snackbar open right of the hinge.
+With `data-fold="book"` (or two horizontal viewport segments), the requests list ends at the hinge's left edge and the conversation starts at its right edge. The column gap is exactly the hinge. The header splits on the same line, with the widgets right of the hinge in four columns. Sheets and the snackbar open right of the hinge.
 
 ### Tabletop
 With `data-fold="tabletop"`, the conversation stands up in the top half and everything he taps lies in the bottom half. The composer row is the whole area below the hinge with its content pushed to the bottom, the toolbar is fixed 12 px below the hinge, and sheets are capped to fit below it. The snackbar sits just above the hinge. With the keyboard up, the toolbar docks at the bottom of the top half instead, the shortcut chips hide so the message box stays clear above the keyboard, the snackbar sits above the docked toolbar, and a sheet stands in the top half with all four corners rounded.
@@ -474,10 +481,10 @@ Everything is rounded, nothing is square. Pills take half their height (20 px at
 ### State Shapes
 Each shape is the same 96 point outline (`--sh-circle`, `--sh-cookie` and so on, generated at the top of `app.js`), so any one can morph into any other with a transition on `d`. Each shape means a state, wherever it appears.
 
-- **Cookie** (9 soft lobes): done (green, with a check), the Mac online (pink link stat), and the send button when there's something to send, turned 40 degrees.
-- **Burst** (12 points): waiting on him (the approval mark, a waiting run, the toolbar loader while asking), and the battery stat while charging or with no battery.
-- **Clover** (4 lobes): failed (red, with an x), a failed step's dot, the offline banner mark, and the link stat while offline or unpaired.
-- **Flower** (8 petals): the battery stat on battery, the link stat while connecting, and the default file icon.
+- **Cookie** (9 soft lobes): done (green, with a check), and the send button when there's something to send, turned 40 degrees.
+- **Burst** (12 points): waiting on him (the approval mark, a waiting run, the toolbar loader while asking).
+- **Clover** (4 lobes): failed (red, with an x), a failed step's dot, and the offline banner mark.
+- **Flower** (8 petals): the default file icon.
 - **Circle**: stopped, a plain finished step's dot, and the send button with nothing to send.
 - **Pentagon**: working, held still, under reduced motion. Also one of the file icon shapes.
 - While the Mac is working, the toolbar loader springs to the next of burst, cookie, pentagon and clover every 2 s as it spins. That cycle means working and nothing else. The working marks in the list and the steps hold a pentagon and spin, so only one shape is ever changing at a time.
@@ -495,7 +502,7 @@ Under `prefers-reduced-motion: reduce`, transitions keep only colour, background
 ### Named Rules
 **The Shape Means State Rule.** Don't give a state's shape to something that isn't that state. A new state picks an unused shape or reuses its nearest meaning.
 
-**The Morph Not Swap Rule.** Where a shape stays on screen through a state change, as the header stats, the toolbar's loader and the send button do, change its class (`s-cookie` to `s-clover`) on the same path so it morphs instead of replacing the element. Run cards, the request list and answered rows are redrawn when they change, so their new shape just appears.
+**The Morph Not Swap Rule.** Where a shape stays on screen through a state change, as the toolbar's loader and the send button do, change its class (`s-cookie` to `s-clover`) on the same path so it morphs instead of replacing the element. Run cards, the request list and answered rows are redrawn when they change, so their new shape just appears.
 
 ## Components
 
@@ -517,7 +524,7 @@ Tactile and chunky. Every one is a pill that squares up under the finger.
 
 ### Cards / Containers
 - **Corner Style:** 28 px (32 px for the approval card).
-- **Background:** `surface` for replies and files, `surface-1` for run cards, `primary-c` for notices, `fail-c` for the offline banner.
+- **Background:** `surface` for replies and files, `surface-1` for run cards and the welcome card, `primary-c` for notices, `fail-c` for the offline banner and a part that couldn't be drawn.
 - **Shadow Strategy:** cards have no shadow (see Elevation & Depth).
 - **Border:** none.
 - **Internal Padding:** 14 to 18 px.
@@ -529,10 +536,16 @@ Tactile and chunky. Every one is a pill that squares up under the finger.
 - **Focus:** an inset 2 px `focus` ring, no outline.
 
 ### Navigation
-There are no tabs. The header holds the title, Search (folded only), Files and Photos, and More, which opens a sheet of four rows: Memory, Schedules, Always Allowed and Check My Setup. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Unfolded, the left column lists every request with its state mark, and the current one is a `primary-c` pill.
+There are no tabs. The header holds the title with the Mac's name and state under it, Search (folded only), Files and Photos, a chevron that hides or shows the widgets, and More, which opens a sheet of six rows: Settings, Memory, Schedules, Always Allowed, Check My Setup and Rename This Mac. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Unfolded, the left column lists every request with its state mark, and the current one is a `primary-c` pill.
 
-### Header and Stats
-The violet block with The Lab and three stat shapes: a sun battery shape (pink when 20% or lower), a mint disk pill with a used bar, and a pink link cookie. The shapes morph as state changes. Offline, the battery and disk go lilac and the link turns `off-c` clover. Tapping the stats opens a `head-deep` details panel.
+### Header and Widgets
+The violet block with The Lab, the Mac's name and its state under it in Label Large (`Paul's Mac · Online`), and a grid of widgets. The default three are Connection (pink, Online with how long it's been up), Battery (sun, pink at 20% or lower on battery) and Storage (mint, wide, with a used meter). He can add, remove, resize and reorder them in Settings, or by long-pressing one. Each is a widget in the `WIDGETS` list in `app.js`.
+- **Sizes:** small takes one of four columns, wide two, long the whole row and big two columns by two rows, the way home screen widgets do. Rows are at least 60 px and grow with their text.
+- **Shape:** a pill (24 px corners) at wide and long, 28 px at small, 36 px at big. Corners tighten to 14 px under a finger.
+- **Inside:** the value in heavy narrow type with an optional icon, a label line under it, a detail line at long and big, and a 6 px meter in the tile's own ink on wide and up.
+- **Hidden:** the chevron hides the widgets, leaving the title row with the Mac's name. The choice is saved in settings.
+
+A widget without a tap of its own opens a `head-deep` details panel with every reading, a Rename text button on the name row, Edit the Top Bar and Hide Details.
 
 ### Run Card
 The steps of one request. Closed it's a 48 px `surface-1` pill hugging its summary with a state mark. Open or live it stretches full width with 28 px corners and holds a `surface` list of steps, each with a small shape dot, a plain title and an elapsed time. Live it turns `work-c`, and waiting on him it turns `ask-c`. Tapping a step shows the raw command in mono with a Copy button.
@@ -572,6 +585,14 @@ Each row in More is a 64 px `surface-1` row with a 44 px `primary-c` icon disc, 
 - **Schedules:** one `surface-1` card per schedule with its name, when it runs next in `link` colour, the message, and how the last run went. A failing one gets a 2 px `fail` ring and its last line in `fail`, and a paused one fades to 72%. Pause, Edit and Delete sit under each. Edit opens a form with the name, message, a time field, seven 44 px day circles (filled violet when picked) and a Quiet checkbox.
 - **Always Allowed:** grouped rows with the plain name, the command in a mono `surface` block and where it applies, with a Remove pill on the right.
 - **Check My Setup:** grouped rows, each with a state mark (green cookie or red clover) and a title, with what to do under it. A row that can be fixed from the phone has a Fix pill. The rows that need fixing turn `fail-c`.
+
+### Settings
+Grouped like the More sheet under Title Medium headings (Top Bar, Look, Conversation, Agent). A switch row has its label on the left and a 52 by 32 px switch on the right, violet when on with the knob growing as it moves. A choice row has its label above a connected segmented row, with the picked one `primary` and fully round. Rows that open something end in a chevron. Every row is an entry in the `SETTINGS` list in `app.js`, and the values are saved in `settings.json`.
+- **Edit the Top Bar:** grouped rows for the widgets in the bar, each with its name, what it shows, move earlier and later, remove, and a size picker, then the widgets that aren't in the bar with Add pills, then Put Back the Usual Widgets. Every change shows in the header behind the sheet straight away.
+- **Model:** the models the provider offers right now, as grouped radio rows with their descriptions, the picked one `primary-c`. Under them, a field and Use It pill for a model the list doesn't have.
+
+### Welcome Card
+The first thing in a new conversation. A `surface-1` card with 32 px corners, Before You Start in Title Large, and one row per thing to know: a 40 px rounded square mark in sun, mint, pink, lilac and then violet with its icon, and a single short sentence next to it. Got It, a violet pill on the right, hides it, and Settings can bring it back.
 
 ### Sheets and Snackbar
 The sheet is `surface`, 32 px top corners, up to 640 px wide, with a 48 px drag handle that also closes it, over a `scrim`. The snackbar is a `toolbar` pill 8 px above an open sheet, the toolbar or the composer (just above the hinge in tabletop with the keyboard down), gone after 4.5 s, or 7 s for a failure.
