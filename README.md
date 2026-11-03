@@ -6,6 +6,8 @@ It has two parts. A small server on the Mac runs the agent through the Agent SDK
 
 The app's interface is a web page kept on the Mac in `~/TheLab/app`. When you ask the agent for a change, it edits that page and the phone picks it up within a couple of seconds. If a change ever breaks things, the app falls back to a built-in safe screen with an undo button.
 
+Ask for something regular ("every weekday at 8, tell me what's on my calendar") and the agent adds it to `~/TheLab/schedules.json`, and the server sends it that message on time while the Mac is awake. The agent also keeps notes about you and anything ongoing in `~/TheLab/memory.md`, which it reads at the start of every conversation.
+
 ## Setting It Up
 
 Give the agent on your Mac this message and it does the rest, stopping when it needs you to tap something:

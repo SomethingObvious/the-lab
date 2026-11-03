@@ -233,7 +233,13 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       case 'loaded': loaded = true; want.side = want.files = true; schedule(); return;
       case 'shortcuts': shortcuts = e.items || []; drawChips(); return;
       case 'outbox': outbox = e.items || []; drawQueue(); return;
-      case 'insets': fold(); return;
+      case 'insets': {
+        fold();
+        // The WebView isn't resized for the keyboard, so the browser's own scroll-on-focus thinks the field is still in view.
+        const a = document.activeElement;
+        if (a?.matches('input, textarea') && a.closest('#sheet')) a.scrollIntoView({ block: 'nearest' });
+        return;
+      }
       case 'fold': posture(); return;
       case 'backprogress': follow(e.progress, e.edge); return;
       case 'backcancel': follow(0); return;
@@ -359,7 +365,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
         ${moreOpen ? `<span class="more"><button type="button" class="pill" data-again="${esc(e.cid)}">${icon('redo')}Send Again</button><button type="button" class="pill" data-copy="${esc(e.cid)}">${icon('copy')}Copy</button></span>` : ''}
         <span class="split"><button type="button" data-save="${esc(e.cid)}" ${saved ? 'disabled' : ''}>${icon('star')}${saved ? 'Saved as Shortcut' : 'Save as Shortcut'}</button><button type="button" data-more aria-label="More Actions" aria-expanded="${moreOpen}">${icon('chev')}</button></span>
       </div>` : '';
-    const meta = queued ? `${icon('clock')}Waiting to send` : clock(e.at);
+    const meta = queued ? `${icon('clock')}Waiting to send` : e.scheduled ? `${icon('clock')}${esc(e.scheduled)} at ${clock(e.at)}` : clock(e.at);
     return `<div class="you${queued ? ' queued' : ''}" data-eid="${esc(e.id ?? '')}">
       ${files ? `<div class="you-files">${files}</div>` : ''}
       ${e.text ? `<button type="button" class="bubble" data-cid="${esc(e.cid)}" aria-expanded="${selected === e.cid}">${esc(e.text)}</button>` : ''}
@@ -601,7 +607,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     arrive(sheet);
     arrive($('scrim'));
     backing();
-    if (!again) ($('sheet-body').querySelector('input, textarea') || $('sheet-title')).focus();
+    // Only New Shortcut opens straight into typing. Elsewhere the keyboard would cover the actions.
+    if (!again) (kind === 'new' && $('sheet-body').querySelector('input, textarea') || $('sheet-title')).focus();
   }
   function closeSheet() {
     sheetKind = null;

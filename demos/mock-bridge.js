@@ -92,6 +92,10 @@
   ev('file', { name: 'Screenshot 2026-11-01 at 09.12.png', url: '/files/e04d77a2-Screenshot 2026-11-01 at 09.12.png', size: 391204, type: 'image/png' }, ago(1442));
   ev('reply', { text: "Here it is. Finder's open on Downloads and nothing else is running." }, ago(1442));
   ev('done', { ok: true, stopped: false, ms: 9100 }, ago(1442));
+  ev('you', { text: "What's on my calendar today?", cid: 's1', scheduled: 'Morning Rundown' }, ago(600));
+  ev('step', { ref: 's1a', tool: 'mcp__claude_ai_Google_Calendar__list_events', title: 'Google Calendar: list events', detail: '{"timeMin":"today"}' }, ago(600));
+  ev('reply', { text: "Two things today: **dentist at 2:30** and **Priya's call at 4**. Nothing tomorrow morning." }, ago(599));
+  ev('done', { ok: true, stopped: false, ms: 8200 }, ago(599));
   ev('you', { text: "What's taking up the most space on my Mac? Top 5 folders.", cid: 'h1' }, ago(184));
   ev('step', { ref: 'a1', tool: 'Bash', title: 'Measure the folders in your home folder', detail: 'du -sh ~/* 2>/dev/null | sort -rh | head -5' }, ago(184));
   ev('reply', { text: "Your home folder is 412 GB. The big five:\n\n1. **Movies** 168 GB (mostly Final Cut libraries)\n2. **Library** 96 GB, of which Xcode caches are 41 GB\n3. **Downloads** 58 GB\n4. **Pictures** 44 GB\n5. **Documents** 21 GB\n\nThe Xcode caches are safe to clear if you want 41 GB back." }, ago(183));

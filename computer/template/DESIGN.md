@@ -548,7 +548,7 @@ The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the sh
 His messages are `primary` bubbles on the right, at most 86% wide. Tapping one opens a split button, Save as Shortcut with a chevron that holds Send Again and Copy. Messages still waiting to send turn `surface-2` and `dim` with a clock. Replies are `surface` bubbles on the left (92% wide at most) with Markdown, `link` list markers and mono code. Files arrive as `surface` pills with a pink flower icon, photos as images with the reply tail.
 
 ### Sheets and Snackbar
-The sheet is `surface`, 32 px top corners, up to 640 px wide, with a 48 px drag handle that also closes it, over a `scrim`. The snackbar is a `toolbar` pill 8 px above the toolbar (or the composer), gone after 4.5 s, or 7 s for a failure.
+The sheet is `surface`, 32 px top corners, up to 640 px wide, with a 48 px drag handle that also closes it, over a `scrim`. The snackbar is a `toolbar` pill 8 px above an open sheet, the toolbar or the composer (just above the hinge in tabletop with the keyboard down), gone after 4.5 s, or 7 s for a failure. A message the server sent from `schedules.json` shows its label and a clock in the `meta` line under the bubble.
 
 ## Do's and Don'ts
 

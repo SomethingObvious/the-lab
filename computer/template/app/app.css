@@ -551,7 +551,7 @@ textarea::placeholder { color: var(--faint); }
 /* Sheet and snackbar */
 .scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 10; animation: fade 0.3s var(--ease); }
 @keyframes fade { from { opacity: 0; } }
-.sheet { position: fixed; left: var(--inl); right: var(--inr); bottom: 0; z-index: 11; max-height: 86%; overflow-y: auto; background: var(--surface); border-radius: var(--r-approval) var(--r-approval) 0 0; padding: 0 20px calc(var(--lab-inset-bottom, 0px) + 18px); max-width: 640px; margin: 0 auto; animation: up 0.5s var(--spring); }
+.sheet { position: fixed; left: var(--inl); right: var(--inr); bottom: 0; z-index: 11; max-height: 86%; overflow-y: auto; scroll-padding-bottom: calc(var(--lab-inset-bottom, 0px) + 18px); background: var(--surface); border-radius: var(--r-approval) var(--r-approval) 0 0; padding: 0 20px calc(var(--lab-inset-bottom, 0px) + 18px); max-width: 640px; margin: 0 auto; animation: up 0.5s var(--spring); }
 @keyframes up { from { transform: translateY(60%); } }
 /* The handle drags the sheet down, and a tap on it closes the sheet. */
 .handle { display: block; width: 64px; height: 36px; margin: 0 auto 6px; padding: 0; border: 0; background: none; touch-action: none; position: relative; }
@@ -694,7 +694,9 @@ textarea::placeholder { color: var(--faint); }
   .table .composer { padding-left: 10px; }
 }
 .table .sheet { max-height: calc(100% - var(--hinge-b) - 8px); }
-:root.table[data-keyboard] .sheet { bottom: calc(100% - var(--hinge-t)); max-height: calc(var(--hinge-t) - var(--lab-inset-top, 0px) - 8px); padding-bottom: 18px; border-radius: var(--r-approval); }
+:root.table[data-keyboard] .sheet { bottom: calc(100% - var(--hinge-t)); max-height: calc(var(--hinge-t) - var(--lab-inset-top, 0px) - 8px); padding-bottom: 18px; scroll-padding-bottom: 18px; border-radius: var(--r-approval); }
+.app.tight .now-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+:root.big-text[data-keyboard] .chips { display: none; }
 
 /* Reduced motion keeps colour and opacity changes, holds every shape still,
    and swaps entrances for a short fade. Working is a still pentagon and

@@ -4,6 +4,7 @@ import { createReadStream, existsSync, readFileSync, renameSync, statSync, trunc
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { extname, join, resolve, sep } from 'node:path';
 import { config, home } from './config.ts';
+import { cleanSchedules, due, type Schedule } from './schedule.ts';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -92,6 +93,29 @@ async function serve() {
     // A half-written or broken file keeps the last good list.
     settle = setTimeout(() => { shortcuts = readShortcuts() ?? shortcuts; pushShortcuts(); }, 300);
   });
+
+  const schedulesFile = join(HOME, 'schedules.json');
+  const ranFile = join(HOME, '.lab', 'schedules-ran.json');
+  let ran: { keys: string[]; known: string[] } = { keys: [], known: [] };
+  try { ran = { ...ran, ...JSON.parse(readFileSync(ranFile, 'utf8')) }; } catch { /* nothing has run yet */ }
+  let schedules: Schedule[] = [];
+  setInterval(() => {
+    if (existsSync(schedulesFile)) {
+      try { schedules = cleanSchedules(JSON.parse(readFileSync(schedulesFile, 'utf8'))) ?? schedules; } catch { /* a broken file keeps the last good list */ }
+    }
+    const keys = new Set(ran.keys);
+    const fresh = new Set(schedules.map((s) => s.id).filter((id) => !ran.known.includes(id)));
+    const runs = due(schedules, new Date(), keys);
+    if (!runs.length && !fresh.size) return;
+    for (const { item, key } of runs) {
+      keys.add(key);
+      // A new entry whose time already passed today waits for its next one.
+      if (!fresh.has(item.id)) lab.send(item.text, randomUUID(), [], item.label);
+    }
+    ran = { keys: [...keys].slice(-500), known: [...new Set([...ran.known, ...fresh])].slice(-500) };
+    writeFileSync(ranFile + '.tmp', JSON.stringify(ran));
+    renameSync(ranFile + '.tmp', ranFile);
+  }, 20_000).unref();
 
   const authed = (req: IncomingMessage) => {
     const h = req.headers.authorization ?? '';

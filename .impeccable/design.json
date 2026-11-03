@@ -972,7 +972,7 @@
       },
       {
         "name": "The Morph Not Swap Rule",
-        "body": "When a state changes, change the shape's class (`s-cookie` to `s-clover`) on the same path so it morphs. Don't replace the element.",
+        "body": "Where a shape stays on screen through a state change, as the header stats, the toolbar's loader and the send button do, change its class (`s-cookie` to `s-clover`) on the same path so it morphs instead of replacing the element. Run cards, the request list and answered rows are redrawn when they change, so their new shape just appears.",
         "section": "shapes"
       }
     ],

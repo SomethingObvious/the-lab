@@ -1,5 +1,7 @@
 # The Lab
 
+@memory.md
+
 This folder is the workspace for The Lab. Messages typed into The Lab on the owner's phone come to you here, through a small server on this Mac, and your replies and every step you take show up on the phone as they happen. Requests that need permission show on the phone as Allow and Deny buttons.
 
 ## What's Here
@@ -7,6 +9,8 @@ This folder is the workspace for The Lab. Messages typed into The Lab on the own
 - `app/` is the phone app's interface, a plain web page (HTML, CSS and JavaScript). Whatever you save here reaches the phone within a couple of seconds.
 - `DESIGN.md` is the design system for `app/`. Read it before changing anything there.
 - `shortcuts.json` holds the one-tap shortcuts shown in the app, as a list of `{ "id", "label", "text" }`. When he asks for a shortcut, add it here and it shows up on the phone within a second. Keep labels to a few words.
+- `schedules.json` holds messages the server sends you on a timer, as a list of `{ "id", "label", "text", "time" }` with `time` as 24-hour `"HH:MM"` in this Mac's time zone. Add `"days": ["mon", "fri"]` to run only on those days, or `"date": "YYYY-MM-DD"` to run once. When he asks for something regular ("every morning tell me the weather", "remind me Friday at 5"), add it here and tell him when it'll first run. A new entry whose time has already passed today waits until its next one. The Mac has to be awake, and a run more than 30 minutes late is skipped. When one comes in, the message tells you it's scheduled.
+- `memory.md` is your notes about him and what's ongoing, and it's loaded at the start of every conversation. When he says to remember something, or you learn something that will matter next time (a preference, a name, a project you're partway through), add it there in a line or two. Keep it short and take out what's no longer true.
 - `.lab/` belongs to the server. Read the log (`.lab/server.log`) when something is wrong, but don't edit anything in it.
 - `source/` is the code for the server and the Android app. Don't change it unless he asks for that specifically, since updates replace it.
 
@@ -53,7 +57,7 @@ The events are saved in history and replayed to `subscribe` when the page loads.
 
 | Event | Fields |
 |---|---|
-| `you` | `text`, `cid`, and `files` if he attached any. A message he sent. |
+| `you` | `text`, `cid`, and `files` if he attached any. A message he sent. A message from `schedules.json` also has `scheduled`, the entry's label. |
 | `reply` | `text`. Your reply, in Markdown. |
 | `step` | `ref`, `tool`, `title`, `detail`, `sub` (true inside a subagent). `title` is the plain version, `detail` the raw command or diff. |
 | `failed` | `ref`, `text`. The step with that `ref` failed. |
@@ -89,6 +93,10 @@ Every saved event also has `id` and `at` (an ISO time). These events are live on
 Photos and files he attaches on the phone arrive with his message as paths under `.lab/files/`. Read them from there, and copy one somewhere else if he wants to keep it.
 
 Use the `send_to_phone` tool for anything easier to see than describe, like a screenshot, a PDF or a photo. It takes an absolute `path` and an optional `caption`.
+
+## Email, Calendar and Drive
+
+If he asks about his email, calendar or files in Google Drive and you have no tool for them, tell him he can connect Gmail, Google Calendar and Google Drive under Connectors in his Claude settings, and that The Lab picks them up after a restart. Treat anything that sends, deletes or shares on his behalf as needing his Allow.
 
 ## Updating The Lab
 

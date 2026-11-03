@@ -7,6 +7,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { Design } from './design.ts';
 import { title } from './steps.ts';
 import { parseBattery } from './mac.ts';
+import { cleanSchedules, due } from './schedule.ts';
 
 test('undo steps back through saved designs', async () => {
   const root = mkdtempSync(join(tmpdir(), 'lab-test-'));
@@ -45,4 +46,22 @@ test('step titles', () => {
   assert.equal(title('Read', { file_path: '/Users/me/notes.md' }), 'Reading notes.md');
   assert.equal(title('mcp__claude-in-chrome__navigate', { url: 'https://mail.google.com/x' }), 'Opening mail.google.com in Chrome');
   assert.equal(title('mcp__my_server__do_thing', {}), 'my_server: do thing');
+});
+
+test('schedules run once, on their days, within the grace window', () => {
+  const items = cleanSchedules([
+    { id: 'daily', label: 'Morning', text: 'Weather', time: '08:00' },
+    { id: 'weekdays', label: 'Inbox', text: 'Check mail', time: '08:00', days: ['Mon', 'tue', 'wed', 'thu', 'fri'] },
+    { id: 'once', label: 'Dentist', text: 'Remind me', time: '23:50', date: '2026-11-07' },
+    { label: 'Bad', text: 'x', time: '8am' },
+  ])!;
+  assert.deepEqual(items.map((s) => s.id), ['daily', 'weekdays', 'once']);
+  // 2026-11-07 is a Saturday.
+  const sat = (h: number, m: number) => new Date(2026, 10, 7, h, m);
+  assert.deepEqual(due(items, sat(7, 59), new Set()), []);
+  assert.deepEqual(due(items, sat(8, 10), new Set()).map((r) => r.key), ['daily@2026-11-07T08:00']);
+  assert.deepEqual(due(items, sat(8, 10), new Set(['daily@2026-11-07T08:00'])), []);
+  assert.deepEqual(due(items, sat(8, 40), new Set()), []);
+  assert.deepEqual(due(items, new Date(2026, 10, 8, 0, 5), new Set()).map((r) => r.key), ['once@2026-11-07T23:50']);
+  assert.deepEqual(due(items, new Date(2026, 10, 9, 8, 0), new Set()).map((r) => r.key), ['daily@2026-11-09T08:00', 'weekdays@2026-11-09T08:00']);
 });

@@ -60,6 +60,7 @@ object Notifier {
     private const val VIOLET = 0xFF5A2EE6.toInt()
     private const val REPLY_ID = 2
     private const val NOTICE_ID = 3
+    private const val STOP_ID = 4
     // The last few messages each way, so a reply notification reads as a conversation.
     private val recent = ArrayDeque<Triple<CharSequence, Long, Boolean>>()
 
@@ -218,7 +219,7 @@ object Notifier {
     }
 
     fun stopFailed(context: Context) {
-        context.getSystemService(NotificationManager::class.java).notify(NOTICE_ID, Notification.Builder(context, "notices")
+        context.getSystemService(NotificationManager::class.java).notify(STOP_ID, Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("Couldn't reach the Mac to stop it")
             .setContentText("It's probably still working. Open The Lab to try again.")
@@ -231,6 +232,7 @@ object Notifier {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.cancel(REPLY_ID)
         nm.cancel(NOTICE_ID)
+        nm.cancel(STOP_ID)
     }
 }
 

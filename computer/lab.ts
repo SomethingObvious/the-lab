@@ -143,14 +143,16 @@ export class Lab {
     this.store.live({ kind: 'status', ...this.status });
   }
 
-  send(text: string, cid: string, files: Attached[] = []): boolean {
+  // `scheduled` is the label of the schedules.json entry that sent it.
+  send(text: string, cid: string, files: Attached[] = [], scheduled?: string): boolean {
     if (this.seen.has(cid)) return false;
     this.seen.add(cid);
-    this.store.add({ kind: 'you', text, cid, ...(files.length ? { files } : {}) }, true);
+    this.store.add({ kind: 'you', text, cid, ...(files.length ? { files } : {}), ...(scheduled ? { scheduled } : {}) }, true);
     this.state.open = { text: text || files.map((f) => f.name).join(', '), at: new Date().toISOString() };
     this.save();
     const list = files.map((f) => `- ${join(this.filesDir, basename(decodeURIComponent(f.url)))} (${f.name}, ${f.type})`).join('\n');
-    const content = files.length ? `${text}\n\nHe attached ${files.length === 1 ? 'a file' : `${files.length} files`} from his phone:\n${list}`.trim() : text;
+    let content = files.length ? `${text}\n\nHe attached ${files.length === 1 ? 'a file' : `${files.length} files`} from his phone:\n${list}`.trim() : text;
+    if (scheduled) content = `This is "${scheduled}", a scheduled message from schedules.json, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.\n\n${content}`;
     const m: SDKUserMessage = { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid: cid as any, session_id: this.state.sessionId ?? '' };
     this.unanswered.push(m);
     this.ensureRunning();
