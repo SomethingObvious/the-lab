@@ -1,0 +1,414 @@
+// Reads a tool call, never the agent's words about it, and says what it would
+// do in plain terms: what it touches, whether it can be undone, whether
+// anything leaves the Mac, and whether it is never allowed at all. Every Allow
+// card on the phone and every rule the server enforces is built from this, so
+// an agent talked round by a web page or an email can't explain its way past it.
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
+
+export type Effect = 'read' | 'change' | 'delete' | 'send' | 'system' | 'run';
+
+export type Judgement = {
+  effect: Effect;
+  // A sentence in plain words, like "Move 3 items in Downloads to the Trash".
+  plain: string;
+  // Paths or hosts it acts on.
+  touches: string[];
+  // 'trash' and 'yes' can be put back by him, 'no' can't, null isn't known.
+  undo: 'yes' | 'trash' | 'no' | null;
+  // Something goes off this Mac.
+  leaves: boolean;
+  // Set when the call is never allowed, whatever anyone says, with why.
+  block?: string;
+  // It deletes with rm or the like instead of the Trash.
+  rm?: boolean;
+  // It reads a password, key or token.
+  secret?: boolean;
+  // Where outside content it reads comes from.
+  source?: string;
+  // A path in it can't be known until it runs, like "$DIR/old".
+  unsure?: boolean;
+};
+
+// `user` is the home folder, `home` the agent's Lab folder and `lab` the
+// server's own folder.
+export type Where = { user: string; home: string; lab: string; cwd?: string };
+
+const READ = new Set(['ls', 'cat', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'du', 'df', 'wc', 'stat', 'file', 'mdls', 'mdfind', 'pwd', 'echo', 'printf', 'which', 'whereis', 'type', 'date', 'cal', 'sw_vers', 'system_profiler', 'uname', 'whoami', 'id', 'hostname', 'uptime', 'ps', 'pgrep', 'lsof', 'jq', 'sort', 'uniq', 'cut', 'tr', 'awk', 'sed', 'tree', 'diff', 'cmp', 'md5', 'shasum', 'sha256sum', 'basename', 'dirname', 'realpath', 'readlink', 'test', '[', 'true', 'false', 'sleep', 'ioreg', 'pbpaste', 'say', 'afplay', 'cd', 'exit', 'wait', 'strings', 'xxd', 'od', 'hexdump', 'column', 'nl', 'fold', 'base64', 'bc', 'expr', 'seq', 'locale', 'sysctl', 'vm_stat', 'top', 'w', 'last', 'getconf', 'sips', 'plutil', 'pdftotext', 'exiftool', 'ffprobe', 'identify', 'printenv', 'set', 'export', 'source', '.', 'read', 'local', 'shift', 'return']);
+const CHANGE = new Set(['mv', 'cp', 'ditto', 'mkdir', 'touch', 'ln', 'chmod', 'chown', 'chflags', 'tee', 'install', 'zip', 'unzip', 'tar', 'gzip', 'gunzip', 'bzip2', 'xz', '7z', 'xattr', 'screencapture', 'convert', 'magick', 'ffmpeg', 'pandoc', 'textutil', 'qlmanage', 'iconutil', 'pbcopy', 'open', 'mkfifo', 'split', 'patch', 'rename', 'sqlite3', 'osascript', 'shortcuts']);
+const DELETE = new Set(['rm', 'rmdir', 'unlink', 'shred', 'srm', 'truncate']);
+const SYSTEM = new Set(['su', 'launchctl', 'systemsetup', 'networksetup', 'softwareupdate', 'installer', 'killall', 'kill', 'pkill', 'shutdown', 'reboot', 'halt', 'nvram', 'dscl', 'chsh', 'crontab', 'tccutil', 'profiles', 'kextload', 'kextunload', 'fdesetup', 'diskutil', 'dd', 'mount', 'mount_apfs', 'umount', 'hdiutil', 'pmset', 'scutil', 'csrutil', 'spctl', 'tmutil', 'mas', 'port', 'systemextensionsctl', 'kmutil', 'bless', 'passwd', 'sysadminctl', 'dseditgroup', 'pfctl', 'mkfs', 'newfs', 'fsck', 'mdutil']);
+const SEND = new Set(['scp', 'sftp', 'ssh', 'mail', 'sendmail', 'mutt', 'nc', 'ncat', 'netcat', 'telnet', 'ftp', 'socat']);
+// Wrappers whose real command is the rest of the line.
+const WRAP = new Set(['env', 'command', 'builtin', 'nohup', 'time', 'nice', 'exec', 'caffeinate', 'stdbuf', 'timeout', 'gtimeout', 'xcrun', 'sudo', 'doas']);
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh']);
+// Folders whose whole contents going would wreck the Mac or his files.
+const BIG = ['Desktop', 'Documents', 'Downloads', 'Pictures', 'Movies', 'Music', 'Library', 'Applications', 'Public', 'Sites'];
+const SYSTEM_DIRS = ['/', '/System', '/Library', '/Applications', '/Users', '/usr', '/bin', '/sbin', '/private', '/etc', '/var', '/opt', '/cores', '/Volumes', '/tmp'];
+const SECRET = /(\/\.ssh\/(id_|.*key)|\/\.aws\/credentials|\/\.netrc|\/\.gnupg\/|\/Keychains\/|\/\.config\/gh\/hosts|\/\.docker\/config\.json|\/Cookies(\.binarycookies)?$|\/Login Data$|\/\.npmrc$|\/\.pypirc$|\.pem$|\.p12$|\/\.env(\.\w+)?$)/;
+const TOKEN = /config\.json$|password$|\.jks$/;
+
+type Seg = { argv: string[]; out: string[]; pipedIn: boolean };
+
+// Splits a shell line into simple commands. Quotes are honoured, and
+// $(...) and backticks count as command breaks, so a delete hidden inside
+// one is still seen.
+export function segments(line: string): Seg[] {
+  const segs: Seg[] = [];
+  let argv: string[] = [], out: string[] = [], word: string | null = null, redirect = false, piped = false;
+  // A lone brace opens or closes a group, but find's {} is just a word.
+  const push = () => {
+    if (!redirect && (word === '{' || word === '}')) { word = null; end(); return; }
+    if (redirect) { if (word !== '/dev/null') out.push(word!); redirect = false; }
+    else argv.push(word!);
+    word = null;
+  };
+  const end = (pipe = false) => {
+    if (word !== null) push();
+    if (argv.length) segs.push({ argv, out, pipedIn: piped });
+    argv = []; out = []; piped = pipe; redirect = false;
+  };
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === "'") {
+      const j = line.indexOf("'", i + 1);
+      word = (word ?? '') + line.slice(i + 1, j < 0 ? undefined : j);
+      i = j < 0 ? line.length : j;
+    } else if (c === '"') {
+      let s = '';
+      for (i++; i < line.length && line[i] !== '"'; i++) {
+        if (line[i] === '\\' && i + 1 < line.length) s += line[++i];
+        else if (line[i] === '`' || (line[i] === '$' && line[i + 1] === '(')) { word = (word ?? '') + s; s = ''; end(); if (line[i] === '$') i++; }
+        else s += line[i];
+      }
+      word = (word ?? '') + s;
+    } else if (c === '\\') { word = (word ?? '') + (line[i + 1] ?? ''); i++; }
+    else if (c === '$' && line[i + 1] === '(') { end(); i++; }
+    else if ('`;\n()'.includes(c)) end();
+    else if (c === '&') {
+      if (line[i + 1] === '&') i++;
+      else if (line[i - 1] === '>' || line[i + 1] === '>') continue;
+      end();
+    } else if (c === '|') { if (line[i + 1] === '|') { i++; end(); } else end(true); }
+    else if (c === '>' || c === '<') {
+      if (word !== null && /^\d$/.test(word)) word = null;
+      else if (word !== null) push();
+      if (line[i + 1] === '>') i++;
+      if (line[i + 1] === '&') { i++; while (/\d|-/.test(line[i + 1] ?? '')) i++; continue; }
+      if (c === '>') redirect = true;
+      else { while (line[i + 1] === ' ') i++; while (i + 1 < line.length && !/[\s;|&]/.test(line[i + 1])) i++; }
+    } else if (/\s/.test(c)) { if (word !== null) push(); }
+    else word = (word ?? '') + c;
+  }
+  end();
+  return segs;
+}
+
+const args = (argv: string[]) => argv.slice(1).filter((a) => !a.startsWith('-'));
+// A flag, whether on its own or bundled like -rf.
+const has = (argv: string[], ...f: string[]) => argv.some((a) => f.includes(a) || (/^-[a-zA-Z]+$/.test(a) && f.some((x) => /^-[a-zA-Z]$/.test(x) && a.includes(x[1]))));
+const within = (p: string, dir: string) => p === dir || p.startsWith(dir.replace(/\/$/, '') + '/');
+const hostOf = (u: string) => { try { return new URL(/^\w+:/.test(u) ? u : `https://${u}`).host; } catch { return ''; } };
+// An address carrying a long query or path, which is how data gets smuggled
+// out in a plain page load.
+const smuggles = (u: string) => /[?#][^\s]{40,}|\/[A-Za-z0-9+/=_-]{60,}/.test(u);
+const clip = (s: string) => (s.length > 60 ? s.slice(0, 59) + '…' : s);
+const count = (k: number, one: string) => `${k} ${k === 1 ? one : one + 's'}`;
+
+function expand(p: string, w: Where): { path: string; unsure: boolean } {
+  let s = p.replace(/^~(?=$|\/)/, w.user).replace(/\$\{?HOME\}?/g, w.user);
+  const unsure = /\$|`/.test(s);
+  if (!isAbsolute(s) && !unsure) s = resolve(w.cwd ?? w.home, s).replace(/\\/g, '/');
+  return { path: s.replace(/(.)\/+$/, '$1'), unsure };
+}
+
+// The folder a path is in, in the words he'd use: "Downloads", or "your home folder".
+export function place(p: string, w: Where): string {
+  if (p === w.user || dirname(p) === w.user && !BIG.includes(basename(p))) return 'your home folder';
+  if (dirname(p) === w.user) return basename(p);
+  const top = p.slice(w.user.length + 1).split('/')[0];
+  if (within(p, w.user) && BIG.includes(top)) return top;
+  return basename(dirname(p));
+}
+
+function protectedPath(p: string, w: Where): string | null {
+  if (within(p, w.lab)) return 'The Lab keeps its own code, token and history there, and the agent may never change them.';
+  const configs = [`${w.user}/.claude`, `${w.home}/.claude`, `${w.user}/.codex`, `${w.home}/.codex`];
+  if (configs.some((d) => within(p, d)) && /settings(\.local)?\.json$|config\.toml$|\/rules(\/|$)|\/hooks(\/|$)|\.claude$|\.codex$/.test(p)) return "That's the agent's own permission settings, which it may never change.";
+  if (/com\.somethingobvious\.thelab\.plist$/.test(p)) return "That's what starts The Lab with the Mac, and the agent may never change it.";
+  return null;
+}
+
+// What a delete of this path would take out, when that's more than a
+// cleanup should ever reach. The Codex home-folder wipe in July 2026 was a
+// cleanup like this.
+function wipes(p: string, w: Where): string | null {
+  if (p === w.user) return 'your whole home folder';
+  if (within(w.user, p) || SYSTEM_DIRS.includes(p)) return `${p}, which macOS needs`;
+  if (dirname(p) === w.user && BIG.includes(basename(p))) return `your whole ${basename(p)} folder`;
+  if (p.endsWith('/*') && (dirname(p) === w.user || SYSTEM_DIRS.includes(dirname(p)))) return `everything in ${dirname(p) === w.user ? 'your home folder' : dirname(p)}`;
+  return null;
+}
+
+const blank = (): Judgement => ({ effect: 'read', plain: '', touches: [], undo: null, leaves: false });
+
+function deletion(cmd: string, sub: string, argv: string[], rest: string[], w: Where): Judgement {
+  const trashing = cmd === 'trash' || cmd === 'mv' || (cmd === 'find' && /-exec(dir)?\s+(\S*\/)?trash\s/.test(argv.join(' ')));
+  const targets = cmd === 'find' ? [rest[0] ?? '.'] : cmd === 'mv' ? rest.slice(0, -1) : cmd === 'git' || cmd === 'rsync' ? [rest.at(-1) ?? '.'] : rest;
+  const ps = targets.map((a) => expand(a, w));
+  const known = ps.filter((p) => !p.unsure);
+  const j: Judgement = { ...blank(), effect: 'delete', touches: ps.map((p) => p.path), undo: trashing ? 'trash' : 'no', rm: !trashing, unsure: known.length < ps.length || cmd === 'find' || cmd === 'git' };
+  // A find that picks files by name, age or size only takes those.
+  const picks = cmd === 'find' && argv.some((a) => /^-(i?name|i?path|i?regex|mtime|mmin|atime|ctime|newer|size|type|empty|user)$/.test(a));
+  for (const p of known) {
+    const lost = picks ? null : wipes(p.path, w);
+    if (lost && !j.block) { j.block = `That would delete ${lost}. That's never allowed.`; j.plain = `Delete ${lost}`; return j; }
+    j.block ??= /\/\.Trash(\/|$)/.test(p.path) && !trashing ? 'Emptying the Trash takes away your undo, so only you do that.' : undefined;
+    j.block ??= protectedPath(p.path, w) ?? undefined;
+  }
+  const where = [...new Set(known.map((p) => place(p.path, w)))];
+  const what = known.length === 1 ? basename(known[0].path) : count(known.length || targets.length, 'item');
+  const inPlace = where.length === 1 && known.length > 1 ? ` in ${where[0]}` : '';
+  if (cmd === 'find') j.plain = trashing ? `Move matching files in ${place(ps[0].path, w)} to the Trash` : `Delete matching files in ${place(ps[0].path, w)}`;
+  else if (cmd === 'git') j.plain = sub === 'clean' ? "Delete files git isn't tracking" : "Throw away changes git hasn't saved";
+  else if (!known.length) j.plain = trashing ? 'Move something to the Trash' : 'Permanently delete something';
+  else j.plain = trashing ? `Move ${what}${inPlace} to the Trash` : `Permanently delete ${what}${inPlace}`;
+  return j;
+}
+
+// Judges one simple command.
+function command(seg: Seg, w: Where): Judgement {
+  let argv = seg.argv;
+  let sudo = false;
+  while (argv.length && (WRAP.has(basename(argv[0])) || /^\w+=/.test(argv[0]))) {
+    if (argv[0] === 'sudo' || argv[0] === 'doas') sudo = true;
+    const timed = /timeout$/.test(argv[0]);
+    argv = argv.slice(1);
+    while (argv[0]?.startsWith('-')) argv = argv.slice(argv[0] === '-u' || argv[0] === '-n' ? 2 : 1);
+    if (timed && /^\d/.test(argv[0] ?? '')) argv = argv.slice(1);
+  }
+  const cmd = basename(argv[0] ?? '');
+  const sub = argv[1] ?? '';
+  const rest = args(argv);
+  const line = argv.join(' ');
+  const j = blank();
+  if (!cmd) return j;
+
+  if (SHELLS.has(cmd)) {
+    const flag = argv.findIndex((a) => /^-\w*c$/.test(a));
+    if (flag > 0) return judgeShell(argv[flag + 1] ?? '', w);
+    if (seg.pipedIn) return { ...j, effect: 'system', plain: 'Run a script it just downloaded' };
+  }
+  if (cmd === 'eval') return judgeShell(argv.slice(1).join(' '), w);
+  if (cmd === 'xargs') {
+    const inner = command({ argv: argv.slice(1).filter((a) => !/^-/.test(a)), out: [], pipedIn: false }, w);
+    return { ...inner, unsure: true };
+  }
+
+  const deleting = DELETE.has(cmd)
+    || (cmd === 'find' && (argv.includes('-delete') || /-exec(dir)?\s+(\S*\/)?(rm|unlink|shred|trash)\s/.test(argv.join(' '))))
+    || (cmd === 'git' && (sub === 'clean' || (sub === 'reset' && argv.includes('--hard'))))
+    || (cmd === 'rsync' && argv.some((a) => a.startsWith('--delete')));
+  if (deleting || cmd === 'trash' || (cmd === 'mv' && rest.length >= 2 && /\.Trash\/?$/.test(rest.at(-1)!))) return deletion(cmd, sub, argv, rest, w);
+
+  // Never allowed, whatever it's for.
+  const never = (plain: string, block: string, effect: Judgement['effect'] = 'system') => ({ ...j, effect, plain, block });
+  if (cmd === 'diskutil' && /^(erase|zero|secureErase|partition|reformat|resize)/i.test(sub)) return never('Erase a disk', 'Erasing or repartitioning a disk is never allowed.');
+  if (cmd === 'diskutil' && sub === 'apfs' && /delete|erase/i.test(argv[2] ?? '')) return never('Erase a disk', 'Erasing or repartitioning a disk is never allowed.');
+  if (/^(mkfs|newfs)/.test(cmd) || (cmd === 'dd' && /\bof=\/dev\//.test(line))) return never('Write straight to a disk', 'Writing straight to a disk is never allowed.');
+  if (cmd === 'csrutil' && /disable/.test(line)) return never('Turn off System Integrity Protection', 'Turning off macOS security is never allowed.');
+  if (cmd === 'spctl' && /--(master|global)-disable|--disable/.test(line)) return never('Turn off Gatekeeper', 'Turning off macOS security is never allowed.');
+  if (cmd === 'tmutil' && /^(delete|deletelocalsnapshots|thinlocalsnapshots|disable|disablelocal|removedestination)/.test(sub)) return never('Delete Time Machine snapshots', 'Time Machine snapshots are how you undo a mistake, so they are never deleted or turned off.');
+  if (cmd === 'osascript' && /empty\s+(the\s+)?trash/i.test(line)) return never('Empty the Trash', 'Emptying the Trash takes away your undo, so only you do that.', 'delete');
+  if (['launchctl', 'pkill', 'killall', 'kill'].includes(cmd) && /thelab|server\.ts/i.test(line)) return never('Stop The Lab', 'The agent may never stop or change The Lab itself.');
+  if (cmd === 'chmod' && has(argv, '-R') && rest.some((a) => wipes(expand(a, w).path, w))) return never('Change permissions on everything', 'Changing permissions across the whole Mac is never allowed.');
+
+  // Anything naming The Lab's own folder or the agent's settings, other
+  // than reading the log.
+  const named = [...rest, ...seg.out].map((a) => expand(a, w)).filter((p) => !p.unsure);
+  const readOnly = READ.has(cmd) && !seg.out.length && !(cmd === 'sed' && has(argv, '-i'));
+  const owned = named.find((p) => protectedPath(p.path, w));
+  if (owned && !readOnly) return { ...never(`Change ${basename(owned.path)}`, protectedPath(owned.path, w)!, 'change'), touches: [owned.path] };
+  if (named.some((p) => within(p.path, w.lab) && TOKEN.test(p.path))) return { ...never("Read The Lab's token", 'The token that pairs your phone is never read by the agent.', 'read'), secret: true };
+  const secret = named.find((p) => SECRET.test(p.path));
+
+  // Sending.
+  if (cmd === 'curl' || cmd === 'wget') {
+    const url = rest.find((a) => /^https?:\/\//.test(a)) ?? rest.find((a) => /^[\w-]+(\.[\w-]+)+(:\d+)?(\/\S*)?$/.test(a) && !/\.(json|txt|html?|zip|png|jpe?g|csv|md|pdf|gz)$/.test(a)) ?? '';
+    const host = hostOf(url);
+    const upload = argv.some((a) => /^(-d|--data.*|-F|--form.*|-T|--upload-file|--json)$/.test(a)) || /(-X|--request)\s*(POST|PUT|PATCH|DELETE)/.test(line);
+    if (upload) {
+      const file = argv.includes('-T') ? argv[argv.indexOf('-T') + 1] : argv.map((a) => /(?:^|=)@([^;\s]+)/.exec(a)?.[1]).find(Boolean);
+      return { ...j, effect: 'send', leaves: true, touches: [host], undo: 'no', plain: file ? `Send ${basename(file)} to ${host}` : `Send data to ${host}` };
+    }
+    const saves = cmd === 'wget' || argv.some((a) => /^(-o|-O|--output|--remote-name)$/.test(a));
+    return { ...j, effect: saves ? 'change' : 'read', touches: [host], source: `a web page on ${host}`, leaves: smuggles(url), plain: smuggles(url) ? `Open ${host} with data in the address` : `Download from ${host}` };
+  }
+  if (cmd === 'git' && sub === 'push') {
+    const force = argv.some((a) => /^(-f|--force.*)$/.test(a)) || rest.some((a) => a.startsWith('+'));
+    return { ...j, effect: 'send', leaves: true, undo: force ? 'no' : 'yes', touches: [rest[1] ?? 'origin'], plain: force ? "Force-push code, replacing what's online" : `Push code to ${rest[1] ?? 'origin'}` };
+  }
+  if (cmd === 'gh' && /^(pr|issue|release|gist|repo|api)$/.test(sub) && /\b(create|comment|edit|upload|delete|merge|close)\b|-X|--method/.test(line)) return { ...j, effect: 'send', leaves: true, undo: 'no', touches: ['github.com'], plain: `Post to GitHub (${argv.slice(1, 3).join(' ')})` };
+  if (cmd === 'rsync' && rest.some((a) => /^[\w.-]+(@[\w.-]+)?:/.test(a))) return { ...j, effect: 'send', leaves: true, undo: 'no', touches: rest.filter((a) => a.includes(':')), plain: 'Copy files to another computer' };
+  if (SEND.has(cmd)) {
+    const host = (rest.find((a) => /[@:]/.test(a)) ?? rest[0] ?? '').split(':')[0];
+    return { ...j, effect: 'send', leaves: true, undo: 'no', touches: [host], plain: cmd === 'ssh' ? `Run a command on ${host}` : /mail|mutt/.test(cmd) ? 'Send an email' : `Send files to ${host}` };
+  }
+  if ((cmd === 'aws' && /\bs3:\/\//.test(line) && /\b(cp|sync|mv)\b/.test(line)) || (cmd === 'rclone' && /^(copy|sync|move)$/.test(sub)) || (cmd === 'docker' && sub === 'push') || (cmd === 'npm' && sub === 'publish') || (cmd === 'twine' && sub === 'upload'))
+    return { ...j, effect: 'send', leaves: true, undo: 'no', plain: `Upload with ${cmd} ${sub}` };
+  if (cmd === 'open' && rest.some((a) => /^mailto:/.test(a))) return { ...j, effect: 'send', leaves: true, plain: 'Start an email' };
+  if (cmd === 'osascript' && /\bsend\b/i.test(line) && /mail|messages|outlook/i.test(line)) return { ...j, effect: 'send', leaves: true, undo: 'no', plain: 'Send a message from the Mac' };
+  if (cmd === 'osascript' && /\b(delete|move\b.*\btrash)\b/i.test(line)) return { ...j, effect: 'delete', plain: 'Delete something with AppleScript' };
+  if (cmd === 'osascript' && /do shell script|keystroke|administrator privileges/i.test(line)) return { ...j, effect: 'system', plain: 'Control the Mac with AppleScript' };
+
+  // Installing and settings.
+  const installs = (cmd === 'brew' && /^(install|uninstall|reinstall|upgrade|remove|rm|tap|untap|services)$/.test(sub))
+    || (cmd === 'npm' && /^(i|install|add|uninstall|remove|rm|update)$/.test(sub) && has(argv, '-g', '--global'))
+    || (/^pip3?$|^pipx$/.test(cmd) && /^(install|uninstall)$/.test(sub)) || (cmd === 'gem' && sub === 'install')
+    || ['mas', 'port', 'installer', 'softwareupdate'].includes(cmd);
+  if (installs) {
+    const what = clip(rest.slice(1).join(' ') || sub);
+    return { ...j, effect: 'system', undo: 'yes', plain: /^(uninstall|remove|rm)$/.test(sub) ? `Uninstall ${what}` : `Install ${what}${cmd === 'brew' ? ' with Homebrew' : ''}` };
+  }
+  if (cmd === 'defaults' && /^(write|delete|import|rename)$/.test(sub)) return { ...j, effect: 'system', undo: 'yes', plain: `Change a setting (${argv[2] ?? ''})` };
+  const look = (plain: string) => ({ ...j, effect: 'read' as const, plain });
+  if (cmd === 'defaults') return look('Check a setting');
+  if (cmd === 'tmutil' && /^(localsnapshot|listlocalsnapshots|listlocalsnapshotdates|status|latestbackup|listbackups|destinationinfo|isexcluded|machinedirectory)$/.test(sub)) return look('Check Time Machine');
+  if (cmd === 'pmset' && /^-g/.test(sub)) return look('Check power settings');
+  if (cmd === 'launchctl' && /^(list|print|blame|version)$/.test(sub)) return look("Check what's running");
+  if (cmd === 'diskutil' && /^(list|info|apfs)$/.test(sub)) return look('Check the disks');
+  if (cmd === 'scutil' && sub === '--get') return look('Check a Mac setting');
+  if (cmd === 'networksetup' && /^-(get|list)/.test(sub)) return look('Check network settings');
+  if (cmd === 'mdutil' && sub === '-s') return look('Check Spotlight');
+  if (cmd === 'security' && /^(find-.*-password|dump-keychain|export)$/.test(sub)) return { ...look('Read a saved password from the keychain'), secret: true };
+  if (cmd === 'security' && /^delete-/.test(sub)) return { ...j, effect: 'delete', undo: 'no', plain: 'Delete a saved password' };
+  if (cmd === 'security') return look('Check the keychain');
+  if (sudo) return { ...j, effect: 'system', plain: `Run as administrator: ${clip(line)}` };
+  if (SYSTEM.has(cmd)) {
+    const plain = cmd === 'killall' || cmd === 'pkill' ? `Quit ${rest.join(', ')}` : cmd === 'kill' ? 'Stop a running program'
+      : cmd === 'launchctl' ? 'Change what starts with the Mac' : cmd === 'crontab' ? 'Schedule something to run by itself'
+      : cmd === 'pmset' ? 'Change power settings' : /^(shutdown|reboot|halt)$/.test(cmd) ? 'Restart or shut down the Mac'
+      : `Change a system setting (${cmd})`;
+    return { ...j, effect: 'system', plain };
+  }
+
+  if (secret) return { ...look(`Read ${basename(secret.path)}, which holds a password or key`), secret: true, touches: [secret.path] };
+  if (cmd === 'sed' && has(argv, '-i')) return { ...j, effect: 'change', touches: named.map((p) => p.path), plain: `Edit ${basename(rest.at(-1) ?? '')}` };
+  if (cmd === 'find') return look(`Look through ${place(expand(rest[0] ?? '.', w).path, w)}`);
+  if (cmd === 'git' && /^(status|log|diff|show|branch|remote|rev-parse|ls-files|blame|config|fetch)$/.test(sub)) return look('Check git');
+  if (READ.has(cmd)) {
+    if (!seg.out.length) return j;
+    const o = seg.out.map((a) => expand(a, w));
+    return { ...j, effect: 'change', touches: o.map((p) => p.path), plain: `Write ${basename(o[0].path)}` };
+  }
+  if (cmd === 'git') return { ...j, effect: 'change', undo: 'yes', plain: `Run git ${sub}` };
+  if (CHANGE.has(cmd)) {
+    const to = rest.length > 1 && ['mv', 'cp', 'ditto', 'ln'].includes(cmd) ? [rest.at(-1)!] : rest;
+    const o = [...to, ...seg.out].map((a) => expand(a, w).path);
+    return { ...j, effect: 'change', touches: o, plain: cmd === 'mv' && rest.length >= 2 ? `Move ${rest.length > 2 ? count(rest.length - 1, 'item') : basename(rest[0])} to ${basename(rest.at(-1)!)}` : '' };
+  }
+  return { ...j, effect: seg.out.length ? 'change' : 'run', touches: seg.out.map((a) => expand(a, w).path) };
+}
+
+// Fork bombs don't parse as anything useful, so they're matched as text.
+const BOMB = /(\w+|:)\s*\(\)\s*\{[^}]*\1\s*\|\s*\1\s*&/;
+const RANK: Effect[] = ['read', 'run', 'change', 'system', 'delete', 'send'];
+
+export function judgeShell(line: string, w: Where): Judgement {
+  if (BOMB.test(line)) return { ...blank(), effect: 'system', plain: 'Start a fork bomb', block: 'That would lock the Mac up, so it is never allowed.' };
+  // A cd carries to the commands after it, so relative paths land where they will.
+  let cwd = w.cwd;
+  const parts = segments(line).map((s) => {
+    const j = command(s, { ...w, cwd });
+    if (s.argv[0] === 'cd') cwd = s.argv[1] ? expand(s.argv[1], { ...w, cwd }).path : w.user;
+    return j;
+  });
+  if (!parts.length) return blank();
+  // The worst part speaks for the whole line, and a block anywhere blocks it.
+  const worst = parts.reduce((a, b) => (RANK.indexOf(b.effect) > RANK.indexOf(a.effect) ? b : a));
+  const out: Judgement = { ...worst, touches: [...new Set(parts.flatMap((p) => p.touches))] };
+  out.block = parts.find((p) => p.block)?.block;
+  out.rm = parts.some((p) => p.rm);
+  out.secret = parts.some((p) => p.secret);
+  out.leaves = parts.some((p) => p.leaves);
+  out.unsure = parts.some((p) => p.unsure);
+  out.source = parts.find((p) => p.source)?.source;
+  const fetched = parts.find((p) => p.source && p.touches[0]);
+  if (fetched && /\|\s*(sudo\s+)?(ba|z|da|k)?sh\b/.test(line)) {
+    out.effect = 'system';
+    out.plain = `Download a script from ${fetched.touches[0]} and run it`;
+  }
+  return out;
+}
+
+const OUTSIDE = /gmail|mail|outlook|inbox|calendar|drive|docs|slack|notion|teams|discord/i;
+const SENDS = /^(send|reply|forward|post|publish|share|upload|invite|tweet|comment|submit|respond)$/i;
+const DELETES = /^(delete|remove|trash|destroy|purge|archive|unsubscribe|cancel)$/i;
+const CHANGES = /^(create|update|modify|edit|move|rename|add|set|write|label|mark|accept|decline|rsvp|patch|batch)$/i;
+const READS = /^(get|list|search|read|find|fetch|query|lookup|view|show|download|navigate|open|load|describe|check|count)$/i;
+
+// MCP tools are judged by their names, which are verb first almost
+// everywhere (send_message, list_events, create_draft).
+function mcp(tool: string, input: Record<string, any>): Judgement {
+  const [, server = '', name = ''] = /^mcp__(.+?)__(.+)$/.exec(tool) ?? [];
+  const app = server.replace(/^claude_ai_/, '').replace(/_/g, ' ');
+  const words = name.replace(/_/g, ' ');
+  const j: Judgement = { ...blank(), effect: 'run', plain: `${app}: ${words}`, touches: [app] };
+  if (server === 'lab') return blank();
+  const tokens = name.split(/[_-]/);
+  const verb = (re: RegExp) => re.test(tokens[0]) || (!READS.test(tokens[0]) && tokens.some((t) => re.test(t)));
+  const subject = input.subject ?? input.title ?? input.summary;
+  const about = subject ? ` "${clip(String(subject))}"` : '';
+  if (/chrome|browser|playwright|puppeteer/i.test(server)) {
+    const url = String(input.url ?? '');
+    if (/upload/i.test(name)) return { ...j, effect: 'send', leaves: true, undo: 'no', plain: 'Upload a file from the Mac to a web page' };
+    if (url) return { ...j, effect: 'read', touches: [hostOf(url)], source: `a web page on ${hostOf(url)}`, leaves: smuggles(url), plain: smuggles(url) ? `Open ${hostOf(url)} with data in the address` : `Open ${hostOf(url)}` };
+    return { ...j, effect: verb(READS) || /page|text|screenshot|tabs|console|network/i.test(name) ? 'read' : 'run', source: verb(READS) ? 'a web page' : undefined, plain: '' };
+  }
+  const to = input.to ?? input.recipient ?? input.recipients ?? input.email;
+  const attendees = Array.isArray(input.attendees) && input.attendees.length;
+  if (verb(SENDS) || (verb(CHANGES) && attendees)) {
+    const who = [to, attendees ? input.attendees : null].flat().filter(Boolean).map((t: any) => t?.email ?? t).join(', ');
+    const lead = /mail/i.test(app) && !/draft/i.test(name) ? 'Send an email' : attendees ? `${app}: invite people` : `${app}: ${words}`;
+    if (/draft/i.test(name)) return { ...j, effect: 'change', plain: `${app}: ${words}${about}` };
+    return { ...j, effect: 'send', leaves: true, undo: 'no', touches: who ? [who] : [app], plain: `${lead}${who ? ` to ${clip(who)}` : ''}${about}` };
+  }
+  if (verb(DELETES)) return { ...j, effect: 'delete', undo: /archive|trash/i.test(name) ? 'yes' : 'no', plain: `${app}: ${words}${about}` };
+  if (verb(CHANGES)) return { ...j, effect: 'change', plain: `${app}: ${words}${about}` };
+  if (verb(READS)) return { ...j, effect: 'read', source: OUTSIDE.test(server) ? (/mail|inbox|outlook/i.test(server) ? 'your email' : app) : undefined, plain: '' };
+  return j;
+}
+
+// The one entry point for a tool call from either engine.
+export function judge(tool: string, input: Record<string, any>, w: Where): Judgement {
+  if (tool === 'Bash' || tool === 'PowerShell') return judgeShell(String(input.command ?? ''), w);
+  if (/^mcp__/.test(tool)) return mcp(tool, input);
+  const file = input.file_path ?? input.notebook_path ?? input.path;
+  const p = file ? expand(String(file), w).path : '';
+  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool)) {
+    return { ...blank(), effect: 'change', touches: [p], plain: `${tool === 'Write' ? 'Write' : 'Edit'} ${basename(p)}${within(p, w.home) ? '' : ` in ${place(p, w)}`}`, block: protectedPath(p, w) ?? undefined };
+  }
+  if (['Read', 'Glob', 'Grep', 'LS', 'NotebookRead'].includes(tool)) {
+    if (p && within(p, w.lab) && TOKEN.test(p)) return { ...blank(), secret: true, touches: [p], plain: "Read The Lab's token", block: 'The token that pairs your phone is never read by the agent.' };
+    if (p && SECRET.test(p)) return { ...blank(), secret: true, touches: [p], plain: `Read ${basename(p)}, which holds a password or key` };
+    return blank();
+  }
+  if (tool === 'WebFetch') {
+    const url = String(input.url ?? '');
+    return { ...blank(), touches: [hostOf(url)], source: `a web page on ${hostOf(url)}`, leaves: smuggles(url), plain: smuggles(url) ? `Open ${hostOf(url)} with data in the address` : '' };
+  }
+  if (tool === 'WebSearch') return { ...blank(), source: 'a web search' };
+  return { ...blank(), effect: ['Agent', 'Task', 'Skill'].includes(tool) ? 'run' : 'read' };
+}
+
+// Whether a call waits for his Allow before it runs. Reading, ordinary edits
+// and work inside his Lab folder go ahead, because a prompt for every step
+// teaches him to tap Allow without reading.
+export function needsOk(j: Judgement, w: Where, tainted: boolean): boolean {
+  if (j.block) return false;
+  if (j.secret || j.effect === 'send' || j.effect === 'system') return true;
+  // Moving named files to the Trash goes ahead, as he can drag them back.
+  if (j.effect === 'delete') return !!j.unsure || !j.touches.length || (j.undo !== 'trash' && j.touches.some((p) => !within(p, w.home)));
+  // After an email or a web page has been read, an address carrying data
+  // out asks first.
+  return tainted && j.leaves;
+}

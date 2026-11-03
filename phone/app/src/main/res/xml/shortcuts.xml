@@ -11,4 +11,12 @@
             android:targetPackage="com.somethingobvious.thelab"
             android:targetClass="com.somethingobvious.thelab.MainActivity" />
     </shortcut>
+    <!-- Lets the dynamic "mac" shortcut sit in the share sheet's top row. -->
+    <share-target android:targetClass="com.somethingobvious.thelab.MainActivity">
+        <data android:mimeType="text/plain" />
+        <data android:mimeType="image/*" />
+        <data android:mimeType="application/pdf" />
+        <data android:mimeType="*/*" />
+        <category android:name="com.somethingobvious.thelab.category.SHARE" />
+    </share-target>
 </shortcuts>

@@ -70,6 +70,9 @@ object Hub {
     var shortcuts: JSONObject? = null
         private set
     var foreground = false
+    // The last run's end, so the status line can say Done for a while after.
+    var lastDone: JSONObject? = null
+        private set
 
     private val listeners = LinkedHashSet<(JSONObject) -> Unit>()
     val designListeners = LinkedHashSet<() -> Unit>()
@@ -253,6 +256,7 @@ object Hub {
         if (id <= lastId) return
         lastId = id
         events.add(e)
+        if (e.optString("kind") == "done") { lastDone = e; LinkService.refresh() }
         if (events.size > KEEP * 1.2) events.subList(0, events.size - KEEP).clear()
         val line = e.toString() + "\n"
         disk.execute { eventsFile.appendText(line) }
@@ -320,8 +324,47 @@ object Hub {
 
     // done gets false only when the Mac never heard it. A 404 means it was already answered.
     fun stop(done: (Boolean) -> Unit = {}) = post("/stop", JSONObject(), quick) { done(it in 200..299) }
-    fun answer(ref: String, allow: Boolean, done: (Boolean) -> Unit = {}) =
-        post("/answer", JSONObject().put("ref", ref).put("allow", allow), quick) { done(it in 200..299 || it == 404) }
+    fun answer(ref: String, allow: Boolean, always: Boolean = false, done: (Boolean) -> Unit = {}) =
+        post("/answer", JSONObject().put("ref", ref).put("allow", allow).put("always", always), quick) { done(it in 200..299 || it == 404) }
+
+    // Any JSON route on the Mac, for the page's memory, schedules and setup
+    // sheets. done gets the body, or null and an error in plain words.
+    fun request(method: String, path: String, body: String?, done: (String?, String?) -> Unit) {
+        val base = url ?: return done(null, "This phone isn't paired with a Mac yet.")
+        if (!path.startsWith("/") || path.contains("..")) return done(null, "That isn't a route on the Mac.")
+        val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
+            .method(method, if (method == "GET") null else (body ?: "{}").toRequestBody(JSON_TYPE)).build()
+        quick.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { main.post { done(null, "Couldn't reach the Mac. Try again once it's back.") } }
+            override fun onResponse(call: Call, response: Response) {
+                val code = response.code
+                val text = response.use { it.body.string() }
+                main.post {
+                    if (code in 200..299) done(text, null)
+                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The Mac answered $code."))
+                }
+            }
+        })
+    }
+
+    // A QR code scanned on the Mac hands over a one-time code, which the Mac
+    // swaps for the token here so the token never sits in a browser history.
+    fun claim(base: String, code: String, done: (String?) -> Unit) {
+        val req = Request.Builder().url("${base.trimEnd('/')}/pair/claim")
+            .post(JSONObject().put("code", code).toString().toRequestBody(JSON_TYPE)).build()
+        quick.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { main.post { done("Couldn't reach the Mac. Check Tailscale is on, then scan the code again.") } }
+            override fun onResponse(call: Call, response: Response) {
+                val code2 = response.code
+                val text = response.use { it.body.string() }
+                main.post {
+                    val token = runCatching { JSONObject(text).getString("token") }.getOrNull()
+                    if (code2 == 200 && token != null) { pair(base, token); done(null) }
+                    else done(runCatching { JSONObject(text).getString("error") }.getOrDefault("The Mac turned the code down. Scan a new one."))
+                }
+            }
+        })
+    }
     fun undoDesign(done: (Boolean) -> Unit) = post("/design/undo", JSONObject()) { done(it == 200) }
     fun saveShortcuts(items: JSONArray, done: (Boolean) -> Unit) = post("/shortcuts", JSONObject().put("items", items)) { done(it == 200) }
 
@@ -331,16 +374,20 @@ object Hub {
         val cr = app.contentResolver
         var name = "file"
         var size = -1L
-        cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
-            if (c.moveToFirst()) { name = c.getString(0) ?: name; if (!c.isNull(1)) size = c.getLong(1) }
-        }
+        try {
+            cr.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+                if (c.moveToFirst()) { name = c.getString(0) ?: name; if (!c.isNull(1)) size = c.getLong(1) }
+            }
+        } catch (_: SecurityException) {}
         if (size > 100L * 1024 * 1024) throw IOException("$name is over the 100 MB limit.")
         val base = url ?: throw IOException("This phone isn't paired with a Mac yet.")
         val type = cr.getType(uri) ?: "application/octet-stream"
         val dir = File(app.cacheDir, "files").apply { mkdirs() }
         val tmp = File.createTempFile("upload", ".part", dir)
         try {
-            (cr.openInputStream(uri) ?: throw IOException("Couldn't read $name.")).use { input -> tmp.outputStream().use { input.copyTo(it) } }
+            // A share from an app that didn't grant read access throws SecurityException.
+            val input = try { cr.openInputStream(uri) } catch (e: SecurityException) { null } ?: throw IOException("Couldn't read ${if (name == "file") "that file" else name}. The app it came from didn't let The Lab open it.")
+            input.use { i -> tmp.outputStream().use { i.copyTo(it) } }
             val req = Request.Builder().url("$base/upload?name=${URLEncoder.encode(name, "UTF-8")}")
                 .header("Authorization", "Bearer $token")
                 .post(tmp.asRequestBody(type.toMediaTypeOrNull())).build()

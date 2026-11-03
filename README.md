@@ -6,7 +6,9 @@ It runs on whichever plan you already pay for, Claude (Pro or Max) or ChatGPT (P
 
 The app's interface is a web page kept on the Mac in `~/TheLab/app`. When you ask the agent for a change, it edits that page and the phone picks it up within a couple of seconds. If a change ever breaks things, the app falls back to a built-in safe screen with an undo button.
 
-Ask for something regular ("every weekday at 8, tell me what's on my calendar") and the agent adds it to `~/TheLab/schedules.json`, and the server sends it that message on time while the Mac is awake. The agent also keeps notes about you and anything ongoing in `~/TheLab/memory.md`, which it reads at the start of every conversation.
+Ask for something regular ("every weekday at 8, tell me what's on my calendar") and the agent adds it to `~/TheLab/schedules.json`, and the server sends it that message on time while the Mac is awake. The agent also keeps notes about you and anything ongoing in `~/TheLab/memory.md`, which it reads at the start of every conversation. You can see and edit both from the app's More menu.
+
+The agent can read and change files freely, but it asks on the phone before it sends anything off the Mac, installs software, changes settings or deletes something it can't put in the Trash. Each request says in plain words what it does and whether it can be undone, worked out from the command itself rather than from what the agent says about it. Deleted files go to the Trash, and before each task the server takes a Time Machine local snapshot, so a task that went wrong can be put back from the phone.
 
 ## Setting It Up
 
@@ -30,3 +32,5 @@ You need a Mac, an Android phone, a USB-C cable and one of those paid plans. You
 - Messages draw from the same plan limits as the rest of your use of Claude or ChatGPT.
 - There is no iPhone app.
 - The app is built on your own Mac and installed over USB, so it isn't on the Play Store.
+- The agent can still get things wrong, and an action it isn't asked about (editing a document, say) happens straight away. Put Things Back depends on local snapshots, which may need Time Machine turned on.
+- It's for one person. Whoever holds the paired phone can do anything the agent can.

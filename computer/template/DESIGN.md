@@ -446,7 +446,7 @@ With `data-fold="book"` (or two horizontal viewport segments), the requests list
 With `data-fold="tabletop"`, the conversation stands up in the top half and everything he taps lies in the bottom half. The composer row is the whole area below the hinge with its content pushed to the bottom, the toolbar is fixed 12 px below the hinge, and sheets are capped to fit below it. The snackbar sits just above the hinge. With the keyboard up, the toolbar docks at the bottom of the top half instead, the shortcut chips hide so the message box stays clear above the keyboard, the snackbar sits above the docked toolbar, and a sheet stands in the top half with all four corners rounded.
 
 ### Named Rules
-**The Always There Rule.** The message box, Stop while working, Allow and Deny on every request, the offline banner and messages still waiting to send must stay on screen and usable in every one of these layouts, with the keyboard up, at large text, folded, unfolded, book and tabletop.
+**The Always There Rule.** The message box, Stop while working, Allow and Deny on every request (with its facts and where it came from), the offline banner, messages still waiting to send, Put Things Back and the More button must stay on screen and usable in every one of these layouts, with the keyboard up, at large text, folded, unfolded, book and tabletop.
 
 **The Hinge Rule.** Nothing he reads or taps crosses `--lab-hinge-*`. A new fixed or absolute element has to have a book and a tabletop answer.
 
@@ -499,6 +499,8 @@ Under `prefers-reduced-motion: reduce`, transitions keep only colour, background
 
 ## Components
 
+The events each component draws from, and the `lab.call` routes the More sheets read and save through, are listed in CLAUDE.md. A redesign can change how any of these look, but every event there still needs somewhere to show.
+
 ### Buttons
 Tactile and chunky. Every one is a pill that squares up under the finger.
 - **Shape:** half-height pill, corners to 12 to 16 px while pressed.
@@ -527,7 +529,7 @@ Tactile and chunky. Every one is a pill that squares up under the finger.
 - **Focus:** an inset 2 px `focus` ring, no outline.
 
 ### Navigation
-There are no tabs. The header holds the title, Search (folded only) and Files and Photos. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Unfolded, the left column lists every request with its state mark, and the current one is a `primary-c` pill.
+There are no tabs. The header holds the title, Search (folded only), Files and Photos, and More, which opens a sheet of four rows: Memory, Schedules, Always Allowed and Check My Setup. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Unfolded, the left column lists every request with its state mark, and the current one is a `primary-c` pill.
 
 ### Header and Stats
 The violet block with The Lab and three stat shapes: a sun battery shape (pink when 20% or lower), a mint disk pill with a used bar, and a pink link cookie. The shapes morph as state changes. Offline, the battery and disk go lilac and the link turns `off-c` clover. Tapping the stats opens a `head-deep` details panel.
@@ -536,7 +538,9 @@ The violet block with The Lab and three stat shapes: a sun battery shape (pink w
 The steps of one request. Closed it's a 48 px `surface-1` pill hugging its summary with a state mark. Open or live it stretches full width with 28 px corners and holds a `surface` list of steps, each with a small shape dot, a plain title and an elapsed time. Live it turns `work-c`, and waiting on him it turns `ask-c`. Tapping a step shows the raw command in mono with a Copy button.
 
 ### Approval Card
-`ask-c` card with a 56 px slowly turning burst and shield, the agent's sentence as Title Large, the raw detail in a `surface` mono block (capped at 180 px, 96 px when tight), and a connected Deny and Allow row 60 px high. Allow is half again as wide as Deny. The pressed one grows and its corners close to 16 px. Once answered it collapses to a one-line answered row with a small mark.
+`ask-c` card with a 56 px slowly turning burst and shield and the plain request as Title Large. Under it, in this order: `from` in a `surface` field when the request followed something read from outside, then `facts` as a list with small `wait-mark` dots, then `why` under a small "The agent says" label, since it's the agent's own words and not a fact. Show the Details is a text button that opens the raw detail in a `surface` mono block (capped at 180 px, 96 px when tight). Then a connected Deny and Allow row 60 px high, with Allow half again as wide as Deny. The pressed one grows and its corners close to 16 px. When the `ask` has `always`, a centred text button under the row says Always Allow This Exact Command. Once answered it collapses to a one-line answered row with a small mark. One that timed out says No answer in time and has an Ask Me Again text button that sends a message asking for it again.
+
+The facts and `from` lines are the server's, worked out from the command itself, and the card must never drop them or put the agent's words above them.
 
 ### Working Toolbar
 A 72 px `toolbar` pill with a 52 px loader, the current step and "Working for 0:07", and Stop on the right. While a request waits on him the whole bar turns `ask` amber, the loader becomes a still burst on a dark disc, the label says Needs Your OK, and Review appears joined to Stop. Review jumps to the approval card.
@@ -546,6 +550,28 @@ The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the sh
 
 ### Messages
 His messages are `primary` bubbles on the right, at most 86% wide. Tapping one opens a split button, Save as Shortcut with a chevron that holds Send Again and Copy. Messages still waiting to send turn `surface-2` and `dim` with a clock. Replies are `surface` bubbles on the left (92% wide at most) with Markdown, `link` list markers and mono code. Files arrive as `surface` pills with a pink flower icon, photos as images with the reply tail. A message the server sent from `schedules.json` shows its label and a clock in the `meta` line under the bubble.
+
+### Guard and Memory Lines
+Two one-line rows that sit in a run between its steps and the reply, full width with 18 px corners. A guard line is `fail-c` with a small stopped circle and says Not allowed, what it was and why (`blocked` events). A Saved to Memory line is `surface-1` with a link-coloured star, the lines that were added or removed, and a See Memory text button that opens the Memory sheet (`memory` events).
+
+### Put Things Back
+A tonal pill, Put Things Back to 2:10 PM, under a finished run that changed or deleted files in the last 24 hours, when the run has a `snapshot`. It opens a confirm sheet naming the same time, and the sheet's main action sends a message asking the agent to put things back from it.
+
+### Quiet Replies
+A `reply` with `silent` (a quiet schedule that found nothing) draws as the run's end line, a small green check and "Nothing to report", with no bubble, so a morning of checks doesn't fill the screen.
+
+### Links
+Every link in a reply shows its real host in `dim` next to it, as `(example.com)`, unless the link's own words already name it. A bare address is a link that reads as itself.
+
+### While You Were Away
+After 10 minutes or more away, a `surface` card with a 2 px `primary-c` ring opens the log above the newest runs. It sums up what ran while he was gone, in plain rows on `surface-1`: anything sent off the Mac and anything that didn't finish in `fail-c`, deletes, installs and requests that weren't answered in time in `ask-c`, and changed files in the plain fill. A line under the rows says whether there's a snapshot to go back to. Show Me jumps to the first run it covers, Got It hides it, and sending anything hides it too.
+
+### More Sheets
+Each row in More is a 64 px `surface-1` row with a 44 px `primary-c` icon disc, a Title Medium name and a `dim` line under it, grouped with 8 px corners inside and 24 px on the outside.
+- **Memory:** a 12 px meter of how full `memory.md` is (amber past 80%), then About You and Notes as grouped rows, each with a trash icon button that forgets that line. Pause Memory and Forget Everything are pills under them, and Forget Everything needs a second tap. While paused, an `ask-c` line says so.
+- **Schedules:** one `surface-1` card per schedule with its name, when it runs next in `link` colour, the message, and how the last run went. A failing one gets a 2 px `fail` ring and its last line in `fail`, and a paused one fades to 72%. Pause, Edit and Delete sit under each. Edit opens a form with the name, message, a time field, seven 44 px day circles (filled violet when picked) and a Quiet checkbox.
+- **Always Allowed:** grouped rows with the plain name, the command in a mono `surface` block and where it applies, with a Remove pill on the right.
+- **Check My Setup:** grouped rows, each with a state mark (green cookie or red clover) and a title, with what to do under it. A row that can be fixed from the phone has a Fix pill. The rows that need fixing turn `fail-c`.
 
 ### Sheets and Snackbar
 The sheet is `surface`, 32 px top corners, up to 640 px wide, with a 48 px drag handle that also closes it, over a `scrim`. The snackbar is a `toolbar` pill 8 px above an open sheet, the toolbar or the composer (just above the hinge in tabletop with the keyboard down), gone after 4.5 s, or 7 s for a failure.

@@ -4,7 +4,7 @@
 // Files from his phone are stored as 8 hex characters, a dash and the real name.
 const base = (p: unknown) => {
   const b = String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
-  return /[\\/]\.lab[\\/]files[\\/]/.test(String(p)) ? b.replace(/^[0-9a-f]{8}-/, '') : b;
+  return /[\\/]\.thelab[\\/]files[\\/]/.test(String(p)) ? b.replace(/^[0-9a-f]{8}-/, '') : b;
 };
 const host = (u: unknown) => {
   try { return new URL(String(u)).host; } catch { return String(u ?? ''); }

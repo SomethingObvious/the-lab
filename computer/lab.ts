@@ -1,11 +1,14 @@
-import { query, tool, createSdkMcpServer, type Query, type SDKMessage, type SDKUserMessage, type PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import { query, tool, createSdkMcpServer, type Query, type SDKMessage, type SDKUserMessage, type PermissionResult, type HookJSONOutput } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { closeSync, copyFileSync, existsSync, fdatasyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, fdatasyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, watch, writeFileSync, writeSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, delimiter, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { clip, detail, title } from './steps.ts';
 import { Codex } from './codex.ts';
+import { judge, needsOk, type Judgement, type Where } from './guard.ts';
+import { snapshot } from './mac.ts';
+import { CAP, diff, parse, render, suspect, type Memory } from './memory.ts';
 
 export type Ev = { id: number; at: string; kind: string; [k: string]: unknown };
 type Listener = (e: Ev | Live) => void;
@@ -14,12 +17,17 @@ export type Live = { kind: 'status' | 'design' | 'mac' | 'shortcuts'; [k: string
 export type Attached = { name: string; url: string; size: number; type: string };
 
 const KEEP = 5000;
+// Kinds that notify on the phone, which skip the notification while he's
+// using The Lab on the Mac itself.
+const LOUD = new Set(['reply', 'file', 'ask', 'notice']);
 
 export class Store {
   events: Ev[] = [];
   private next = 1;
   private fd: number;
   private listeners = new Set<Listener>();
+  // Whether he's at the Mac with The Lab open, set by the server.
+  atMac: () => boolean = () => false;
 
   constructor(file: string) {
     if (existsSync(file)) {
@@ -41,7 +49,7 @@ export class Store {
   }
 
   add(e: { kind: string; [k: string]: unknown }, durable = false): Ev {
-    const ev = { id: this.next++, at: new Date().toISOString(), ...e } as Ev;
+    const ev = { id: this.next++, at: new Date().toISOString(), ...e, ...(LOUD.has(e.kind) && this.atMac() ? { onMac: true } : {}) } as Ev;
     writeSync(this.fd, JSON.stringify(ev) + '\n');
     if (durable) fdatasyncSync(this.fd);
     this.events.push(ev);
@@ -63,7 +71,7 @@ export class Store {
   close() { closeSync(this.fd); }
 }
 
-export type State = { sessionId?: string; threadId?: string; open?: { text: string; at: string } | null };
+export type State = { sessionId?: string; threadId?: string; open?: { text: string; at: string } | null; memoryPaused?: boolean; login?: string };
 
 class Channel implements AsyncIterable<SDKUserMessage> {
   private queue: SDKUserMessage[] = [];
@@ -89,15 +97,28 @@ const NOTICE: Record<string, string> = {
   verification_required: 'The Claude account on the Mac needs to be verified. Open Claude on the Mac to finish it.',
 };
 
+// How long an Allow card waits. Long enough to find the phone, short enough
+// that an Allow still means he remembers what it was for.
+export const ASK_MS = 5 * 60_000;
+
 export const DENIED: Record<string, string> = {
   phone: 'He said no from his phone. Do not try another way around it, ask him what he wants instead.',
-  timeout: 'Nobody answered for an hour, so it was not allowed. Mention it in your reply.',
+  timeout: 'Nobody answered within 5 minutes, so it was not allowed. Carry on with anything that does not need it, and say in your reply what is still waiting on him.',
   stop: 'He stopped the task.',
 };
 
-const PROMPT = `You are talking to the owner of this Mac through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app.`;
+const LIMITS = 'A few things to know before you start. The Lab only works while your Mac is awake, so a closed lid or a flat battery pauses it until the Mac is back. It asks here before it deletes, sends or installs anything, and what it deletes goes to the Trash on the Mac, where you can get it back. It can get things wrong, so check anything that matters. If a change to this app looks worse, say "undo".';
 
-export type LabOptions = { home: string; model?: string; engine?: 'claude' | 'codex' };
+// Variables that look like credentials stay out of the agent's shell, as
+// Hermes does. The engine's own sign-in is kept.
+export const cleanEnv = (extra: Record<string, string> = {}) => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([k, v]) => v !== undefined && (/^(ANTHROPIC_|CLAUDE_CODE_|CLAUDE_AGENT_|OPENAI_|CODEX_)/.test(k) || !/KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE|SESSION/i.test(k)))) as Record<string, string>,
+  ...extra,
+});
+
+export type LabOptions = { home: string; dir: string; model?: string; engine?: 'claude' | 'codex'; snapshots?: boolean };
+export type Card = { title: string; detail: string; plain?: string; facts?: string[]; why?: string; from?: string; always?: { command: string; cwd: string } };
+type Rule = { tool: string; command: string; cwd: string; plain: string; at: string };
 
 export class Lab {
   store: Store;
@@ -108,24 +129,48 @@ export class Lab {
   private codex: Codex | null = null;
   private stateFile: string;
   private filesDir: string;
+  private rulesFile: string;
   asks = new Map<string, (allow: boolean, by: string) => void>();
+  private cards = new Map<string, Card>();
   private youIds = new Map<string, number>();
   private unanswered: SDKUserMessage[] = [];
   private seen = new Set<string>();
   private stopping = false;
   private initSeen = false;
+  // Steps whose refusal is already shown some other way, so the failed
+  // result isn't drawn again.
+  readonly hushed = new Set<string>();
+  // Where outside content got into this task, which labels any send after it.
+  taint: string | null = null;
+  private noes = 0;
+  private lastSnap: { name: string; t: number } | null = null;
+  private snapping: Promise<void> | null = null;
+  private snapFailed = false;
+  private memoryText = '';
+  // Said to the agent at the top of its next message.
+  private nextNote = '';
+  rules: Rule[] = [];
+  readonly where: Where;
+  readonly trashCmd: string;
+  readonly memoryFile: string;
   status: { working: boolean; label: string; since: string; mode?: string } = { working: false, label: '', since: new Date().toISOString() };
 
   constructor(opts: LabOptions) {
     this.opts = opts;
-    const dir = join(opts.home, '.lab');
-    mkdirSync(dir, { recursive: true });
-    this.filesDir = join(dir, 'files');
+    mkdirSync(opts.dir, { recursive: true });
+    this.filesDir = join(opts.dir, 'files');
     mkdirSync(this.filesDir, { recursive: true });
-    this.stateFile = join(dir, 'state.json');
+    this.stateFile = join(opts.dir, 'state.json');
+    this.rulesFile = join(opts.dir, 'allowed.json');
+    this.where = { user: homedir().replace(/\\/g, '/'), home: opts.home.replace(/\\/g, '/'), lab: opts.dir.replace(/\\/g, '/') };
+    this.trashCmd = join(opts.dir, 'bin', 'trash');
+    this.memoryFile = join(opts.home, 'memory.md');
     this.state = existsSync(this.stateFile) ? JSON.parse(readFileSync(this.stateFile, 'utf8')) : {};
-    this.store = new Store(join(dir, 'events.jsonl'));
+    try { this.rules = JSON.parse(readFileSync(this.rulesFile, 'utf8')); } catch { /* none yet */ }
+    const fresh = !existsSync(join(opts.dir, 'events.jsonl'));
+    this.store = new Store(join(opts.dir, 'events.jsonl'));
     for (const e of this.store.events) if (e.kind === 'you') this.seen.add(String(e.cid));
+    if (fresh) this.store.add({ kind: 'notice', text: LIMITS, first: true });
 
     if (this.state.open) {
       // Without a done the cut-off turn's approvals would stay live.
@@ -138,6 +183,7 @@ export class Lab {
       this.state.open = null;
       this.save();
     }
+    this.watchMemory();
   }
 
   save() {
@@ -152,20 +198,25 @@ export class Lab {
     this.store.live({ kind: 'status', ...this.status });
   }
 
-  // `scheduled` is the label of the schedules.json entry that sent it.
-  send(text: string, cid: string, files: Attached[] = [], scheduled?: string): boolean {
+  // `scheduled` is the schedules.json entry that sent it.
+  send(text: string, cid: string, files: Attached[] = [], scheduled?: { label: string; quiet?: boolean }): boolean {
     if (this.seen.has(cid)) return false;
     this.seen.add(cid);
-    const you = this.store.add({ kind: 'you', text, cid, ...(files.length ? { files } : {}), ...(scheduled ? { scheduled } : {}) }, true);
+    if (!this.status.working) { this.taint = null; this.noes = 0; }
+    const you = this.store.add({ kind: 'you', text, cid, ...(files.length ? { files } : {}), ...(scheduled ? { scheduled: scheduled.label } : {}) }, true);
     this.youIds.set(cid, you.id);
     this.state.open = { text: text || files.map((f) => f.name).join(', '), at: new Date().toISOString() };
     this.save();
+    this.snap();
     const list = files.map((f) => `- ${join(this.filesDir, basename(decodeURIComponent(f.url)))} (${f.name}, ${f.type})`).join('\n');
     let content = files.length ? `${text}\n\nHe attached ${files.length === 1 ? 'a file' : `${files.length} files`} from his phone:\n${list}`.trim() : text;
-    if (scheduled) content = `This is "${scheduled}", a scheduled message from schedules.json, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.\n\n${content}`;
+    if (scheduled) content = `This is "${scheduled.label}", a scheduled message from schedules.json, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.${scheduled.quiet ? ' If there is nothing worth telling him, reply with exactly [SILENT] and he won\'t be notified.' : ''}\n\n${content}`;
+    const notes = [this.nextNote, this.memoryNote()].filter(Boolean).join(' ');
+    if (notes) content = `(${notes})\n\n${content}`;
+    this.nextNote = '';
     this.setStatus(true, 'Reading your message');
     if (this.opts.engine === 'codex') {
-      this.codex ??= new Codex(this, this.opts.home, PROMPT, this.opts.model);
+      this.codex ??= new Codex(this, this.opts.home, PROMPT(this.trashCmd), this.opts.model);
       this.codex.send(content, files.filter((f) => f.type.startsWith('image/')).map((f) => join(this.filesDir, basename(decodeURIComponent(f.url)))), you.id);
       return true;
     }
@@ -194,12 +245,214 @@ export class Lab {
     this.store.close();
   }
 
-  answer(ref: string, allow: boolean): boolean {
+  // `always` keeps an exact command allowed in that folder from now on,
+  // which only the app offers, never the notification.
+  answer(ref: string, allow: boolean, always = false): boolean {
     const finish = this.asks.get(ref);
     if (!finish) return false;
+    const card = this.cards.get(ref);
+    if (allow && always && card?.always) {
+      this.rules = [...this.rules.filter((r) => !(r.command === card.always!.command && r.cwd === card.always!.cwd)), { tool: 'Bash', ...card.always, plain: card.plain || card.title, at: new Date().toISOString() }];
+      this.saveRules();
+    }
     finish(allow, 'phone');
     return true;
   }
+
+  saveRules() {
+    writeFileSync(this.rulesFile + '.tmp', JSON.stringify(this.rules, null, 2));
+    renameSync(this.rulesFile + '.tmp', this.rulesFile);
+  }
+
+  allowedBefore(command: string, cwd: string) {
+    return this.rules.some((r) => r.command === command && r.cwd === cwd);
+  }
+
+  // ---------- the guard rails ----------
+
+  // A Time Machine snapshot, at most every `fresh` ms, so there's always a
+  // point to roll back to from shortly before anything risky.
+  async snap(fresh = 15 * 60_000) {
+    if (process.platform !== 'darwin' || this.opts.snapshots === false) return;
+    if (this.lastSnap && Date.now() - this.lastSnap.t < fresh) return;
+    this.snapping ??= snapshot().then(
+      (name) => { this.lastSnap = { name, t: Date.now() }; this.store.add({ kind: 'snapshot', name }); },
+      (e) => {
+        console.error('snapshot:', e.message);
+        if (this.snapFailed) return;
+        this.snapFailed = true;
+        this.store.add({ kind: 'notice', text: `The Mac couldn't take a Time Machine snapshot (${clip(String(e.message), 120)}), so the only undo for now is the Trash. Turning on Time Machine in System Settings usually fixes it.` });
+      },
+    ).finally(() => { this.snapping = null; });
+    await this.snapping;
+  }
+
+  get snapshotAt() { return this.lastSnap ? new Date(this.lastSnap.t).toISOString() : null; }
+
+  // Builds the card the phone shows, from the call itself. What the agent
+  // says about it goes in `why`, labelled as the agent's.
+  card(tool: string, input: Record<string, any>, j: Judgement, why?: string, cwd?: string): Card {
+    const facts: string[] = [];
+    if (j.undo === 'trash') facts.push('You can get it back from the Trash.');
+    else if (j.undo === 'yes') facts.push('This can be undone.');
+    else if (j.undo === 'no') facts.push("This can't be undone.");
+    if (j.leaves) facts.push(`This sends something off the Mac${j.touches[0] ? `, to ${j.touches[0]}` : ''}.`);
+    else if (j.effect !== 'send') facts.push('Nothing leaves the Mac.');
+    if (j.secret) facts.push('It reads a saved password or key.');
+    if (j.unsure) facts.push("Exactly which files isn't known until it runs.");
+    const plain = j.plain || title(tool, input);
+    const command = tool === 'Bash' ? String(input.command ?? '') : '';
+    const offer = !!command && !j.secret && !j.leaves && j.effect !== 'send';
+    return {
+      title: `Allow: ${plain}?`,
+      detail: detail(tool, input),
+      plain,
+      facts,
+      ...(why && why !== plain ? { why: clip(why, 200) } : {}),
+      ...(this.taint ? { from: `This came up after reading ${this.taint}.` } : {}),
+      ...(offer ? { always: { command, cwd: cwd ?? this.opts.home } } : {}),
+    };
+  }
+
+  // Records a call the guard refused, and stops the task after three
+  // refusals in a row rather than letting it keep trying.
+  blocked(ref: string, tool: string, j: Judgement) {
+    this.hushed.add(ref);
+    this.store.add({ kind: 'blocked', ref, tool, title: j.plain || tool, text: j.block });
+    this.refused(j.plain || tool);
+  }
+
+  private refused(what: string) {
+    if (++this.noes < 3) return;
+    this.noes = 0;
+    this.store.add({ kind: 'notice', text: `It stopped because it was turned down three times in a row. The last thing it wanted to do was: ${clip(what, 120)}. Tell it what you'd like instead.` });
+    setTimeout(() => this.stop(), 0);
+  }
+
+  // The one gate every Claude tool call passes through, whatever mode the
+  // agent runs in, so the never-allow list and the Trash rule hold even
+  // where its own permission checks would let a call straight through.
+  private async gate(input: any, signal: AbortSignal): Promise<HookJSONOutput> {
+    const tool = String(input.tool_name);
+    const args = (input.tool_input ?? {}) as Record<string, any>;
+    const ref = String(input.tool_use_id ?? randomUUID());
+    const w = { ...this.where, cwd: input.cwd };
+    const j = judge(tool, args, w);
+    if (j.source && !this.taint) this.taint = j.source;
+    const decide = (d: 'allow' | 'deny', reason?: string): HookJSONOutput => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: d, ...(reason ? { permissionDecisionReason: reason } : {}) } });
+    if (j.block) {
+      this.blocked(ref, tool, j);
+      return decide('deny', `Not allowed: ${j.block} Don't look for another way to do it. Tell him what you were trying to do.`);
+    }
+    if (j.rm) {
+      this.hushed.add(ref);
+      return decide('deny', `On this Mac files are deleted by moving them to the Trash, so he can get them back. Run ${this.trashCmd} with every path in one command instead. List what you'll delete first if it's more than a handful.`);
+    }
+    const mem = this.memoryGate(tool, args);
+    if (mem) { this.hushed.add(ref); return decide('deny', mem); }
+    if (tool === 'Bash' && this.allowedBefore(String(args.command ?? ''), String(input.cwd ?? ''))) return decide('allow');
+    if (needsOk(j, w, !!this.taint)) {
+      if (j.effect === 'delete' || j.effect === 'system') await this.snap(60_000);
+      const { allow, by } = await this.waitFor(ref, tool, this.card(tool, args, j, args.description, input.cwd), signal);
+      if (!allow) this.hushed.add(ref);
+      return allow ? decide('allow') : decide('deny', DENIED[by] ?? DENIED.stop);
+    }
+    if (j.effect === 'read' && !j.secret) return decide('allow');
+    return {};
+  }
+
+  // An email's sender, once the agent has read it, so a card can say which
+  // email a request came up in.
+  private after(input: any): HookJSONOutput {
+    if (this.taint === 'your email') {
+      const text = JSON.stringify(input.tool_response ?? '').slice(0, 20000);
+      const from = /"?from"?\s*[:=]\s*\\?"?([^"\\,<]*<?[\w.+-]+@[\w-]+\.[\w.]+>?)/i.exec(text);
+      if (from) this.taint = `an email from ${clip(from[1].trim(), 80)}`;
+    }
+    return {};
+  }
+
+  // ---------- memory ----------
+
+  private memoryGate(tool: string, args: Record<string, any>): string | null {
+    if (!['Write', 'Edit', 'MultiEdit'].includes(tool) || resolve(String(args.file_path ?? '')) !== resolve(this.memoryFile)) return null;
+    if (this.state.memoryPaused) return 'He has paused memory from his phone, so leave memory.md as it is.';
+    let next = this.memoryText;
+    if (tool === 'Write') next = String(args.content ?? '');
+    for (const e of tool === 'MultiEdit' ? args.edits ?? [] : tool === 'Edit' ? [args] : []) {
+      next = e.replace_all ? next.split(e.old_string).join(e.new_string) : next.replace(e.old_string, e.new_string);
+    }
+    if (next.length > CAP) return `memory.md would be ${next.length} characters and the cap is ${CAP}. Merge or drop older lines first, then try again. It holds:\n\n${this.memoryText}`;
+    return null;
+  }
+
+  memoryNote(): string {
+    const n = this.memoryText.length;
+    return n > CAP * 0.8 ? `memory.md is at ${n} of ${CAP} characters, so merge or drop lines before adding more.` : '';
+  }
+
+  memory() {
+    return { ...parse(this.memoryText), chars: this.memoryText.length, cap: CAP, paused: !!this.state.memoryPaused };
+  }
+
+  // A change made on the phone, which is his and so isn't checked.
+  saveMemory(m: Partial<Memory> & { paused?: boolean }) {
+    if (m.paused !== undefined) { this.state.memoryPaused = m.paused; this.save(); }
+    if (m.about || m.notes) {
+      const cur = parse(this.memoryText);
+      this.writeMemory(render({ about: m.about ?? cur.about, notes: m.notes ?? cur.notes }));
+    }
+    return this.memory();
+  }
+
+  private writeMemory(text: string) {
+    this.memoryText = text;
+    writeFileSync(this.memoryFile + '.tmp', text);
+    renameSync(this.memoryFile + '.tmp', this.memoryFile);
+  }
+
+  // Every change the agent makes to memory.md shows on the phone as a line in
+  // the conversation. One made while memory is paused, one over the cap, or
+  // a line that reads like something planted while it was reading outside
+  // content, is put back.
+  private memoryChanged() {
+    let text: string;
+    try { text = readFileSync(this.memoryFile, 'utf8'); } catch { return; }
+    if (text === this.memoryText) return;
+    const before = parse(this.memoryText), after = parse(text);
+    const { added, removed } = diff(before, after);
+    const planted = added.map((l) => ({ l, why: suspect(l) })).filter((x) => x.why && (this.taint || /hidden|password/.test(x.why)));
+    const undo = (note: string, phone: string) => {
+      this.writeMemory(this.memoryText);
+      this.nextNote = note;
+      this.store.add({ kind: 'notice', text: phone });
+    };
+    if (this.state.memoryPaused) return undo('Your last change to memory.md was undone because he has paused memory.', 'Memory is paused, so a change the agent made to it was undone.');
+    if (text.length > CAP) return undo(`Your last change to memory.md was undone because it went over the ${CAP} character cap. Merge or drop older lines first.`, `A change to memory was undone because it went over the ${CAP} character cap.`);
+    if (planted.length) {
+      const keep = render({ about: after.about.filter((l) => !planted.some((p) => p.l === l)), notes: after.notes.filter((l) => !planted.some((p) => p.l === l)) });
+      this.writeMemory(keep);
+      this.nextNote = 'A line you added to memory.md was taken out because it read like an instruction from something you read rather than from him.';
+      this.store.add({ kind: 'notice', text: `Something tried to add this to memory, and it was taken out because ${planted[0].why}: "${clip(planted[0].l, 160)}"`, action: { label: 'Keep It Anyway', send: `Add this to memory.md, it's from me: ${planted[0].l}` } });
+      return;
+    }
+    this.memoryText = text;
+    if (added.length || removed.length) this.store.add({ kind: 'memory', added: added.map((l) => clip(l, 200)), removed: removed.map((l) => clip(l, 200)) });
+  }
+
+  private watchMemory() {
+    try { this.memoryText = readFileSync(this.memoryFile, 'utf8'); } catch { /* not made yet */ }
+    let settle: NodeJS.Timeout | undefined;
+    try {
+      watch(this.opts.home, { persistent: false }, (_, name) => {
+        if (name !== 'memory.md') return;
+        clearTimeout(settle);
+        settle = setTimeout(() => this.memoryChanged(), 300);
+      });
+    } catch { /* no folder yet, as in tests */ }
+  }
+
+  // ---------- Claude ----------
 
   private ensureRunning() {
     if (this.q) return;
@@ -220,18 +473,27 @@ export class Lab {
     const q = query({
       prompt: this.input,
       options: {
+        // Only his Lab folder is the agent's own. Changes anywhere else go
+        // through its permission checks, and deletes, sends and installs
+        // through the gate below.
         cwd: this.opts.home,
-        additionalDirectories: [homedir()],
         permissionMode: 'auto',
         resume: this.state.sessionId,
         model: this.opts.model,
         mcpServers: { lab },
+        env: cleanEnv({ PATH: `${join(this.opts.dir, 'bin')}${delimiter}${process.env.PATH ?? ''}` }),
         // The phone has no surface for multiple-choice prompts or plan
         // approval, so the agent asks in plain text instead.
         disallowedTools: ['AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode'],
         settingSources: ['user', 'project', 'local'],
-        systemPrompt: { type: 'preset', preset: 'claude_code', append: PROMPT },
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: PROMPT(this.trashCmd) },
         canUseTool: (name, input, o) => this.ask(name, input, o),
+        // Waiting on his Allow happens inside the hook, so it gets the same
+        // time as the card.
+        hooks: {
+          PreToolUse: [{ hooks: [(input, _id, o) => this.gate(input, o.signal)], timeout: ASK_MS / 1000 + 60 }],
+          PostToolUse: [{ hooks: [async (input) => this.after(input)] }],
+        },
         stderr: (d) => process.stderr.write(d),
       },
     });
@@ -276,6 +538,25 @@ export class Lab {
     this.setStatus(false);
   }
 
+  // A reply of just [SILENT] to a scheduled check means there was nothing to
+  // report, so it's kept quiet on the phone.
+  reply(text: string) {
+    if (text.trim() === '[SILENT]') this.store.add({ kind: 'reply', text: 'Nothing to report.', silent: true });
+    else this.store.add({ kind: 'reply', text });
+  }
+
+  step(ref: string, tool: string, input: Record<string, any>, t: string, more: string, sub = false) {
+    const j = judge(tool, input, this.where);
+    if (j.source && !this.taint) this.taint = j.source;
+    this.store.add({ kind: 'step', ref, tool, title: t, detail: more, effect: j.effect, ...(sub ? { sub: true } : {}) });
+    this.setStatus(true, t);
+  }
+
+  failed(ref: string, text: string) {
+    if (this.hushed.delete(ref)) return;
+    this.store.add({ kind: 'failed', ref, text });
+  }
+
   private handle(m: SDKMessage) {
     switch (m.type) {
       case 'system':
@@ -299,12 +580,10 @@ export class Lab {
         }
         for (const b of m.message.content) {
           if (b.type === 'text' && !sub && b.text.trim()) {
-            this.store.add({ kind: 'reply', text: b.text });
+            this.reply(b.text);
           } else if (b.type === 'tool_use') {
             const input = (b.input ?? {}) as Record<string, any>;
-            const t = title(b.name, input);
-            this.store.add({ kind: 'step', ref: b.id, tool: b.name, title: t, detail: detail(b.name, input), ...(sub ? { sub: true } : {}) });
-            this.setStatus(true, t);
+            this.step(b.id, b.name, input, title(b.name, input), detail(b.name, input), sub);
           } else if (b.type === 'thinking' && !sub) {
             this.setStatus(true, 'Thinking');
           }
@@ -318,7 +597,7 @@ export class Lab {
         for (const b of content as any[]) {
           if (b.type === 'tool_result' && b.is_error) {
             const text = typeof b.content === 'string' ? b.content : (b.content ?? []).map((c: any) => c.text ?? '').join('\n');
-            this.store.add({ kind: 'failed', ref: b.tool_use_id, text: clip(text.replace(/<\/?tool_use_error>/g, ''), 600) });
+            this.failed(b.tool_use_id, clip(text.replace(/<\/?tool_use_error>/g, ''), 600));
           }
         }
         return;
@@ -339,32 +618,43 @@ export class Lab {
         this.store.add({ kind: 'done', ok, stopped, ms: m.duration_ms, ...(upto ? { upto } : {}), ...(ok || stopped ? {} : { error: clip(('errors' in m ? m.errors : []).join('; ') || m.subtype, 300) }) });
         this.state.open = null;
         this.save();
+        this.hushed.clear();
         this.setStatus(false);
         return;
       }
     }
   }
 
+  // What the agent's own permission checks hand over. The gate has already
+  // turned down anything on the never-allow list.
   private async ask(name: string, input: Record<string, unknown>, o: { signal: AbortSignal; toolUseID: string; title?: string; description?: string }): Promise<PermissionResult> {
     if (name === 'mcp__lab__send_to_phone') return { behavior: 'allow', updatedInput: input };
-    const { allow, by } = await this.waitFor(o.toolUseID, name, o.title ?? `Allow: ${title(name, input as any)}?`, o.description ?? detail(name, input as any), o.signal);
+    const j = judge(name, input as any, this.where);
+    if (j.block) { this.blocked(o.toolUseID, name, j); return { behavior: 'deny', message: `Not allowed: ${j.block}` }; }
+    const { allow, by } = await this.waitFor(o.toolUseID, name, this.card(name, input as any, j, o.description ?? o.title), o.signal);
+    if (!allow) this.hushed.add(o.toolUseID);
     return allow
       ? { behavior: 'allow', updatedInput: input }
       : { behavior: 'deny', message: DENIED[by] ?? DENIED.stop };
   }
 
   // Puts an Allow and Deny on the phone and resolves with his answer, or a
-  // no after an hour or a stop.
-  waitFor(ref: string, tool: string, ask: string, more: string, signal?: AbortSignal): Promise<{ allow: boolean; by: string }> {
-    this.store.add({ kind: 'ask', ref, tool, title: ask, detail: more }, true);
+  // no after five minutes or a stop.
+  waitFor(ref: string, tool: string, card: Card, signal?: AbortSignal): Promise<{ allow: boolean; by: string }> {
+    this.cards.set(ref, card);
+    const { always, ...shown } = card;
+    this.store.add({ kind: 'ask', ref, tool, ...shown, ...(always ? { always: true } : {}), ...(this.snapshotAt ? { snapshot: this.snapshotAt } : {}) }, true);
     const was = this.status.label;
     this.setStatus(true, 'Waiting for you');
     return new Promise((done) => {
-      const timer = setTimeout(() => finish(false, 'timeout'), 60 * 60 * 1000);
+      const timer = setTimeout(() => finish(false, 'timeout'), ASK_MS);
       const finish = (allow: boolean, by: string) => {
         if (!this.asks.delete(ref)) return;
         clearTimeout(timer);
+        this.cards.delete(ref);
         this.store.add({ kind: 'answered', ref, allow, by });
+        if (allow) this.noes = 0;
+        else if (by !== 'stop') this.refused(card.plain || card.title);
         if (this.status.working) this.setStatus(true, allow ? was : 'Carrying on without it');
         done({ allow, by });
       };
@@ -424,3 +714,5 @@ export class Lab {
     return existsSync(p) ? p : null;
   }
 }
+
+const PROMPT = (trash: string) => `You are talking to the owner of this Mac through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app. Delete files with ${trash} PATH..., which moves them to the Trash, never with rm. Write web addresses out in full rather than hiding them behind link text.`;

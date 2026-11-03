@@ -32,8 +32,15 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
       .replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>')
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" data-ext>$1</a>');
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (m, t, u) => {
+        const h = hostOf(u);
+        return `<a href="${u}" data-ext>${t}</a>${h && !t.toLowerCase().includes(h.replace(/^www\./, '')) ? ` <span class="host">(${h})</span>` : ''}`;
+      })
+      // A bare address already shows where it goes.
+      .replace(/(^|[\s(])(https?:\/\/[^\s<)]*[^\s<).,;:!?'"])/g, '$1<a href="$2" data-ext>$2</a>');
   }
+  // A link's words can say anything, so its real address is shown beside it.
+  const hostOf = (u) => { try { return new URL(u.replace(/&amp;/g, '&')).host; } catch { return ''; } };
   function md(src) {
     const out = [];
     esc(src).split(/```[^\n]*\n?/).forEach((part, i) => {
@@ -160,7 +167,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   older.textContent = 'Show Earlier Messages';
 
   function newTurn(you, at) {
-    const t = { type: 'turn', i: items.length, id: you ? `y${you.id}` : `t${Math.random()}`, you, at, steps: [], failed: {}, asks: [], answers: {}, out: [], done: null, open: undefined, raw: new Set() };
+    const t = { type: 'turn', i: items.length, id: you ? `y${you.id}` : `t${Math.random()}`, you, at, steps: [], failed: {}, asks: [], answers: {}, out: [], notes: [], snap: null, done: null, open: undefined, raw: new Set() };
     items.push(t);
     cur = t;
     return t;
@@ -249,9 +256,19 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       case 'stopFailed': toast("Couldn't reach the Mac to stop it. Try again once it's back.", true); return;
       case 'you': { const t = newTurn(e, e.at); byEid.set(String(e.id), t); dirty.add(t); want.side = true; if (e.files?.length) want.files = true; schedule(); if (e.scheduled && fresh(e)) say(`Scheduled: ${e.scheduled}.`); return; }
       case 'notice': { const n = { type: 'notice', i: items.length, id: `n${e.id}`, e, at: e.at }; items.push(n); byEid.set(String(e.id), n); dirty.add(n); schedule(); if (fresh(e)) say(e.text); return; }
+      // The snapshot taken as a task starts is the one Put Things Back uses.
+      case 'snapshot': if (cur && !cur.snap && !cur.done) { cur.snap = e; dirty.add(cur); schedule(); } return;
+      // Shared from another app, or the tile: the text waits in the composer.
+      case 'compose': {
+        if (e.text) text.value = text.value ? `${text.value}\n${e.text}` : e.text;
+        if (e.files?.length) { pending.push(...e.files); drawPending(); }
+        fit(); canSend(); keep(text.value);
+        text.focus();
+        return;
+      }
     }
     // Anything else that isn't part of a turn is for some other design.
-    if (!['step', 'failed', 'ask', 'answered', 'reply', 'file', 'done'].includes(e.kind)) return;
+    if (!['step', 'failed', 'ask', 'answered', 'reply', 'file', 'done', 'blocked', 'memory'].includes(e.kind)) return;
     const t = (e.kind === 'failed' || e.kind === 'answered') ? (byRef.get(e.ref) || cur) : cur || newTurn(null, e.at);
     if (!t) return;
     if (e.kind === 'step') { t.steps.push(e); byRef.set(e.ref, t); }
@@ -259,6 +276,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     else if (e.kind === 'ask') { t.asks.push(e); byRef.set(e.ref, t); }
     else if (e.kind === 'answered') t.answers[e.ref] = e;
     else if (e.kind === 'reply' || e.kind === 'file') t.out.push(e);
+    else if (e.kind === 'blocked' || e.kind === 'memory') t.notes.push(e);
     else if (e.kind === 'done') {
       // `upto` is the last message this run answered. One queued behind it
       // waits for its own done.
@@ -306,8 +324,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const el = elOf(item);
     if (item.el) { const old = item.el; refocus(old, () => { old.replaceWith(el); return el; }, () => el.querySelector('.bubble') || el); }
     else {
-      if (needsDay(item.i)) log.insertBefore(dayEl(item), queue);
-      log.insertBefore(el, queue);
+      if (needsDay(item.i)) log.insertBefore(dayEl(item), digestEl);
+      log.insertBefore(el, digestEl);
     }
     item.el = el;
   }
@@ -420,17 +438,34 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
 
   function askEl(t, a) {
     const ans = t.answers[a.ref];
-    if (ans) return `<div class="answered" data-answered="${esc(a.ref)}">${mark(ans.allow ? 'ok' : 'stopped')}<span>${ans.allow ? 'Allowed' : 'Denied'}: ${esc(a.title)}</span></div>`;
-    if (t.done) return `<div class="answered">${mark('stopped')}<span>Not answered: ${esc(a.title)}</span></div>`;
+    const what = esc(a.plain || a.title);
+    if (ans?.by === 'timeout') return `<div class="answered" data-answered="${esc(a.ref)}">${mark('wait')}<span>No answer in time: ${what}</span><button type="button" class="link-btn" data-askagain="${esc(a.ref)}">Ask Me Again</button></div>`;
+    if (ans) return `<div class="answered" data-answered="${esc(a.ref)}">${mark(ans.allow ? 'ok' : 'stopped')}<span>${ans.always ? 'Always allowed' : ans.allow ? 'Allowed' : 'Denied'}: ${what}</span></div>`;
+    if (t.done) return `<div class="answered">${mark('stopped')}<span>Not answered: ${what}</span></div>`;
+    const raw = t.raw.has(a.ref);
     return `<div class="ask" data-ask="${esc(a.ref)}" data-eid="${esc(a.id)}">
       <div class="ask-top"><span class="ask-mark">${shape('burst')}${icon('shield')}</span><h2>${esc(a.title)}</h2></div>
-      ${a.detail ? `<pre>${esc(a.detail)}</pre>` : ''}
+      ${a.from ? `<p class="ask-from">${esc(a.from)}</p>` : ''}
+      ${a.facts?.length ? `<ul class="ask-facts">${a.facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
+      ${a.why ? `<p class="ask-why"><span>The agent says</span>${esc(a.why)}</p>` : ''}
+      ${a.detail ? `<button type="button" class="link-btn ask-more" data-raw="${esc(a.ref)}" aria-expanded="${raw}">${icon('chev')}${raw ? 'Hide the Details' : 'Show the Details'}</button>${raw ? `<pre>${esc(a.detail)}</pre>` : ''}` : ''}
       <div class="ask-row" role="group" aria-label="Needs your OK"><button type="button" class="deny" data-answer="${esc(a.ref)}" data-allow="0">Deny</button><button type="button" class="allow" data-answer="${esc(a.ref)}" data-allow="1">Allow</button></div>
+      ${a.always ? `<button type="button" class="link-btn ask-always" data-answer="${esc(a.ref)}" data-allow="1" data-always="1">Always Allow This Exact Command</button>` : ''}
     </div>`;
+  }
+
+  // What the guard turned down, and what got saved to memory.
+  function noteEl(e) {
+    if (e.kind === 'blocked') return `<div class="guard" data-eid="${esc(e.id)}">${mark('stopped')}<span><b>Not allowed: ${esc(e.title)}</b>${e.text ? `<span>${esc(e.text)}</span>` : ''}</span></div>`;
+    const lines = [];
+    if (e.added?.length) lines.push(`<b>Saved to memory</b>${e.added.map((l) => `<span>${esc(l)}</span>`).join('')}`);
+    if (e.removed?.length) lines.push(`<b>Taken out of memory</b>${e.removed.map((l) => `<span>${esc(l)}</span>`).join('')}`);
+    return `<div class="saved" data-eid="${esc(e.id)}">${icon('star')}<span>${lines.join('')}</span><button type="button" class="link-btn" data-menu="memory">See Memory</button></div>`;
   }
 
   const fileIcon = (name = 'flower') => `<span class="fi">${shape(name)}${icon('doc')}</span>`;
   function outEl(e) {
+    if (e.kind === 'reply' && e.silent) return `<div class="end quiet" data-eid="${esc(e.id)}">${icon('check')}Nothing to report</div>`;
     if (e.kind === 'reply') return `<div class="reply" data-eid="${esc(e.id)}">${md(e.text)}</div>`;
     if (isImage(e)) return `<button type="button" class="photo" data-open="${esc(e.url)}" data-eid="${esc(e.id)}"><img src="${thumb(e.url, 300)}" alt="" loading="lazy" decoding="async"><span>${esc(e.caption || e.name)}</span></button>`;
     return `<button type="button" class="file" data-open="${esc(e.url)}" data-eid="${esc(e.id)}">${fileIcon()}<span><span class="fn">${esc(e.name)}</span><br><span class="fs">${esc(e.caption ? `${e.caption} · ` : '')}${bytes(e.size || 0)}</span></span></button>`;
@@ -442,9 +477,60 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     let end = '';
     if (t.done?.stopped) end = `<div class="end">Stopped after ${took(t.done.ms)}</div>`;
     else if (t.done && !t.done.ok) end = `<div class="end">${esc(t.done.error || "This one didn't finish.")}</div>`;
-    div.innerHTML = (t.you ? youEl(t.you) : '') + runEl(t) + t.asks.map((a) => askEl(t, a)).join('') + t.out.map(outEl).join('') + end;
+    // A task that changed files can be put back to the snapshot taken as it
+    // started. macOS keeps local snapshots for about a day.
+    const changed = t.done && !active(t) && t.snap && Date.now() - Date.parse(t.snap.at) < 24 * 3600000 && t.steps.some((s) => s.effect === 'change' || s.effect === 'delete');
+    const back = changed ? `<button type="button" class="pill restore" data-restore="${esc(t.id)}">${icon('redo')}Put Things Back to ${clock(t.snap.at)}</button>` : '';
+    div.innerHTML = (t.you ? youEl(t.you) : '') + runEl(t) + t.asks.map((a) => askEl(t, a)).join('') + t.notes.map(noteEl).join('') + t.out.map(outEl).join('') + end + back;
     return div;
   }
+
+  // While he was away
+
+  // What finished while the app was closed, grouped by what it means for
+  // him rather than by task.
+  const seenKey = 'lab-seen';
+  const lastSeen = () => { try { return Number(localStorage.getItem(seenKey)) || 0; } catch { return 0; } };
+  const markSeen = () => { try { localStorage.setItem(seenKey, String(Date.now())); } catch {} };
+  const digestEl = document.createElement('section');
+  digestEl.className = 'digest';
+  digestEl.hidden = true;
+  digestEl.setAttribute('aria-labelledby', 'digest-title');
+  let digestFirst = null;
+  function drawDigest(since) {
+    const turns = items.filter((t) => t.type === 'turn' && t.done && Date.parse(t.done.at) > since);
+    if (!since || Date.now() - since < 10 * 60000 || !turns.length) return;
+    const of = (effect) => turns.flatMap((t) => t.steps.filter((s) => s.effect === effect));
+    const sent = of('send'), gone = of('delete'), changed = of('change'), system = of('system');
+    const missed = turns.flatMap((t) => t.asks.filter((a) => t.answers[a.ref]?.by === 'timeout'));
+    const failed = turns.filter((t) => !t.done.ok && !t.done.stopped);
+    const ran = turns.filter((t) => t.you?.scheduled);
+    const list = (xs) => xs.slice(0, 3).map((x) => esc(x.title)).join(', ') + (xs.length > 3 ? `, and ${xs.length - 3} more` : '');
+    const n = (k, one, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
+    const rows = [
+      sent.length && ['send', 'Sent off the Mac', list(sent)],
+      gone.length && ['delete', 'Deleted or moved to the Trash', list(gone)],
+      system.length && ['system', 'Installed or changed settings', list(system)],
+      changed.length && ['change', 'Changed files', list(changed)],
+      missed.length && ['wait', `${n(missed.length, 'question')} not answered in time`, list(missed.map((a) => ({ title: a.plain || a.title })))],
+      failed.length && ['bad', `${n(failed.length, 'task')} didn't finish`, list(failed.map((t) => ({ title: t.you?.text || 'A task' })))],
+    ].filter(Boolean);
+    const snap = turns.find((t) => t.snap)?.snap;
+    digestFirst = turns[0].you?.id ?? null;
+    digestEl.innerHTML = `<h2 id="digest-title">While You Were Away</h2>
+      <p class="digest-sum">${n(turns.length, 'task')} finished${ran.length ? `, ${ran.length} of ${turns.length === 1 ? 'it' : 'them'} scheduled` : ''}.${rows.length ? '' : ' Nothing was sent, deleted or changed.'}</p>
+      ${rows.length ? `<ul>${rows.map(([k, head, more]) => `<li class="dg-${k}"><b>${head}</b><span>${more}</span></li>`).join('')}</ul>` : ''}
+      ${snap ? `<p class="digest-snap">${icon('redo')}<span>A Time Machine snapshot from ${shortDay(snap.at)}${dayLabel(snap.at) === 'Today' ? '' : ` at ${clock(snap.at)}`} can put things back.</span></p>` : ''}
+      <div class="digest-btns">${digestFirst !== null ? '<button type="button" class="pill" data-digest="show">Show Me</button>' : ''}<button type="button" class="pill" data-digest="close">Got It</button></div>`;
+    digestEl.hidden = false;
+    if (booted) toBottom();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { markSeen(); return; }
+    flushNow();
+    drawDigest(lastSeen());
+    markSeen();
+  });
 
   function drawQueue() {
     queue.innerHTML = outbox.map((m) => `<div class="turn">${youEl({ ...m, id: '' }, true)}</div>`).join('');
@@ -519,7 +605,9 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const tight = innerHeight < 560 || root.hasAttribute('data-keyboard');
     app.classList.toggle('tight', tight);
     const d = fromBottom();
-    if (tight || bigText || overlay() || d > 300) head.classList.add('compact');
+    // A waiting question needs the room more than the stats do.
+    const asking = !$('now').hidden && $('now').classList.contains('asking');
+    if (tight || bigText || overlay() || asking || d > 300) head.classList.add('compact');
     else if (d < 60) head.classList.remove('compact');
   }
   let threadH = 0;
@@ -570,6 +658,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     bar.classList.toggle('asking', !!ask);
     $('now-label').textContent = ask ? 'Needs your OK' : status.label || 'Working';
     $('now-jump').hidden = !ask;
+    fold();
     // An ask counts from when it was asked, and work from when the run began.
     const since = Date.parse(ask ? ask.at : status.since || cur?.at);
     const upd = () => {
@@ -593,6 +682,104 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       if (show) say(link.detail || "Can't reach the Mac.");
       else if (link.state === 'online' && (was === 'offline' || was === 'unpaired')) say('Connected to the Mac again.');
     }
+  }
+
+  // More: memory, schedules, always-allowed commands and the setup check
+
+  const call = (method, path, body) => lab.call ? lab.call(method, path, body) : Promise.reject(new Error('This version of the app is too old for that. Update it from the Mac.'));
+  const offline = (err) => `<p class="hint">${esc(err?.message && !/fetch|network/i.test(err.message) ? err.message : "Couldn't reach the Mac. Try again once it's back.")}</p>`;
+  const closeBtn = '<button type="button" data-close>Close</button>';
+  let memo = null, plan = null, rules = null, wipeArmed = false;
+  function openMenu() {
+    const row = (k, ic, title, sub) => `<li><button type="button" class="menu-row" data-menu="${k}"><span class="mr-ic">${icon(ic)}</span><span><b>${title}</b><span>${sub}</span></span></button></li>`;
+    openSheet('menu', 'More', `<ul class="menu-list">
+      ${row('memory', 'star', 'Memory', 'What the agent remembers about you')}
+      ${row('schedules', 'clock', 'Schedules', 'Messages the Mac sends itself on a timer')}
+      ${row('allowed', 'shield', 'Always Allowed', 'Commands that run without asking')}
+      ${row('check', 'check', 'Check My Setup', 'Whether the Mac and this phone are ready')}
+    </ul>`, closeBtn);
+  }
+  async function load(kind, title, path, draw) {
+    openSheet(kind, title, '<p class="hint">Asking the Mac</p>', closeBtn);
+    try {
+      const got = await call('GET', path);
+      if (sheetKind === kind) draw(got);
+    } catch (err) { if (sheetKind === kind) $('sheet-body').innerHTML = offline(err); }
+  }
+  function drawMemory(m) {
+    memo = m;
+    const pct = Math.min(100, Math.round((m.chars / m.cap) * 100));
+    const part = (key, head, empty) => `<h3>${head}</h3>${m[key].length ? `<ul class="sc-list">${m[key].map((l, i) => `<li><span class="sc-text mem-line">${esc(l)}</span><button type="button" class="icon-btn" data-forget="${key}:${i}" aria-label="Forget ${esc(l)}">${icon('trash')}</button></li>`).join('')}</ul>` : `<p class="hint">${empty}</p>`}`;
+    refocus($('sheet-body'), () => {
+      $('sheet-body').innerHTML = `<div class="meter${pct >= 80 ? ' full' : ''}" role="meter" aria-valuemin="0" aria-valuemax="${m.cap}" aria-valuenow="${m.chars}" aria-label="Memory used"><i style="width:${pct}%"></i></div>
+        <p class="hint">${m.chars.toLocaleString()} of ${m.cap.toLocaleString()} characters used.${pct >= 80 ? ' When it fills up, the agent has to merge or drop older lines before it can add more.' : ''}</p>
+        ${m.paused ? '<p class="mem-paused">Memory is paused. The agent can read what is here but can\'t add to it.</p>' : ''}
+        ${part('about', 'About You', 'Nothing yet. Tell the agent something about yourself and it will keep it here.')}
+        ${part('notes', 'Notes', 'Nothing yet. The agent keeps notes on how you like things done.')}
+        <div class="mem-btns"><button type="button" class="pill" data-mempause>${icon(m.paused ? 'redo' : 'pause')}${m.paused ? 'Resume Memory' : 'Pause Memory'}</button><button type="button" class="pill danger" data-memwipe>${icon('trash')}${wipeArmed ? 'Tap Again to Forget Everything' : 'Forget Everything'}</button></div>`;
+    }, () => $('sheet-title'));
+    $('sheet-actions').innerHTML = '<button type="button" class="primary" data-close>Done</button>';
+  }
+  async function saveMemory(change, done) {
+    try { drawMemory(await call('POST', '/memory', change)); if (done) toast(done); } catch (err) { toast(err.message || "Couldn't reach the Mac, so memory wasn't changed.", true); }
+  }
+  const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const hm = (t) => { const [h, m] = t.split(':').map(Number); return HM.format(new Date(2000, 0, 1, h, m)); };
+  function when(s) {
+    if (s.date) return `On ${SHORT.format(new Date(`${s.date}T${s.time}`))} at ${hm(s.time)}`;
+    const d = s.days || [];
+    const days = !d.length || d.length === 7 ? 'Every day' : d.length === 5 && !d.includes('sat') && !d.includes('sun') ? 'Weekdays' : d.map((x) => DAY_NAMES[DAYS.indexOf(x)].slice(0, 3)).join(', ');
+    return `${days} at ${hm(s.time)}`;
+  }
+  function drawSchedules(r) {
+    plan = r.items;
+    const last = (l) => !l ? 'Hasn\'t run yet' : l.result === 'failed' ? (l.fails > 1 ? `Failed the last ${l.fails} times` : `Failed ${shortDay(l.at)}`) : l.result === 'silent' ? `Ran ${shortDay(l.at)}, nothing to report` : l.result === 'stopped' ? `Stopped ${shortDay(l.at)}` : `Ran ${shortDay(l.at)}`;
+    refocus($('sheet-body'), () => {
+      $('sheet-body').innerHTML = plan.length ? `<ul class="sch-list">${plan.map((s, i) => `<li class="${s.paused ? 'paused' : ''}${s.last?.fails >= 3 ? ' failing' : ''}">
+          <div class="sch-top"><b>${esc(s.label)}</b><span>${s.paused ? 'Paused' : s.next ? `Next ${shortDay(s.next)}${dayLabel(s.next) === 'Today' ? '' : ` at ${clock(s.next)}`}` : 'Done'}</span></div>
+          <p class="sch-when">${when(s)}${s.quiet ? ', only when there\'s news' : ''}</p>
+          <p class="sch-text">${esc(s.text)}</p>
+          <p class="sch-last">${last(s.last)}</p>
+          <div class="sch-btns"><button type="button" class="pill" data-schpause="${i}">${icon(s.paused ? 'redo' : 'pause')}${s.paused ? 'Resume' : 'Pause'}</button><button type="button" class="pill" data-schedit="${i}">${icon('edit')}Edit</button><button type="button" class="icon-btn" data-schdel="${i}" aria-label="Delete ${esc(s.label)}">${icon('trash')}</button></div>
+        </li>`).join('')}</ul>`
+        : '<p class="hint">Nothing is scheduled. Ask the agent something like "every weekday at 8, check my email and tell me what\'s new".</p>';
+    }, () => $('sheet-title'));
+  }
+  async function saveSchedules(list, done) {
+    try { const r = await call('POST', '/schedules', { items: list }); if (done) toast(done); return r; } catch (err) { toast(err.message || "Couldn't reach the Mac, so the schedule wasn't changed.", true); return null; }
+  }
+  function editSchedule(i) {
+    const s = plan[i];
+    const days = s.days || [];
+    openSheet('schedit', `Edit ${s.label}`, `<label for="sch-label">Name</label><input id="sch-label" value="${esc(s.label)}" maxlength="40">
+      <label for="sch-text">Sends</label><textarea id="sch-text" rows="3" maxlength="2000">${esc(s.text)}</textarea>
+      <label for="sch-time">Time</label><input id="sch-time" type="time" value="${esc(s.time)}" required>
+      ${s.date ? `<p class="hint">Runs once, on ${SHORT.format(new Date(`${s.date}T00:00`))}.</p>` : `<fieldset class="days"><legend>Days</legend>${DAYS.map((d, k) => `<label class="day-pick"><input type="checkbox" value="${d}"${days.includes(d) ? ' checked' : ''}><span aria-hidden="true">${DAY_NAMES[k][0]}</span><span class="sr">${DAY_NAMES[k]}</span></label>`).join('')}</fieldset><p class="hint">With no days picked, it runs every day.</p>`}
+      <label class="check"><input type="checkbox" id="sch-quiet"${s.quiet ? ' checked' : ''}><span>Only tell me when there's something to report</span></label>`,
+      `<button type="button" data-menu="schedules">Cancel</button><button type="button" class="primary" data-schsave="${i}">Save</button>`);
+  }
+  function drawRules(r) {
+    rules = r.items;
+    refocus($('sheet-body'), () => {
+      $('sheet-body').innerHTML = rules.length ? `<ul class="sc-list">${rules.map((x, i) => `<li><div class="sc-fields"><b>${esc(x.plain)}</b><code class="rule-cmd">${esc(x.command)}</code><span class="sc-text">${esc(x.where || `In ${x.cwd}`)}</span></div><button type="button" class="pill" data-revoke="${i}">Remove</button></li>`).join('')}</ul>`
+        : '<p class="hint">Nothing yet. When a card offers Always Allow This Exact Command and you tap it, that command shows up here and runs without asking next time.</p>';
+    }, () => $('sheet-title'));
+  }
+  async function openCheck() {
+    openSheet('check', 'Check My Setup', '<p class="hint">Checking the Mac and this phone</p>', closeBtn);
+    let got;
+    try { got = lab.check ? await lab.check() : await call('GET', '/check'); } catch (err) { if (sheetKind === 'check') $('sheet-body').innerHTML = offline(err); return; }
+    if (sheetKind !== 'check') return;
+    const list = got.items || [];
+    const bad = list.filter((x) => !x.ok).length;
+    $('sheet-body').innerHTML = `<p class="hint">${bad ? `${bad} thing${bad === 1 ? '' : 's'} to fix.` : 'Everything looks right.'}</p><ul class="check-list">${list.map((x) => `<li class="${x.ok ? 'ok' : 'bad'}">${mark(x.ok ? 'ok' : 'bad')}<span><b>${esc(x.title)}</b>${x.detail ? `<span>${esc(x.detail)}</span>` : ''}</span>${x.fix ? `<button type="button" class="pill" data-checkfix="${esc(x.fix)}">Fix</button>` : ''}</li>`).join('')}</ul>`;
+    say(bad ? `${bad} thing${bad === 1 ? '' : 's'} to fix.` : 'Everything looks right.');
+  }
+  function openRestore(t) {
+    const at = clock(t.snap.at);
+    openSheet('restore', `Put Things Back to ${at}?`, `<p class="hint">The agent puts back what it changed or deleted in this task. Deleted things come back from the Trash first, then anything else from the Time Machine snapshot taken at ${at}. What you changed yourself since then stays as it is.</p>`,
+      `<button type="button" data-close>Cancel</button><button type="button" class="primary" data-restoreok="${esc(t.id)}">Put Things Back</button>`);
   }
 
   // Shortcuts
@@ -789,7 +976,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const el = thread.querySelector(`[data-eid="${CSS.escape(String(id))}"]`);
     if (!el) return;
     pinned = false;
-    el.scrollIntoView({ block: 'center' });
+    // An ask's buttons have to clear the toolbar, even when it's taller than the screen.
+    el.scrollIntoView({ block: el.matches('.ask') ? 'end' : 'center' });
     const target = el.querySelector('.bubble') || el;
     target.classList.remove('flash');
     void target.offsetWidth;
@@ -863,6 +1051,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
   }
   function send(t, files) {
     if (!t && !files?.length) return;
+    digestEl.hidden = true;
     lab.send(t, files?.length ? files : undefined);
   }
   function menu(open) {
@@ -958,7 +1147,76 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     const d = b.dataset;
     if (b.matches('a[data-ext]')) { ev.preventDefault(); lab.open(b.href); return; }
     if (d.open) return lab.open(d.open);
-    if (d.answer) return lab.answer(d.answer, d.allow === '1');
+    if (d.answer) return lab.answer(d.answer, d.allow === '1', d.always === '1');
+    if (d.askagain) {
+      const t = byRef.get(d.askagain), a = t?.asks.find((x) => x.ref === d.askagain);
+      const what = (a?.plain || a?.title || 'do that').replace(/^Allow: |\?$/g, '');
+      return send(`You asked earlier if you could ${what.charAt(0).toLowerCase()}${what.slice(1)}, and I didn't answer in time. Ask me again.`);
+    }
+    if (d.restore) { const t = items.find((x) => x.id === d.restore); if (t?.snap) openRestore(t); return; }
+    if (d.restoreok) {
+      const t = items.find((x) => x.id === d.restoreok);
+      closeSheet();
+      if (t?.snap) send(`Put back what you changed or deleted in the task I asked for at ${clock(t.snap.at)}${t.you?.text ? ` ("${t.you.text.slice(0, 80)}")` : ''}. Get deleted things back from the Trash first, then use the Time Machine snapshot ${t.snap.name} for anything else. Don't touch anything I changed myself since then, and tell me what you put back and what you couldn't.`);
+      return;
+    }
+    if (d.digest) { digestEl.hidden = true; if (d.digest === 'show' && digestFirst !== null) jump(digestFirst); else text.focus(); return; }
+    if (d.menu) {
+      wipeArmed = false;
+      if (d.menu === 'memory') return load('memory', 'Memory', '/memory', drawMemory);
+      if (d.menu === 'schedules') return load('schedules', 'Schedules', '/schedules', drawSchedules);
+      if (d.menu === 'allowed') return load('allowed', 'Always Allowed', '/allowed', drawRules);
+      if (d.menu === 'check') return openCheck();
+      return;
+    }
+    if (d.forget) {
+      const [key, i] = d.forget.split(':');
+      const next = { about: [...memo.about], notes: [...memo.notes] };
+      const [gone] = next[key].splice(Number(i), 1);
+      return saveMemory(next, `Forgot "${gone.length > 40 ? `${gone.slice(0, 39)}...` : gone}".`);
+    }
+    if (d.mempause !== undefined) return saveMemory({ paused: !memo.paused }, memo.paused ? 'Memory is back on.' : 'Memory is paused.');
+    if (d.memwipe !== undefined) {
+      if (!wipeArmed) { wipeArmed = true; drawMemory(memo); sheet.querySelector('[data-memwipe]').focus(); return; }
+      wipeArmed = false;
+      return saveMemory({ about: [], notes: [] }, 'Memory is empty now.');
+    }
+    if (d.schpause) {
+      const i = Number(d.schpause), list = plan.map((s, k) => (k === i ? { ...s, paused: !s.paused } : s));
+      const r = await saveSchedules(list, list[i].paused ? `Paused "${list[i].label}".` : `"${list[i].label}" is back on.`);
+      if (r && sheetKind === 'schedules') drawSchedules(r);
+      return;
+    }
+    if (d.schdel) {
+      const i = Number(d.schdel), gone = plan[i];
+      const r = await saveSchedules(plan.filter((_, k) => k !== i), `Deleted "${gone.label}".`);
+      if (r && sheetKind === 'schedules') drawSchedules(r);
+      return;
+    }
+    if (d.schedit) return editSchedule(Number(d.schedit));
+    if (d.schsave) {
+      const i = Number(d.schsave);
+      const label = $('sch-label').value.trim(), body = $('sch-text').value.trim(), time = $('sch-time').value;
+      if (!label || !body || !time) {
+        const empty = $(!label ? 'sch-label' : !body ? 'sch-text' : 'sch-time');
+        empty.setAttribute('aria-invalid', 'true');
+        empty.addEventListener('input', () => empty.removeAttribute('aria-invalid'), { once: true });
+        empty.focus();
+        return toast('A schedule needs a name, a message and a time.', true);
+      }
+      const days = [...sheet.querySelectorAll('.days input:checked')].map((x) => x.value);
+      const { next, last, ...was } = plan[i];
+      const edited = { ...was, label, text: body, time, quiet: $('sch-quiet').checked };
+      if (!was.date) { if (days.length && days.length < 7) edited.days = days; else delete edited.days; }
+      const r = await saveSchedules(plan.map((s, k) => (k === i ? edited : s)), `Saved "${label}".`);
+      if (r) load('schedules', 'Schedules', '/schedules', drawSchedules);
+      return;
+    }
+    if (d.revoke) {
+      try { drawRules(await call('POST', '/allowed', { remove: Number(d.revoke) })); toast('It will ask before running that again.'); } catch (err) { toast(err.message || "Couldn't reach the Mac, so nothing changed.", true); }
+      return;
+    }
+    if (d.checkfix) return lab.fix(d.checkfix);
     if (d.send) return send(d.send);
     if (d.sc) { if (longFired) { longFired = false; return; } const s = shortcuts.find((x) => x.id === d.sc); if (s) send(s.text); return; }
     if (d.run) { const t = items.find((x) => x.id === d.run); if (t) { t.open = !(t.open ?? active(t)); draw(t); } return; }
@@ -1010,6 +1268,7 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
       case 'open-search': return openSearch();
       case 'close-search': return closeSearch();
       case 'open-files': return openFiles();
+      case 'open-menu': return openMenu();
       case 'close-files': return closeFiles();
       case 'glance': return toggleGlance(!glanceOpen);
       case 'now-stop': return lab.stop();
@@ -1075,8 +1334,9 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
 
   try { text.value = localStorage.getItem('lab-draft') || ''; } catch {}
   thread.append(log);
-  log.append(older, queue);
-  lab.subscribe(take);
+  log.append(older, digestEl, queue);
+  const away = lastSeen();
+  lab.subscribe((e) => { take(e); if (e.kind === 'loaded') { flushNow(); drawDigest(away); markSeen(); } });
   booted = true;
   threadH = thread.clientHeight;
   measure();

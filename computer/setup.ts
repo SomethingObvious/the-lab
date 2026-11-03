@@ -8,7 +8,9 @@
 //   node setup.ts selftest     send a real message through the server and wait for the reply
 //   node setup.ts tailscale    HTTPS address for the phone through tailscale serve
 //   node setup.ts phone        build the app, install it over USB and pair it
-import { execFileSync, spawnSync } from 'node:child_process';
+//   node setup.ts pair         open a QR code on the Mac that pairs the phone again
+//   node setup.ts bundle       build the app as an .aab for Play Console internal testing
+import { spawnSync } from 'node:child_process';
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -17,14 +19,14 @@ import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
-import { config, home } from './config.ts';
+import { config, home, labDir } from './config.ts';
 import { codexBin } from './codex.ts';
+import { agentBin, claudeSignedIn as signedIn, codexSignedIn, run, tailscaleState } from './checks.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(HERE);
 const HOME = home();
-const LAB = join(HOME, '.lab');
+const LAB = labDir();
 const TOOLS = join(LAB, 'tools');
 const PKG = 'com.somethingobvious.thelab';
 const LABEL = 'com.somethingobvious.thelab';
@@ -36,11 +38,6 @@ const flag = (name: string) => { const i = args.indexOf(`--${name}`); return i >
 
 const say = (s: string) => console.log(s);
 const fail = (s: string): never => { console.error(s); process.exit(1); };
-const run = (cmd: string, a: string[], opts: { input?: string; env?: NodeJS.ProcessEnv; cwd?: string } = {}) => {
-  const r = spawnSync(cmd, a, { encoding: 'utf8', input: opts.input, env: opts.env ?? process.env, cwd: opts.cwd, shell: WIN && /\.(bat|cmd)$/i.test(cmd) });
-  return { ok: r.status === 0, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim(), code: r.status };
-};
-
 async function health(timeoutMs = 0): Promise<boolean> {
   const { port } = config();
   const until = Date.now() + timeoutMs;
@@ -53,18 +50,6 @@ async function health(timeoutMs = 0): Promise<boolean> {
 
 // ---------- auth ----------
 
-// The SDK runs its own copy of the agent, which keeps its own sign-in.
-function agentBin(): string {
-  const req = createRequire(import.meta.url);
-  const dir = dirname(req.resolve(`@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}/package.json`));
-  return join(dir, WIN ? 'claude.exe' : 'claude');
-}
-
-function signedIn(): { loggedIn: boolean; email?: string; authMethod?: string } {
-  const r = run(agentBin(), ['auth', 'status', '--json']);
-  try { return JSON.parse(r.out.slice(r.out.indexOf('{'))); } catch { return { loggedIn: false }; }
-}
-
 // Which agent runs his messages. The agent doing setup passes its own name,
 // and the choice is kept in the server's config from then on.
 function engine(): 'claude' | 'codex' {
@@ -75,8 +60,6 @@ function engine(): 'claude' | 'codex' {
   if (c.engine !== want) writeFileSync(join(LAB, 'config.json'), JSON.stringify({ ...c, engine: want }, null, 2), { mode: 0o600 });
   return want as 'claude' | 'codex';
 }
-
-const codexSignedIn = () => run(process.execPath, [codexBin(), 'login', 'status']).ok;
 
 async function auth() {
   if (engine() === 'codex') {
@@ -148,8 +131,18 @@ function workspace() {
   config();
 }
 
+// The command the agent deletes with, which moves things to the Trash. The
+// server writes the same file on every start.
+function trashCommand() {
+  mkdirSync(join(LAB, 'bin'), { recursive: true });
+  const file = join(LAB, 'bin', 'trash');
+  writeFileSync(file, `#!/bin/sh\nexec "${process.execPath}" "${join(HERE, 'trash.ts')}" "$@"\n`);
+  if (!WIN) chmodSync(file, 0o755);
+}
+
 async function computer() {
   workspace();
+  trashCommand();
   say(`Messages go to ${engine() === 'codex' ? 'Codex' : 'Claude'}.`);
   if (MAC) {
     const nodeDir = dirname(process.execPath);
@@ -190,23 +183,6 @@ async function computer() {
 }
 
 // ---------- tailscale ----------
-
-function tailscaleBin(): string | null {
-  const candidates = MAC
-    ? ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
-    : WIN ? ['C:\\Program Files\\Tailscale\\tailscale.exe'] : ['/usr/bin/tailscale'];
-  return candidates.find((c) => existsSync(c)) ?? (run('tailscale', ['version']).ok ? 'tailscale' : null);
-}
-
-function tailscaleState() {
-  const bin = tailscaleBin();
-  if (!bin) return { installed: false } as const;
-  const r = run(bin, ['status', '--json']);
-  if (!r.ok) return { installed: true, running: false, detail: r.out } as const;
-  const s = JSON.parse(r.out.slice(r.out.indexOf('{')));
-  const dns = String(s.Self?.DNSName ?? '').replace(/\.$/, '');
-  return { installed: true, running: s.BackendState === 'Running', state: s.BackendState as string, dns, bin } as const;
-}
 
 async function tailscale() {
   const ts = tailscaleState();
@@ -395,7 +371,35 @@ async function check() {
   say(JSON.stringify(status, null, 2));
 }
 
-const steps: Record<string, () => Promise<void>> = { check, auth, computer, selftest, tailscale, phone, 'phone-vpn': phoneVpn };
+// Opens a page on the Mac with a QR code. Scanned with the phone's camera
+// while Tailscale is on, it pairs The Lab again without the cable.
+async function pair() {
+  const { port, token } = config();
+  if (!(await health())) fail('The server is not running. Run `node setup.ts computer` first.');
+  if (!existsSync(join(LAB, 'url'))) fail('Run `node setup.ts tailscale` first, so the code can point at this Mac.');
+  const link = `http://127.0.0.1:${port}/pair?t=${encodeURIComponent(token)}&next=/pair-phone`;
+  if (MAC) run('open', [link]);
+  else say(`Open this on the Mac: ${link}`);
+  say('The pairing code is open in the browser. On the phone, turn Tailscale on, then point the camera at the code and tap the link. It works once and lasts 10 minutes.');
+}
+
+// An .aab for Play Console internal testing. Play re-signs it with its own
+// key, so it can't install over the cable copy.
+async function bundle() {
+  const javaHome = await jdk();
+  const sdk = await androidSdk(javaHome);
+  const store = keystore(javaHome);
+  const project = join(REPO, 'phone');
+  writeFileSync(join(project, 'local.properties'), `sdk.dir=${sdk.replace(/\\/g, '/')}\n`);
+  const gradlew = join(project, WIN ? 'gradlew.bat' : 'gradlew');
+  if (!WIN) chmodSync(gradlew, 0o755);
+  const build = spawnSync(gradlew, ['bundleRelease', '--console=plain', '-q', `-Plab.keystore=${store.file}`, `-Plab.keystorePassword=${store.password}`, `-Plab.versionCode=${Math.floor(Date.now() / 60000)}`],
+    { cwd: project, env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk }, stdio: 'inherit', shell: WIN });
+  if (build.status !== 0) fail('The bundle build failed. The Gradle output above says why.');
+  say(join(project, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab'));
+}
+
+const steps: Record<string, () => Promise<void>> = { check, auth, computer, selftest, tailscale, phone, pair, bundle, 'phone-vpn': phoneVpn };
 const step = steps[process.argv[2] ?? ''];
 if (!step) fail(`Usage: node setup.ts ${Object.keys(steps).join('|')}`);
 await step();

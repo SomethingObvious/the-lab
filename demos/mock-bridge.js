@@ -14,6 +14,7 @@
   const later = (ms, fn) => timers.push(setTimeout(fn, ms));
 
   let online = true;
+  if (params.has('away')) { try { localStorage.setItem('lab-seen', String(t0 - Number(params.get('away') || 200) * 60000)); } catch {} }
   let insets = {};
   // history=delay holds the history back like a slow disk does on the phone,
   // so everything else arrives first.
@@ -72,7 +73,7 @@
   let shortcuts = [
     { id: 's1', label: 'Battery and Disk', text: "How's the battery and disk space doing?" },
     { id: 's2', label: 'Screenshot', text: 'Send me a screenshot of the screen right now.' },
-    { id: 's3', label: 'Empty the Trash', text: 'Empty the Trash.' },
+    { id: 's3', label: 'Tidy Downloads', text: 'Move installers in Downloads older than a month to the Trash.' },
     { id: 's4', label: "Today's Changes", text: 'What files in Documents changed today?' },
   ];
   deliver({ kind: 'shortcuts', items: shortcuts });
@@ -82,8 +83,10 @@
   const mediaBase = new URL('media/', document.currentScript.src).href;
 
   ev('you', { text: "Can you put the Mac on this Wi-Fi network? The password's on the label.", cid: 'y1', files: [{ name: 'IMG_2041.jpg', url: '/files/7c1e0a9b-IMG_2041.jpg', size: 2318004, type: 'image/jpeg' }] }, ago(1530));
-  ev('step', { ref: 'y1a', tool: 'Read', title: 'Reading IMG_2041.jpg', detail: '/Users/sam/TheLab/.lab/files/7c1e0a9b-IMG_2041.jpg' }, ago(1530));
-  ev('step', { ref: 'y1b', tool: 'Bash', title: 'Join the Halloran-5G network', detail: 'networksetup -setairportnetwork en0 "Halloran-5G" "$WIFI_PASSWORD"' }, ago(1529));
+  ev('snapshot', { name: 'com.apple.TimeMachine.2026-11-02-091400.local' }, ago(1530));
+  ev('step', { ref: 'y1a', tool: 'Read', title: 'Reading IMG_2041.jpg', detail: '/Users/sam/.thelab/files/7c1e0a9b-IMG_2041.jpg', effect: 'read' }, ago(1530));
+  ev('step', { ref: 'y1b', tool: 'Bash', title: 'Join the Halloran-5G network', detail: 'networksetup -setairportnetwork en0 "Halloran-5G" "$WIFI_PASSWORD"', effect: 'system' }, ago(1529));
+  ev('memory', { added: ['Home Wi-Fi is Halloran-5G, password on the router label'], removed: [] }, ago(1529));
   ev('reply', { text: "The Mac is on **Halloran-5G** now. It'll rejoin it by itself from here on." }, ago(1529));
   ev('done', { ok: true, stopped: false, ms: 17300 }, ago(1529));
   ev('you', { text: 'Send me a screenshot of the screen right now.', cid: 'y2' }, ago(1442));
@@ -100,17 +103,30 @@
   ev('step', { ref: 'a1', tool: 'Bash', title: 'Measure the folders in your home folder', detail: 'du -sh ~/* 2>/dev/null | sort -rh | head -5' }, ago(184));
   ev('reply', { text: "Your home folder is 412 GB. The big five:\n\n1. **Movies** 168 GB (mostly Final Cut libraries)\n2. **Library** 96 GB, of which Xcode caches are 41 GB\n3. **Downloads** 58 GB\n4. **Pictures** 44 GB\n5. **Documents** 21 GB\n\nThe Xcode caches are safe to clear if you want 41 GB back." }, ago(183));
   ev('done', { ok: true, stopped: false, ms: 21400 }, ago(183));
+  ev('you', { text: 'Anything new in my inbox that needs me?', cid: 's2', scheduled: 'Inbox Check' }, ago(120));
+  ev('step', { ref: 's2a', tool: 'mcp__claude_ai_Gmail__search_threads', title: 'Gmail: search threads', detail: '{"query":"is:unread newer_than:2h"}', effect: 'read' }, ago(120));
+  ev('reply', { text: 'Nothing to report.', silent: true }, ago(120));
+  ev('done', { ok: true, stopped: false, ms: 6100 }, ago(120));
+  ev('you', { text: 'Can you free up some space? The disk is getting full.', cid: 'h3' }, ago(95));
+  ev('snapshot', { name: 'com.apple.TimeMachine.2026-11-03-073100.local' }, ago(95));
+  ev('step', { ref: 'f1', tool: 'Bash', title: 'Measure the caches in Library', detail: 'du -sh ~/Library/Caches/* | sort -rh | head', effect: 'read' }, ago(95));
+  ev('blocked', { ref: 'f2', tool: 'Bash', title: 'Delete Time Machine snapshots', text: 'Time Machine snapshots are how you undo a mistake, so they are never deleted or turned off.' }, ago(94));
+  ev('step', { ref: 'f3', tool: 'Bash', title: 'Move the Xcode caches to the Trash', detail: '~/.thelab/bin/trash ~/Library/Developer/Xcode/DerivedData', effect: 'delete' }, ago(94));
+  ev('reply', { text: 'Moved the Xcode caches to the Trash, which frees 41 GB once the Trash is emptied. I left the Time Machine snapshots alone. Empty the Trash yourself when you are happy nothing in it is needed.' }, ago(93));
+  ev('done', { ok: true, stopped: false, ms: 64100 }, ago(93));
   ev('you', { text: 'Find the Apple receipt from last week in my Gmail and save the PDF to Documents/Receipts. Send it to me too.', cid: 'h2' }, ago(52));
-  ev('step', { ref: 'b1', tool: 'mcp__claude-in-chrome__navigate', title: 'Opening mail.google.com in Chrome', detail: 'https://mail.google.com/mail/u/0/#search/from%3Aapple+receipt+newer_than%3A10d' }, ago(52));
-  ev('step', { ref: 'b2', tool: 'mcp__claude-in-chrome__find', title: 'Chrome: find', detail: '{\n  "query": "Your receipt from Apple, Oct 27"\n}' }, ago(52));
-  ev('step', { ref: 'b3', tool: 'Bash', title: 'Move the downloaded receipt into Documents/Receipts', detail: 'mkdir -p ~/Documents/Receipts && mv ~/Downloads/Receipt-MKTN4Q7.pdf ~/Documents/Receipts/2026-10-27-apple.pdf' }, ago(51));
-  ev('step', { ref: 'b4', tool: 'mcp__lab__send_to_phone', title: 'Sending 2026-10-27-apple.pdf to your phone', detail: '/Users/sam/Documents/Receipts/2026-10-27-apple.pdf' }, ago(51));
+  ev('snapshot', { name: 'com.apple.TimeMachine.2026-11-03-081900.local' }, ago(52));
+  ev('step', { ref: 'b1', tool: 'mcp__claude-in-chrome__navigate', title: 'Opening mail.google.com in Chrome', detail: 'https://mail.google.com/mail/u/0/#search/from%3Aapple+receipt+newer_than%3A10d', effect: 'read' }, ago(52));
+  ev('step', { ref: 'b2', tool: 'mcp__claude-in-chrome__find', title: 'Chrome: find', detail: '{\n  "query": "Your receipt from Apple, Oct 27"\n}', effect: 'read' }, ago(52));
+  ev('step', { ref: 'b3', tool: 'Bash', title: 'Move the downloaded receipt into Documents/Receipts', detail: 'mkdir -p ~/Documents/Receipts && mv ~/Downloads/Receipt-MKTN4Q7.pdf ~/Documents/Receipts/2026-10-27-apple.pdf', effect: 'change' }, ago(51));
+  ev('step', { ref: 'b4', tool: 'mcp__lab__send_to_phone', title: 'Sending 2026-10-27-apple.pdf to your phone', detail: '/Users/sam/Documents/Receipts/2026-10-27-apple.pdf', effect: 'read' }, ago(51));
   ev('file', { name: '2026-10-27-apple.pdf', url: '/files/demo-receipt.pdf', size: 48211, caption: 'Apple receipt, Oct 27, $14.68' }, ago(51));
-  ev('reply', { text: 'Saved it as Documents/Receipts/2026-10-27-apple.pdf and sent you a copy. It was iCloud+ 2 TB, $14.68 with tax.' }, ago(51));
+  ev('reply', { text: 'Saved it as Documents/Receipts/2026-10-27-apple.pdf and sent you a copy. It was iCloud+ 2 TB, $14.68 with tax. The [receipt page](https://support.apple.com/billing) has the details.' }, ago(51));
   ev('done', { ok: true, stopped: false, ms: 48900 }, ago(51));
 
   function cleanup() {
     ev('you', { text: 'Clean up my Downloads. Move installers older than a month to the Trash.', cid: crypto.randomUUID() });
+    ev('snapshot', { name: 'com.apple.TimeMachine.2026-11-03-091200.local' });
     setStatus(true, 'Reading your message');
     later(1200, () => setStatus(true, 'Thinking'));
     later(2600, () => { ev('step', { ref: 'c1', tool: 'Bash', title: 'List installers in Downloads older than 30 days', detail: 'find ~/Downloads -maxdepth 1 \\( -name "*.dmg" -o -name "*.pkg" -o -name "*.zip" \\) -mtime +30 -print0 | xargs -0 du -ch' }); setStatus(true, 'List installers in Downloads older than 30 days'); });
@@ -118,21 +134,28 @@
     later(5600, () => { ev('failed', { ref: 'c2', text: 'hdiutil: info failed: Resource busy' }); });
     later(6400, () => { ev('step', { ref: 'c3', tool: 'Bash', title: 'Check mounted disk images another way', detail: 'mount | grep -i "/Volumes/"' }); setStatus(true, 'Check mounted disk images another way'); });
     later(8200, () => {
-      ev('ask', { ref: 'c4', tool: 'Bash', title: 'Move 14 files (3.2 GB) from Downloads to the Trash?', detail: 'Docker.dmg, Figma-124.4.dmg, zoomusInstaller.pkg, Steam.dmg, OBS-Studio-31.1.dmg, Blender-4.5.dmg, and 8 more.\n\nosascript -e \'tell application "Finder" to delete (POSIX file ...)\'' });
+      ev('ask', {
+        ref: 'c4', tool: 'Bash', title: 'Allow: Move matching files in Downloads to the Trash?', plain: 'Move matching files in Downloads to the Trash',
+        facts: ['You can get it back from the Trash.', 'Nothing leaves the Mac.', "Exactly which files isn't known until it runs."],
+        why: 'Moves the 14 installers older than a month, 3.2 GB in all.',
+        ...(params.get('ask') === 'from' ? { from: 'This came up after reading an email from Apple <no_reply@email.apple.com>.' } : {}),
+        detail: 'find ~/Downloads -maxdepth 1 \\( -name "*.dmg" -o -name "*.pkg" \\) -mtime +30 -exec ~/.thelab/bin/trash {} +',
+        always: true, snapshot: now(),
+      });
       setStatus(true, 'Waiting for you');
       later(20000, () => api.answer('c4', true));
     });
   }
   let asked = new Set();
-  function afterAnswer(ref, allow) {
+  function afterAnswer(ref, allow, always) {
     if (ref !== 'c4' || asked.has(ref)) return;
     asked.add(ref);
-    ev('answered', { ref, allow, by: 'phone' });
+    ev('answered', { ref, allow, by: 'phone', ...(always ? { always: true } : {}) });
     if (!allow) {
       later(900, () => { ev('reply', { text: "OK, I left them alone. I can list them with sizes instead if you'd like to pick." }); ev('done', { ok: true, stopped: false, ms: 14000 }); setStatus(false); });
       return;
     }
-    later(700, () => { ev('step', { ref: 'c5', tool: 'Bash', title: 'Move 14 old installers to the Trash', detail: 'osascript -e \'tell application "Finder" to delete (every file of folder "Downloads" of home whose name is in {"Docker.dmg", ...})\'' }); setStatus(true, 'Move 14 old installers to the Trash'); });
+    later(700, () => { ev('step', { ref: 'c5', tool: 'Bash', title: 'Move matching files in Downloads to the Trash', detail: 'find ~/Downloads -maxdepth 1 \\( -name "*.dmg" -o -name "*.pkg" \\) -mtime +30 -exec ~/.thelab/bin/trash {} +', effect: 'delete' }); setStatus(true, 'Move matching files in Downloads to the Trash'); });
     later(3200, () => {
       ev('reply', { text: 'Moved 14 installers to the Trash, 3.2 GB in all. I skipped **Blender-4.5.dmg** because it is still mounted. Eject it and I can take it too.\n\nThe Trash isn\'t emptied, so anything is still recoverable.' });
       ev('done', { ok: true, stopped: false, ms: 29800 });
@@ -148,6 +171,30 @@
     later(1500, () => { ev('step', { ref: 'd' + id, tool: 'Read', title: 'Reading notes.md', detail: '/Users/sam/TheLab/notes.md' }); setStatus(true, 'Reading notes.md'); });
     later(3200, () => { ev('reply', { text: "This is a demo, so nothing ran on a Mac. On the real thing you'd see each step here as it happens." }); ev('done', { ok: true, stopped: false, ms: 3200 }); setStatus(false); });
   }
+
+  const memory = {
+    about: ['Lives in Toronto with two cats', 'Works from home Tuesdays and Thursdays', 'Home Wi-Fi is Halloran-5G, password on the router label'],
+    notes: ['Likes short replies with the answer first', 'Calls the big external drive "the archive"', 'Keep receipts in Documents/Receipts by date'],
+    paused: false,
+  };
+  let plan = [
+    { id: 'morning', label: 'Morning Rundown', text: "What's on my calendar today, and is there anything I should leave early for?", time: '08:00' },
+    { id: 'inbox', label: 'Inbox Check', text: 'Anything new in my inbox that needs me?', time: '13:00', days: ['mon', 'tue', 'wed', 'thu', 'fri'], quiet: true },
+    { id: 'backup', label: 'Backup Drive', text: 'Is the archive drive plugged in and has Time Machine backed up today?', time: '21:00', days: ['sun'], paused: params.get('sch') === 'paused' },
+  ];
+  const runs = {
+    morning: { next: new Date(t0 + 15 * 3600000).toISOString(), last: { at: ago(600), result: 'ok', fails: 0 } },
+    inbox: { next: new Date(t0 + 4 * 3600000).toISOString(), last: { at: ago(120), result: 'silent', fails: 0 } },
+    backup: { next: new Date(t0 + 5 * 86400000).toISOString(), last: params.get('sch') === 'failing' ? { at: ago(1500), result: 'failed', fails: 3 } : null },
+  };
+  const allowed = [{ tool: 'Bash', command: 'brew upgrade', cwd: '/Users/sam/TheLab', where: 'In your Lab folder', plain: 'Upgrade everything installed with Homebrew', at: ago(3000) }];
+  const checks = [
+    { ok: true, title: 'The Lab 0.9.0 is running on the Mac' },
+    { ok: true, title: 'Signed in to Claude' },
+    { ok: true, title: 'Tailscale is on' },
+    ...(params.get('check') === 'bad' ? [{ ok: false, title: 'The Mac is on battery (34%)', detail: 'It will go to sleep when idle. Plug it in to keep The Lab going.' }, { ok: false, title: 'Notifications are off for The Lab', detail: "You won't hear when it needs your OK.", fix: 'notifications' }] : []),
+    { ok: true, title: 'Time Machine snapshots are working' },
+  ];
 
   const api = {
     platform: 'demo',
@@ -191,7 +238,22 @@
       ev('done', { ok: false, stopped: true, ms: Date.now() - Date.parse(status.since) });
       setStatus(false);
     },
-    answer(ref, allow) { afterAnswer(ref, !!allow); },
+    answer(ref, allow, always) { afterAnswer(ref, !!allow, !!always); },
+    call(method, path, body) {
+      return new Promise((resolve, reject) => setTimeout(() => {
+        if (!online) return reject(new Error("Couldn't reach the Mac. Try again once it's back."));
+        if (path === '/memory') {
+          if (method === 'POST') { if (body.about) memory.about = body.about; if (body.notes) memory.notes = body.notes; if (typeof body.paused === 'boolean') memory.paused = body.paused; }
+          const chars = 40 + [...memory.about, ...memory.notes].join('\n').length;
+          return resolve({ ...memory, chars, cap: 3500 });
+        }
+        if (path === '/schedules') { if (method === 'POST') plan = body.items.map((x) => { const { next, last, ...rest } = x; return rest; }); return resolve({ items: plan.map((x) => ({ ...x, ...runs[x.id] })) }); }
+        if (path === '/allowed') { if (method === 'POST') allowed.splice(body.remove, 1); return resolve({ items: allowed }); }
+        if (path === '/check') return resolve({ items: checks });
+        reject(new Error(`No route for ${method} ${path}`));
+      }, 250));
+    },
+    check() { return this.call('GET', '/check'); },
     undoDesign() {},
     open(url) { console.log('open', url); },
     // The shell and the Mac resize for { w }, the demo just serves the file.

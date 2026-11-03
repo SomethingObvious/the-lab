@@ -12,7 +12,8 @@ android {
         applicationId = "com.somethingobvious.thelab"
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
+        // setup.ts bundle passes a rising number, which Play Console needs for each upload.
+        versionCode = providers.gradleProperty("lab.versionCode").orNull?.toInt() ?: 1
         versionName = "1.0.0"
     }
 

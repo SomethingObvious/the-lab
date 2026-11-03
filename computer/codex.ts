@@ -4,10 +4,11 @@
 // same events the phone already draws.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
+import { delimiter, join } from 'node:path';
 import { clip, title } from './steps.ts';
-import type { Lab } from './lab.ts';
+import { judge, needsOk, type Judgement } from './guard.ts';
+import { cleanEnv, type Card, type Lab } from './lab.ts';
 
 type Msg = { id?: number | string; method?: string; params?: any; result?: any; error?: { message: string; code?: number } };
 
@@ -121,10 +122,11 @@ export class Codex {
       input: this.input(m),
       cwd: this.home,
       approvalPolicy: 'on-request',
-      // He uses it to do things across his home folder, the way the Claude
-      // side works. The instructions send anything destructive through an
-      // escalation, which comes to the phone as an Allow and Deny.
-      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [homedir()], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+      // Only his Lab folder is writable and the network is off, so anything
+      // touching the rest of the Mac or the internet comes back as an
+      // approval request, where the server's guard decides it. Instructions
+      // alone don't hold an agent to a rule, the sandbox does.
+      sandboxPolicy: { type: 'workspaceWrite', writableRoots: [this.home], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
       ...(this.model ? { model: this.model } : {}),
     }).then((r) => {
       if (this.turn === 'starting') this.turn = r.turn.id;
@@ -135,7 +137,7 @@ export class Codex {
 
   private start(): Promise<void> {
     this.ready ??= (async () => {
-      const proc = spawn(process.execPath, [codexBin(), 'app-server'], { cwd: this.home, stdio: ['pipe', 'pipe', 'pipe'] });
+      const proc = spawn(process.execPath, [codexBin(), 'app-server'], { cwd: this.home, stdio: ['pipe', 'pipe', 'pipe'], env: cleanEnv({ PATH: `${join(this.lab.where.lab, 'bin')}${delimiter}${process.env.PATH ?? ''}` }) });
       this.proc = proc;
       proc.stderr!.on('data', (d) => process.stderr.write(d));
       createInterface({ input: proc.stdout! }).on('line', (line) => {
@@ -155,7 +157,7 @@ export class Codex {
       this.write({ method: 'initialized', params: {} });
       const acct = await this.call('account/read', { refreshToken: false });
       if (!acct.account && acct.requiresOpenaiAuth) throw new Error(NOTICE.unauthorized);
-      const instructions = `${this.prompt} Your notes about him are in memory.md in the working directory, so read it at the start of a conversation and keep it up to date. Before any command that deletes or overwrites his files, sends or shares anything outside this Mac, or changes system settings, run it with sandbox_permissions set to require_escalated and a justification he'll understand in one short sentence, so he gets Allow and Deny on his phone first.`;
+      const instructions = `${this.prompt} Your notes about him are in memory.md in the working directory, so read it at the start of a conversation and keep it up to date. You can only write inside the working directory and the network is off, so for anything else run the command with sandbox_permissions set to require_escalated and a justification he'll understand in one short sentence. The Mac decides those, and asks him on his phone first for anything that deletes, sends, installs or changes settings. A declined request means no, so don't look for a way around it.`;
       const opts = { cwd: this.home, approvalPolicy: 'on-request', sandbox: 'workspace-write', developerInstructions: instructions, ...(this.model ? { model: this.model } : {}) };
       const saved = this.lab.state.threadId;
       const r = saved
@@ -215,23 +217,22 @@ export class Codex {
     }
   }
 
-  private step(ref: string, tool: string, t: string, detail: string) {
+  private step(ref: string, tool: string, input: Record<string, any>, t: string, detail: string) {
     this.seen.set(ref, { tool, title: t, detail });
-    this.lab.store.add({ kind: 'step', ref, tool, title: t, detail });
-    this.lab.setStatus(true, t);
+    this.lab.step(ref, tool, input, t, detail);
   }
 
   private begin(item: any) {
     switch (item.type) {
-      case 'commandExecution': return this.step(item.id, 'Bash', commandTitle(item), unwrap(item.command));
+      case 'commandExecution': return this.step(item.id, 'Bash', { command: unwrap(item.command) }, commandTitle(item), unwrap(item.command));
       case 'fileChange': {
         const paths: string[] = item.changes.map((c: any) => c.path);
         const t = paths.length === 1 ? title('Edit', { file_path: paths[0] }) : `Editing ${paths.length} files`;
-        return this.step(item.id, 'Edit', t, clip(item.changes.map((c: any) => `${c.path}\n${c.diff}`).join('\n\n'), 4000));
+        return this.step(item.id, 'Edit', { file_path: paths[0] }, t, clip(item.changes.map((c: any) => `${c.path}\n${c.diff}`).join('\n\n'), 4000));
       }
       case 'mcpToolCall': {
         const tool = `mcp__${item.server}__${item.tool}`;
-        return this.step(item.id, tool, title(tool, item.arguments ?? {}), clip(JSON.stringify(item.arguments ?? {}, null, 2), 4000));
+        return this.step(item.id, tool, item.arguments ?? {}, title(tool, item.arguments ?? {}), clip(JSON.stringify(item.arguments ?? {}, null, 2), 4000));
       }
       case 'reasoning': return this.lab.setStatus(true, 'Thinking');
       case 'contextCompaction': return this.lab.setStatus(true, 'Compacting the conversation');
@@ -244,22 +245,22 @@ export class Codex {
         // Commentary is Codex talking to itself between steps, so it goes in
         // the toolbar rather than becoming a reply he gets notified about.
         if (item.phase === 'commentary') { if (item.text?.trim()) this.lab.setStatus(true, clip(item.text.trim(), 80)); }
-        else if (item.text?.trim()) this.lab.store.add({ kind: 'reply', text: item.text });
+        else if (item.text?.trim()) this.lab.reply(item.text);
         return;
       // The query is only filled in once the search has run.
       case 'webSearch': {
         const q = item.query || item.action?.query || item.action?.url || '';
-        if (q) this.step(item.id, 'WebSearch', title('WebSearch', { query: q }), q);
+        if (q) this.step(item.id, 'WebSearch', { query: q }, title('WebSearch', { query: q }), q);
         return;
       }
       case 'commandExecution':
-        if (item.status === 'failed') this.lab.store.add({ kind: 'failed', ref: item.id, text: clip(item.aggregatedOutput?.trim() || `It exited with code ${item.exitCode}.`, 600) });
+        if (item.status === 'failed') this.lab.failed(item.id, clip(item.aggregatedOutput?.trim() || `It exited with code ${item.exitCode}.`, 600));
         return;
       case 'fileChange':
-        if (item.status === 'failed') this.lab.store.add({ kind: 'failed', ref: item.id, text: "The change couldn't be applied." });
+        if (item.status === 'failed') this.lab.failed(item.id, "The change couldn't be applied.");
         return;
       case 'mcpToolCall':
-        if (item.status === 'failed') this.lab.store.add({ kind: 'failed', ref: item.id, text: clip(item.error?.message ?? 'The tool call failed.', 600) });
+        if (item.status === 'failed') this.lab.failed(item.id, clip(item.error?.message ?? 'The tool call failed.', 600));
         return;
     }
   }
@@ -283,31 +284,54 @@ export class Codex {
     }
   }
 
-  // Approval requests from Codex, answered with his Allow or Deny.
+  // Approval requests from Codex. The guard decides them the same way as
+  // for Claude: refused outright, decided here, or put to him on the phone.
   private async request(id: number | string, method: string, p: any) {
     const reply = (result: unknown) => this.write({ id, result });
-    const ask = async (ref: string, tool: string, t: string, detail: string) => (await this.lab.waitFor(ref, tool, t, detail)).allow;
+    const lab = this.lab;
+    const ask = async (ref: string, tool: string, card: Card) => (await lab.waitFor(ref, tool, card)).allow;
     switch (method) {
       case 'item/commandExecution/requestApproval': {
         const cmd = unwrap(p.command ?? '');
-        // The reason is Codex's own plain-words justification. The command
-        // stays in the detail, since a reason can be wrong.
-        const t = p.reason ? clip(String(p.reason).replace(/[.?]\s*$/, ''), 100) : cmd ? commandTitle({ command: cmd, commandActions: p.commandActions ?? [] }) : 'Run a command';
-        const allow = await ask(p.approvalId ?? p.itemId, 'Bash', `Allow: ${t}?`, cmd || p.reason || '');
-        return reply({ decision: allow ? 'accept' : 'decline' });
+        const ref = String(p.approvalId ?? p.itemId);
+        const cwd = String(p.cwd ?? this.home);
+        const where = { ...lab.where, cwd };
+        const host = p.networkApprovalContext?.host;
+        const j: Judgement = cmd ? judge('Bash', { command: cmd }, where) : { effect: 'read', plain: `Reach ${host ?? 'the internet'}`, touches: [host ?? ''], undo: null, leaves: false };
+        if (j.source && !lab.taint) lab.taint = j.source;
+        if (j.block) { lab.blocked(ref, 'Bash', j); return reply({ decision: 'decline' }); }
+        // Its instructions say to use the trash command, so a plain rm is
+        // turned down quietly and it tries again that way.
+        if (j.rm) { lab.hushed.add(ref); return reply({ decision: 'decline' }); }
+        const risky = j.effect === 'delete' || j.effect === 'system' || j.effect === 'run';
+        if (lab.allowedBefore(cmd, cwd) || !needsOk(j, where, !!lab.taint)) {
+          if (risky) await lab.snap(60_000);
+          return reply({ decision: 'accept' });
+        }
+        if (risky) await lab.snap(60_000);
+        const card = lab.card('Bash', { command: cmd || host || '' }, j, p.reason ? String(p.reason) : undefined, cwd);
+        return reply({ decision: (await ask(ref, 'Bash', card)) ? 'accept' : 'decline' });
       }
       case 'item/fileChange/requestApproval': {
+        // A change outside his Lab folder. Edits go ahead, as they do for
+        // Claude, unless they reach The Lab itself or the agent's settings.
         const s = this.seen.get(p.itemId);
-        const allow = await ask(p.itemId, 'Edit', `Allow: ${s?.title ?? 'Changing files'}?`, [s?.detail, p.reason].filter(Boolean).join('\n\n'));
-        return reply({ decision: allow ? 'accept' : 'decline' });
+        const first = (s?.detail ?? '').split('\n')[0];
+        const j = judge('Edit', { file_path: first }, lab.where);
+        if (j.block) { lab.blocked(String(p.itemId), 'Edit', j); return reply({ decision: 'decline' }); }
+        await lab.snap(60_000);
+        return reply({ decision: 'accept' });
       }
       case 'item/permissions/requestApproval': {
-        const allow = await ask(p.itemId, 'Bash', 'Allow: More access for this task?', [p.reason, JSON.stringify(p.permissions, null, 2)].filter(Boolean).join('\n\n'));
+        const j: Judgement = { effect: 'system', plain: 'Give it more access for this task', touches: [], undo: 'yes', leaves: !!p.permissions?.network, unsure: true };
+        const allow = await ask(String(p.itemId), 'Bash', { ...lab.card('Bash', {}, j, p.reason ? String(p.reason) : undefined), detail: JSON.stringify(p.permissions, null, 2) });
         const { network, fileSystem } = p.permissions ?? {};
         return reply({ permissions: allow ? { ...(network ? { network } : {}), ...(fileSystem ? { fileSystem } : {}) } : {}, scope: 'turn' });
       }
       case 'mcpServer/elicitation/request': {
-        const allow = p.mode !== 'url' && await ask(`el-${id}`, `mcp__${p.serverName}__ask`, `Allow: ${clip(p.message ?? p.serverName, 80)}?`, p.message ?? '');
+        const tool = `mcp__${p.serverName}__ask`;
+        const j = { ...judge(tool, {}, lab.where), plain: clip(String(p.message ?? p.serverName), 100) };
+        const allow = p.mode !== 'url' && await ask(`el-${id}`, tool, { ...lab.card(tool, {}, j), detail: String(p.message ?? '') });
         return reply({ action: allow ? 'accept' : 'decline', content: allow ? {} : null, _meta: null });
       }
       default:

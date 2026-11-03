@@ -73,7 +73,15 @@
       return cid;
     },
     stop: () => post('/stop').then((r) => { if (!r.ok) throw r; }).catch(() => emit({ kind: 'stopFailed' })),
-    answer: (ref, allow) => post('/answer', { ref, allow }).then((r) => { if (!r.ok && r.status !== 404) throw r; }).catch(() => emit({ kind: 'answerFailed', ref })),
+    answer: (ref, allow, always) => post('/answer', { ref, allow, always: !!always }).then((r) => { if (!r.ok && r.status !== 404) throw r; }).catch(() => emit({ kind: 'answerFailed', ref })),
+    // Memory, schedules, always-allowed commands and the setup check.
+    async call(method, path, body) {
+      const r = await fetch(path, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) });
+      const out = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(out.error || `The Mac answered ${r.status}.`);
+      return out;
+    },
+    check() { return this.call('GET', '/check'); },
     undoDesign: () => post('/design/undo'),
     saveShortcuts: (items) => post('/shortcuts', { items }).then((r) => r.ok, () => false),
     attach(kind) {
@@ -103,5 +111,9 @@
     onBack() {},
     ready() {},
   };
+  // While someone is at this Mac with The Lab in front, the phone stays quiet.
+  const here = () => { if (document.visibilityState === 'visible' && document.hasFocus()) post('/presence').catch(() => {}); };
+  setInterval(here, 30_000);
+  addEventListener('focus', here);
   connect();
 })();

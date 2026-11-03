@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, watch, writeFileSync } from 'node:fs';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { chmodSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, truncateSync, watch, writeFileSync } from 'node:fs';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { extname, join, resolve, sep } from 'node:path';
-import { config, home } from './config.ts';
-import { cleanSchedules, due, type Schedule } from './schedule.ts';
+import { fileURLToPath } from 'node:url';
+import { config, home, labDir } from './config.ts';
+import { cleanSchedules, due, GRACE, missed, next, type Schedule } from './schedule.ts';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -18,6 +19,7 @@ const TYPES: Record<string, string> = {
 const typeOf = (p: string) => TYPES[extname(p).toLowerCase()] ?? 'application/octet-stream';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+const HERE = fileURLToPath(new URL('.', import.meta.url));
 
 type Shortcut = { id: string; label: string; text: string };
 // The agent edits shortcuts.json by hand too, so bad entries are dropped
@@ -27,13 +29,18 @@ const cleanShortcuts = (a: unknown): Shortcut[] | null => !Array.isArray(a) ? nu
   .slice(0, 50)
   .map((s) => ({ id: typeof s.id === 'string' && s.id ? s.id.slice(0, 64) : randomUUID(), label: s.label.trim().slice(0, 40), text: s.text.trim().slice(0, 2000) }));
 
+const writeJson = (file: string, value: unknown) => {
+  writeFileSync(file + '.tmp', JSON.stringify(value, null, 2) + '\n');
+  renameSync(file + '.tmp', file);
+};
+
 if (process.env.LAB_CHILD) serve();
 else supervise();
 
 // Keeps one server child alive and, on a Mac, holds off system sleep while
 // on power for as long as this process lives.
 function supervise() {
-  const log = join(home(), '.lab', 'server.log');
+  const log = join(labDir(), 'server.log');
   if (existsSync(log) && statSync(log).size > 5 * 1024 * 1024) truncateSync(log, 0);
   if (process.platform === 'darwin') spawn('caffeinate', ['-s', '-w', String(process.pid)], { stdio: 'ignore' });
 
@@ -60,10 +67,17 @@ async function serve() {
   // Loaded here so the supervisor never pays for the SDK.
   const { Lab } = await import('./lab.ts');
   const { Design } = await import('./design.ts');
+  const { mac, idle } = await import('./mac.ts');
   const { token, port, engine } = config();
   const HOME = home();
+  const DIR = labDir();
   const appDir = join(HOME, 'app');
-  const lab = new Lab({ home: HOME, model: process.env.LAB_MODEL || undefined, engine });
+  const lab = new Lab({ home: HOME, dir: DIR, model: process.env.LAB_MODEL || undefined, engine });
+
+  // The agent deletes with this, which moves files to the Trash.
+  mkdirSync(join(DIR, 'bin'), { recursive: true });
+  writeFileSync(lab.trashCmd, `#!/bin/sh\nexec "${process.execPath}" "${join(HERE, 'trash.ts')}" "$@"\n`);
+  if (process.platform !== 'win32') chmodSync(lab.trashCmd, 0o755);
 
   // Codex has no send_to_phone tool, so it copies files in here instead.
   const toPhone = join(HOME, 'to-phone');
@@ -87,16 +101,20 @@ async function serve() {
   };
   watch(toPhone, { persistent: false }, sweep);
   sweep();
-  const design = new Design(appDir, join(HOME, '.lab', 'design-history'), (version) => lab.store.live({ kind: 'design', version }));
+  const design = new Design(appDir, join(DIR, 'design-history'), (version) => lab.store.live({ kind: 'design', version }));
   const bridge = readFileSync(new URL('./web-bridge.js', import.meta.url));
   const want = Buffer.from(token);
 
-  const { mac } = await import('./mac.ts');
   let macNow = await mac().catch(() => null);
   setInterval(async () => {
     macNow = await mac().catch(() => macNow);
     if (macNow) lab.store.live(macNow);
   }, 60_000).unref();
+
+  // While The Lab is open and in front on the Mac and he's using it, the
+  // phone doesn't buzz for what he can already see.
+  let atMacUntil = 0;
+  lab.store.atMac = () => Date.now() < atMacUntil;
 
   const shortcutsFile = join(HOME, 'shortcuts.json');
   const readShortcuts = () => {
@@ -117,43 +135,126 @@ async function serve() {
     settle = setTimeout(() => { shortcuts = readShortcuts() ?? shortcuts; pushShortcuts(); }, 300);
   });
 
+  // ---------- schedules ----------
+
   const schedulesFile = join(HOME, 'schedules.json');
-  const ranFile = join(HOME, '.lab', 'schedules-ran.json');
-  let ran: { keys: string[]; known: string[] } = { keys: [], known: [] };
+  const ranFile = join(DIR, 'schedules-ran.json');
+  type Run = { at: string; result: 'ok' | 'silent' | 'failed' | 'stopped'; fails: number };
+  let ran: { keys: string[]; known: string[]; checked?: string; last: Record<string, Run> } = { keys: [], known: [], last: {} };
   try { ran = { ...ran, ...JSON.parse(readFileSync(ranFile, 'utf8')) }; } catch { /* nothing has run yet */ }
+  const saveRan = () => writeJson(ranFile, ran);
   let schedules: Schedule[] = [];
+  const readSchedules = () => {
+    if (!existsSync(schedulesFile)) return;
+    try { schedules = cleanSchedules(JSON.parse(readFileSync(schedulesFile, 'utf8'))) ?? schedules; } catch { /* a broken file keeps the last good list */ }
+  };
+  // The you event of each scheduled run still going, so its done can be
+  // put down as that entry's last result.
+  const running = new Map<number, string>();
+  let silentSeen = false;
+  lab.store.listen((e) => {
+    if (!('id' in e)) return;
+    if (e.kind === 'reply' && e.silent) silentSeen = true;
+    if (e.kind !== 'done') return;
+    for (const [you, id] of running) {
+      if (e.upto && you > Number(e.upto)) continue;
+      running.delete(you);
+      const prev = ran.last[id];
+      const result: Run['result'] = e.stopped ? 'stopped' : !e.ok ? 'failed' : silentSeen ? 'silent' : 'ok';
+      const fails = result === 'failed' ? (prev?.fails ?? 0) + 1 : 0;
+      ran.last[id] = { at: e.at, result, fails };
+      const item = schedules.find((s) => s.id === id);
+      // Once, at the third, rather than every time after.
+      if (fails === 3 && item) lab.store.add({ kind: 'notice', text: `"${item.label}" has failed three times in a row. Ask the agent to look into it, or pause it under Schedules.` });
+    }
+    silentSeen = false;
+    saveRan();
+  });
+
   setInterval(() => {
     // The page hangs every event on the newest turn, so a run mid-request
     // would take over the one he's in. It isn't marked as run, so it goes
     // on the first idle tick inside the grace window.
     if (lab.status.working) return;
-    if (existsSync(schedulesFile)) {
-      try { schedules = cleanSchedules(JSON.parse(readFileSync(schedulesFile, 'utf8'))) ?? schedules; } catch { /* a broken file keeps the last good list */ }
-    }
+    readSchedules();
+    const now = new Date();
     const keys = new Set(ran.keys);
     const fresh = new Set(schedules.map((s) => s.id).filter((id) => !ran.known.includes(id)));
-    const runs = due(schedules, new Date(), keys);
-    if (!runs.length && !fresh.size) return;
-    for (const { item, key } of runs) {
+    const old = schedules.filter((s) => !fresh.has(s.id));
+    // Runs too late to send now. Nothing is replayed, he just hears about it.
+    for (const m of ran.checked ? missed(old, new Date(Date.parse(ran.checked) - GRACE), now, keys) : []) {
+      keys.add(m.key);
+      const when = m.at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const after = next(m.item, now);
+      lab.store.add({
+        kind: 'notice',
+        text: `"${m.item.label}" didn't run at ${when}, because the Mac was asleep, off or busy. ${after ? `It runs next ${after.toDateString() === now.toDateString() ? 'today' : 'on ' + after.toLocaleDateString([], { weekday: 'long' })} at ${after.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : "It won't run again."}`,
+        action: { label: 'Run It Now', send: m.item.text },
+      });
+    }
+    for (const { item, key } of due(schedules, now, keys)) {
       keys.add(key);
       // A new entry whose time already passed today waits for its next one.
-      if (!fresh.has(item.id)) lab.send(item.text, randomUUID(), [], item.label);
+      if (fresh.has(item.id)) continue;
+      lab.send(item.text, randomUUID(), [], { label: item.label, quiet: item.quiet });
+      const you = lab.store.events.findLast((e) => e.kind === 'you');
+      if (you) running.set(you.id, item.id);
+      // The page shows one run at a time, so the rest wait for the next tick.
+      break;
     }
-    ran = { keys: [...keys].slice(-500), known: [...new Set([...ran.known, ...fresh])].slice(-500) };
-    writeFileSync(ranFile + '.tmp', JSON.stringify(ran));
-    renameSync(ranFile + '.tmp', ranFile);
+    ran = { ...ran, keys: [...keys].slice(-500), known: [...new Set([...ran.known, ...fresh])].slice(-500), checked: now.toISOString() };
+    saveRan();
   }, 20_000).unref();
+
+  const scheduleView = () => {
+    readSchedules();
+    const now = new Date();
+    return schedules.map((s) => ({ ...s, next: next(s, now)?.toISOString() ?? null, last: ran.last[s.id] ?? null }));
+  };
+
+  // ---------- pairing ----------
+
+  // One-time codes. A scanned QR code turns into a second, shorter-lived
+  // code the app trades for the token, so the token itself never sits in
+  // the phone browser's history.
+  const codes = new Map<string, { until: number; kind: 'scan' | 'claim' }>();
+  const code = (kind: 'scan' | 'claim', ms: number) => {
+    const c = randomBytes(12).toString('base64url');
+    codes.set(c, { until: Date.now() + ms, kind });
+    return c;
+  };
+  const spend = (c: string, kind: 'scan' | 'claim') => {
+    const got = codes.get(c);
+    codes.delete(c);
+    return !!got && got.kind === kind && got.until > Date.now();
+  };
+  const urlFile = join(DIR, 'url');
+
+  // Behind tailscale serve every request carries the Tailscale login it came
+  // from. The phone's is kept at the first visit, and a request from any
+  // other login is turned away even with the right token.
+  const login = (req: IncomingMessage) => String(req.headers['tailscale-user-login'] ?? '');
+  const sameLogin = (req: IncomingMessage) => {
+    const who = login(req);
+    if (!who) return true;
+    if (!lab.state.login) { lab.state.login = who; lab.save(); }
+    return lab.state.login === who;
+  };
 
   const authed = (req: IncomingMessage) => {
     const h = req.headers.authorization ?? '';
     const cookie = /(?:^|;\s*)lab=([^;]+)/.exec(req.headers.cookie ?? '')?.[1] ?? '';
     const got = Buffer.from(h.startsWith('Bearer ') ? h.slice(7) : decodeURIComponent(cookie));
-    return got.length === want.length && timingSafeEqual(got, want);
+    return got.length === want.length && timingSafeEqual(got, want) && sameLogin(req);
   };
 
   const json = (res: ServerResponse, status: number, body: unknown) => {
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify(body));
+  };
+  const html = (res: ServerResponse, status: number, title: string, body: string) => {
+    res.writeHead(status, { 'content-type': TYPES['.html'], 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
+    res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><style>body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:#1d1b20;background:#fdf7ff}h1{font-size:1.6rem;line-height:1.2}a.btn{display:inline-block;background:#5a2ee6;color:#fff;padding:.9rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}img{width:100%;max-width:22rem;display:block;margin:1.5rem 0;image-rendering:pixelated}@media (prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}}</style></head><body>${body}</body></html>`);
   };
 
   const body = (req: IncomingMessage): Promise<any> => new Promise((ok, fail) => {
@@ -187,19 +288,60 @@ async function serve() {
     req.on('close', () => { off(); clearInterval(ping); });
   };
 
+  // What the Check Setup button reports, in his words.
+  const check = async () => {
+    const { claudeSignedIn, codexSignedIn, tailscaleState } = await import('./checks.ts');
+    const out: { ok: boolean; title: string; detail?: string }[] = [{ ok: true, title: `The Lab ${pkg.version} is running on the Mac` }];
+    const signed = engine === 'codex' ? codexSignedIn() : claudeSignedIn().loggedIn;
+    out.push(signed ? { ok: true, title: `Signed in to ${engine === 'codex' ? 'ChatGPT' : 'Claude'}` }
+      : { ok: false, title: `Signed out of ${engine === 'codex' ? 'ChatGPT' : 'Claude'}`, detail: `Open the ${engine === 'codex' ? 'Codex' : 'Claude'} app on the Mac and ask it to sign The Lab back in.` });
+    const ts = tailscaleState();
+    out.push(ts.installed && 'running' in ts && ts.running ? { ok: true, title: 'Tailscale is running on the Mac' } : { ok: false, title: 'Tailscale is off on the Mac', detail: 'Open Tailscale on the Mac and sign in.' });
+    const m = await mac().catch(() => null);
+    if (m?.battery && !m.battery.charging) out.push({ ok: false, title: `The Mac is on battery (${m.battery.percent}%)`, detail: 'It will go to sleep when idle. Plug it in to keep The Lab going.' });
+    if (m && m.disk.free < 5e9) out.push({ ok: false, title: 'The Mac is nearly out of space', detail: 'Ask the agent what is taking up room.' });
+    if (process.platform === 'darwin') out.push(lab.snapshotAt ? { ok: true, title: 'Time Machine snapshots are working' } : { ok: false, title: 'No Time Machine snapshot yet', detail: 'One is taken before each task. If this stays, turn on Time Machine in System Settings.' });
+    const mem = lab.memory();
+    if (mem.chars > mem.cap * 0.8) out.push({ ok: false, title: 'Memory is nearly full', detail: 'Open Memory and remove what is no longer true.' });
+    return out;
+  };
+
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://lab');
     const path = decodeURIComponent(url.pathname);
     try {
       if (path === '/health') return json(res, 200, { ok: true, server: pkg.version });
       if (path === '/pair' && req.method === 'GET') {
+        // Scanned from the QR code on the phone, inside Tailscale.
+        const c = url.searchParams.get('c');
+        if (c !== null) {
+          if (!spend(c, 'scan')) return html(res, 410, 'Pairing Link Used', '<h1>That Code Has Expired</h1><p>Each code works once, for 10 minutes. Ask the agent on the Mac for a new one.</p>');
+          const base = existsSync(urlFile) ? readFileSync(urlFile, 'utf8').trim() : `https://${req.headers.host}`;
+          const claim = code('claim', 120_000);
+          const intent = `intent://pair?u=${encodeURIComponent(base)}&c=${claim}#Intent;scheme=thelab;package=com.somethingobvious.thelab;end`;
+          return html(res, 200, 'Pair The Lab', `<h1>Pair This Phone With the Mac</h1><p>Tap the button to open The Lab and finish pairing.</p><p><a class="btn" href="${intent}">Open The Lab</a></p>`);
+        }
         const t = url.searchParams.get('t') ?? '';
         if (Buffer.from(t).length !== want.length || !timingSafeEqual(Buffer.from(t), want)) return json(res, 401, { error: 'That pairing link is not valid.' });
-        res.writeHead(303, { 'set-cookie': `lab=${encodeURIComponent(t)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`, location: '/' });
+        const nextPath = url.searchParams.get('next') === '/pair-phone' ? '/pair-phone' : '/';
+        res.writeHead(303, { 'set-cookie': `lab=${encodeURIComponent(t)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`, location: nextPath });
         return res.end();
+      }
+      if (path === '/pair/claim' && req.method === 'POST') {
+        const { code: c } = await body(req);
+        if (typeof c !== 'string' || !spend(c, 'claim')) return json(res, 410, { error: 'That pairing code has expired. Scan a new one on the Mac.' });
+        if (login(req)) { lab.state.login = login(req); lab.save(); }
+        return json(res, 200, { token });
       }
       if (!authed(req)) return json(res, 401, { error: 'Not paired with this computer.' });
 
+      if (req.method === 'GET' && path === '/pair-phone') {
+        if (!existsSync(urlFile)) return html(res, 409, 'Pair a Phone', '<h1>Tailscale Isn\'t Set Up Yet</h1><p>Finish setup first, so the code can point at this Mac.</p>');
+        const { qrSvg } = await import('./qr.ts');
+        const link = `${readFileSync(urlFile, 'utf8').trim()}/pair?c=${code('scan', 10 * 60_000)}`;
+        const img = `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString('base64')}`;
+        return html(res, 200, 'Pair a Phone', `<h1>Point the Phone's Camera at This</h1><p>Turn on Tailscale on the phone first. The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`);
+      }
       if (req.method === 'GET' && path === '/events') return events(req, res, url);
       if (req.method === 'POST' && path === '/send') {
         const { text, cid, files } = await body(req);
@@ -217,16 +359,47 @@ async function serve() {
       if (req.method === 'POST' && path === '/shortcuts') {
         const items = cleanShortcuts((await body(req)).items);
         if (!items) return json(res, 400, { error: 'items must be a list of { label, text }.' });
-        writeFileSync(shortcutsFile + '.tmp', JSON.stringify(items, null, 2) + '\n');
-        renameSync(shortcutsFile + '.tmp', shortcutsFile);
+        writeJson(shortcutsFile, items);
         shortcuts = items;
         pushShortcuts();
         return json(res, 200, { items });
       }
       if (req.method === 'POST' && path === '/stop') { await lab.stop(); return json(res, 202, {}); }
       if (req.method === 'POST' && path === '/answer') {
-        const { ref, allow } = await body(req);
-        return lab.answer(String(ref), allow === true) ? json(res, 200, {}) : json(res, 404, { error: 'That question was already answered or has expired.' });
+        const { ref, allow, always } = await body(req);
+        return lab.answer(String(ref), allow === true, always === true) ? json(res, 200, {}) : json(res, 404, { error: 'That question was already answered or has expired.' });
+      }
+      if (path === '/memory') {
+        if (req.method === 'POST') {
+          const b = await body(req);
+          const list = (a: unknown) => Array.isArray(a) ? a.filter((s) => typeof s === 'string' && s.trim()).map((s: string) => s.trim().slice(0, 500)).slice(0, 100) : undefined;
+          return json(res, 200, lab.saveMemory({ about: list(b.about), notes: list(b.notes), ...(typeof b.paused === 'boolean' ? { paused: b.paused } : {}) }));
+        }
+        return json(res, 200, lab.memory());
+      }
+      if (path === '/schedules') {
+        if (req.method === 'POST') {
+          const items = cleanSchedules((await body(req)).items);
+          if (!items) return json(res, 400, { error: 'items must be a list of { label, text, time }.' });
+          writeJson(schedulesFile, items);
+          schedules = items;
+        }
+        return json(res, 200, { items: scheduleView() });
+      }
+      if (path === '/allowed') {
+        if (req.method === 'POST') {
+          const { remove } = await body(req);
+          if (Number.isInteger(remove)) { lab.rules.splice(remove, 1); lab.saveRules(); }
+        }
+        // The page shows where each rule applies, so the agent's own folder gets a name.
+        return json(res, 200, { items: lab.rules.map((r) => ({ ...r, where: r.cwd === HOME ? 'In your Lab folder' : r.cwd.startsWith(HOME + sep) ? `In ${r.cwd.slice(HOME.length + 1)} in your Lab folder` : `In ${r.cwd}` })) });
+      }
+      if (req.method === 'GET' && path === '/check') return json(res, 200, { items: await check() });
+      if (req.method === 'POST' && path === '/presence') {
+        // Only counts when someone is actually at the keyboard, so a browser
+        // tab left open in front doesn't silence the phone all evening.
+        if ((await idle().catch(() => Infinity)) < 120) atMacUntil = Date.now() + 45_000;
+        return json(res, 200, {});
       }
       if (req.method === 'GET' && path === '/design') return json(res, 200, design.bundle());
       if (req.method === 'POST' && path === '/design/undo') return json(res, design.undo() ? 200 : 409, { version: design.version });
@@ -244,9 +417,9 @@ async function serve() {
         const p = resolve(appDir, '.' + (path === '/' ? '/index.html' : path));
         if (!p.startsWith(appDir + sep) || !existsSync(p) || !statSync(p).isFile()) return json(res, 404, { error: `No such file: ${path}` });
         if (p.endsWith('index.html')) {
-          const html = readFileSync(p, 'utf8').replace(/<head([^>]*)>/i, '<head$1><script src="/web-bridge.js"></script>');
+          const page = readFileSync(p, 'utf8').replace(/<head([^>]*)>/i, '<head$1><script src="/web-bridge.js"></script>');
           res.writeHead(200, { 'content-type': TYPES['.html'], 'cache-control': 'no-store' });
-          return res.end(html);
+          return res.end(page);
         }
         return file(res, p, { 'cache-control': 'no-store' });
       }

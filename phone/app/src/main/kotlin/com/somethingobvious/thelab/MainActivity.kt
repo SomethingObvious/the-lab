@@ -3,6 +3,12 @@ package com.somethingobvious.thelab
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.NotificationManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.provider.Settings
+import android.widget.Toast
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -55,6 +61,8 @@ class MainActivity : Activity() {
     private var rescueReason: String? = null
     private var ready = false
     private var picking: String? = null
+    // Text or files shared in, held until the page has subscribed.
+    private var compose: JSONObject? = null
     private var insets = JSONObject().put("kind", "insets")
     private var fold = JSONObject().put("kind", "fold").put("posture", JSONObject.NULL).put("hinge", JSONObject.NULL)
     private var imeMoving = false
@@ -123,11 +131,81 @@ class MainActivity : Activity() {
         Hub.designListeners.add(onDesign)
         if (Hub.paired) LinkService.start(this)
         build()
+        intent?.let { arrive(it) }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == SAFE) rescue("Safe mode, opened from the app shortcut.")
+        arrive(intent)
+    }
+
+    // Shares, the tile, the widget, the assistant gesture and the pairing link.
+    private fun arrive(intent: Intent) {
+        when (intent.action) {
+            COMPOSE, Intent.ACTION_ASSIST -> toCompose(JSONObject().put("kind", "compose").put("text", ""))
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> shared(intent)
+            Intent.ACTION_VIEW -> intent.data?.takeIf { it.scheme == "thelab" && it.host == "pair" }?.let { pairFrom(it) }
+        }
+    }
+
+    private fun toCompose(e: JSONObject) {
+        if (port != null && ready) send(e) else compose = e
+    }
+
+    private fun shared(intent: Intent) {
+        val text = listOfNotNull(intent.getStringExtra(Intent.EXTRA_SUBJECT), intent.getStringExtra(Intent.EXTRA_TEXT))
+            .filter { it.isNotBlank() }.distinct().joinToString("\n")
+        val uris = ArrayList<Uri>()
+        if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.addAll(it) }
+        else intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
+        if (uris.isEmpty()) return toCompose(JSONObject().put("kind", "compose").put("text", text))
+        Toast.makeText(this, "Sending to the Mac", Toast.LENGTH_SHORT).show()
+        Hub.later {
+            val out = JSONArray()
+            val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't send that to the Mac." }
+            Hub.onMain {
+                if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                toCompose(JSONObject().put("kind", "compose").put("text", text).put("files", out))
+            }
+        }
+    }
+
+    // A pairing link only counts once he has said yes to the address in it.
+    private fun pairFrom(uri: Uri) {
+        val base = uri.getQueryParameter("u")?.trimEnd('/') ?: return
+        val code = uri.getQueryParameter("c") ?: return
+        val host = Uri.parse(base).host ?: return
+        if (Uri.parse(base).scheme != "https") return Toast.makeText(this, "That pairing link isn't for a Mac on Tailscale.", Toast.LENGTH_LONG).show()
+        AlertDialog.Builder(this)
+            .setTitle("Pair With This Mac?")
+            .setMessage("The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own Mac.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Pair") { _, _ ->
+                Hub.claim(base, code) { err ->
+                    Toast.makeText(this, err ?: "Paired with $host.", Toast.LENGTH_LONG).show()
+                    if (err == null) { LinkService.start(this); rescueReason = null; load() }
+                }
+            }
+            .show()
+    }
+
+    // The Mac's checks, then this phone's own.
+    private fun check(id: String) {
+        Hub.request("GET", "/check", null) { text, err ->
+            val items = text?.let { runCatching { JSONObject(it).getJSONArray("items") }.getOrNull() }
+                ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the Mac").put("detail", err ?: "Check the Mac is awake and Tailscale is on."))
+            val nm = getSystemService(NotificationManager::class.java)
+            val asks = nm.getNotificationChannel("asks")
+            if (!nm.areNotificationsEnabled() || asks?.importance == NotificationManager.IMPORTANCE_NONE)
+                items.put(JSONObject().put("ok", false).put("title", "Notifications are off for The Lab").put("detail", "You won't hear when it needs your OK.").put("fix", "notifications"))
+            else items.put(JSONObject().put("ok", true).put("title", "This phone shows The Lab's notifications"))
+            val cm = getSystemService(ConnectivityManager::class.java)
+            val vpn = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            if (vpn) items.put(JSONObject().put("ok", true).put("title", "Tailscale is running on this phone"))
+            else items.put(JSONObject().put("ok", false).put("title", "Tailscale is off on this phone").put("detail", "The phone can only reach the Mac through Tailscale.").put("fix", "tailscale"))
+            answer(id, JSONObject().put("items", items).toString())
+        }
     }
 
     override fun onStart() {
@@ -262,6 +340,8 @@ class MainActivity : Activity() {
                     history.put(JSONObject().put("kind", "loaded"))
                     reply.postMessage(JSONObject().put("batch", history).toString())
                     unlisten = Hub.listen { send(it) }
+                    compose?.let { reply.postMessage(it.toString()) }
+                    compose = null
                 }
             }
             "send" -> {
@@ -284,8 +364,14 @@ class MainActivity : Activity() {
             "stop" -> Hub.stop { ok -> if (!ok) send(JSONObject().put("kind", "stopFailed")) }
             "answer" -> {
                 val ref = m.optString("ref")
-                Hub.answer(ref, m.optBoolean("allow")) { ok -> if (!ok) send(JSONObject().put("kind", "answerFailed").put("ref", ref)) }
+                Hub.answer(ref, m.optBoolean("allow"), m.optBoolean("always")) { ok -> if (!ok) send(JSONObject().put("kind", "answerFailed").put("ref", ref)) }
             }
+            "call" -> {
+                val id = m.optString("id")
+                val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the Mac.")
+                Hub.request(method, m.optString("path"), m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
+            }
+            "check" -> check(m.optString("id"))
             "undo" -> Hub.undoDesign { ok ->
                 send(JSONObject().put("kind", "undone").put("ok", ok))
                 if (ok) { rescueReason = null }
@@ -301,7 +387,10 @@ class MainActivity : Activity() {
             "theme" -> applyTheme(m)
             "back" -> wantsBack(m.optBoolean("on"))
             "open" -> open(m.optString("url"))
-            "fix" -> if (m.optString("fix") == "tailscale") openApp("com.tailscale.ipn")
+            "fix" -> when (m.optString("fix")) {
+                "tailscale" -> openApp("com.tailscale.ipn")
+                "notifications" -> startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            }
             "retry" -> Hub.reconnectNow()
         }
     }
@@ -473,6 +562,7 @@ class MainActivity : Activity() {
         const val HOST = "appassets.androidplatform.net"
         const val ORIGIN = "https://$HOST"
         const val SAFE = "com.somethingobvious.thelab.SAFE"
+        const val COMPOSE = "com.somethingobvious.thelab.COMPOSE"
         const val PICK = 7
     }
 }

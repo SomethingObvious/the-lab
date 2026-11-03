@@ -48,9 +48,16 @@ class LinkService : Service() {
                 .onFailure { Log.w("Lab", "service not started from here", it) }
         }
 
+        private val main = android.os.Handler(android.os.Looper.getMainLooper())
+        private val again = Runnable { refresh() }
+
         fun refresh() {
+            Widget.update(Hub.app)
             val s = running ?: return
             s.getSystemService(NotificationManager::class.java).notify(Notifier.STATUS_ID, Notifier.status(s))
+            // Done shows for 10 minutes, then the line goes back to idle.
+            main.removeCallbacks(again)
+            Notifier.doneUntil()?.let { main.postDelayed(again, it - System.currentTimeMillis() + 500) }
         }
     }
 }
@@ -93,24 +100,47 @@ object Notifier {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
+    // When the Done line should go back to idle, or null when it already has.
+    fun doneUntil(): Long? {
+        val at = Hub.lastDone?.let { runCatching { Instant.parse(it.optString("at")).toEpochMilli() }.getOrNull() } ?: return null
+        return (at + 10 * 60_000).takeIf { it > System.currentTimeMillis() && !Hub.status.optBoolean("working") }
+    }
+
+    // Four states: working, waiting for his OK, done (for 10 minutes) and idle.
+    // Working and waiting are promoted, which Android 16 shows as a Live
+    // Update chip in the status bar.
     fun status(context: Context): Notification {
         val link = Hub.link
-        val working = link.optString("state") == "online" && Hub.status.optBoolean("working")
+        val online = link.optString("state") == "online"
+        val working = online && Hub.status.optBoolean("working")
+        val waiting = working && Hub.status.optString("label") == "Waiting for you"
         val b = Notification.Builder(context, "status")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentIntent(open(context))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_STATUS)
-        if (working) {
+        val since = runCatching { Instant.parse(Hub.status.optString("since")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+        if (waiting) {
+            b.setContentTitle("Needs your OK").setContentText("Open The Lab to allow or deny it.")
+                .setWhen(since).setShowWhen(true).setUsesChronometer(true)
+            if (Build.VERSION.SDK_INT >= 36) b.setShortCriticalText("Your OK")
+            b.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
+        } else if (working) {
             val label = Hub.status.optString("label").ifBlank { "Working" }
-            val since = runCatching { Instant.parse(Hub.status.optString("since")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
             b.setContentTitle("Working").setContentText(label)
                 .setWhen(since).setShowWhen(true).setUsesChronometer(true)
                 .addAction(Notification.Action.Builder(null, "Stop", action(context, AnswerReceiver.STOP, "", 10)).build())
-            if (Build.VERSION.SDK_INT >= 36) b.setShortCriticalText("Working")
-            // Android 16 QPR2 shows this as a Live Update chip in the status bar.
+            if (Build.VERSION.SDK_INT >= 36) {
+                b.setShortCriticalText("Working")
+                b.setStyle(Notification.ProgressStyle().setProgressIndeterminate(true))
+            }
             b.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
+        } else if (online && doneUntil() != null) {
+            val d = Hub.lastDone!!
+            val title = if (d.optBoolean("stopped")) "Stopped" else if (d.optBoolean("ok")) "Done" else "Didn't finish"
+            b.setContentTitle(title).setContentText("Open The Lab to see what it did.")
+                .setWhen(runCatching { Instant.parse(d.optString("at")).toEpochMilli() }.getOrDefault(0)).setShowWhen(true)
         } else {
             val title = when (link.optString("state")) {
                 "online" -> "Connected to the Mac"
@@ -139,13 +169,16 @@ object Notifier {
         }
         val at = runCatching { Instant.parse(e.optString("at")).toEpochMilli() }.getOrDefault(0)
         if (System.currentTimeMillis() - at > 120_000) return
+        // A scheduled run with nothing to say stays quiet.
+        if (e.optBoolean("silent")) return
         if (kind == "you" || kind == "reply" || kind == "file") {
             val label = e.optString("scheduled")
             val text = if (kind == "file") "Sent you ${e.optString("name")}" else if (label.isNotEmpty()) "$label: ${plain(e.optString("text"))}" else plain(e.optString("text"))
             recent.addLast(Triple(text, at, kind == "you"))
             while (recent.size > 6) recent.removeFirst()
         }
-        if (Hub.foreground) return
+        // Someone at the Mac with The Lab in front already sees it there.
+        if (Hub.foreground || e.optBoolean("onMac")) return
         val b = when (kind) {
             "reply", "file" -> {
                 val mac = Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your Mac").setKey("mac").build()
@@ -167,10 +200,14 @@ object Notifier {
             "ask" -> {
                 val ref = e.optString("ref")
                 val code = ref.hashCode()
+                // His words first, as on the card. The command stays in the app.
+                val facts = e.optJSONArray("facts")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+                val lines = listOfNotNull(e.optString("from").ifBlank { null }) + facts + listOfNotNull(e.optString("why").ifBlank { null }?.let { "The agent says: $it" })
+                val text = lines.ifEmpty { listOf(e.optString("detail")) }.joinToString("\n")
                 Notification.Builder(context, "asks")
                     .setContentTitle(e.optString("title"))
-                    .setContentText(e.optString("detail"))
-                    .setStyle(Notification.BigTextStyle().bigText(e.optString("detail")))
+                    .setContentText(lines.firstOrNull() ?: e.optString("detail"))
+                    .setStyle(Notification.BigTextStyle().bigText(text))
                     .setCategory(Notification.CATEGORY_REMINDER)
                     // Allowing runs something on his Mac, so it shouldn't work from a locked phone.
                     .addAction(Notification.Action.Builder(null, "Deny", action(context, AnswerReceiver.DENY, ref, code + 1)).setAuthenticationRequired(true).build())
@@ -205,9 +242,15 @@ object Notifier {
             .setPerson(mac)
             .setLongLived(true)
             .setIntent(open)
+            // Puts the Mac in the share sheet's top row.
+            .setCategories(setOf(SHARE_CATEGORY))
             .build()
         runCatching { context.getSystemService(ShortcutManager::class.java).pushDynamicShortcut(info) }
     }
+
+    fun shareTarget(context: Context) = conversation(context, Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your Mac").setKey("mac").build())
+    const val SHARE_CATEGORY = "com.somethingobvious.thelab.category.SHARE"
+
 
     fun answerFailed(context: Context, ref: String) {
         val code = ref.hashCode()
@@ -308,5 +351,6 @@ class App : android.app.Application() {
         super.onCreate()
         Hub.init(this)
         Notifier.channels(this)
+        Notifier.shareTarget(this)
     }
 }
