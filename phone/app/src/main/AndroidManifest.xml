@@ -80,6 +80,11 @@
             android:exported="false"
             android:foregroundServiceType="remoteMessaging" />
 
+        <service
+            android:name=".Retry"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <!-- Only adb's shell user (and the system) holds WRITE_SECURE_SETTINGS,
              so no app on the phone can repoint The Lab at another server. -->
         <receiver

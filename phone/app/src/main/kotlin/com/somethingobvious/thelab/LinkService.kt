@@ -7,6 +7,11 @@ import android.app.PendingIntent
 import android.app.Person
 import android.app.RemoteInput
 import android.app.Service
+import android.app.job.JobInfo
+import android.app.job.JobParameters
+import android.app.job.JobScheduler
+import android.app.job.JobService
+import android.content.ComponentName
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -33,6 +38,7 @@ class LinkService : Service() {
         running = this
         startForeground(Notifier.STATUS_ID, Notifier.status(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
         Hub.start()
+        follow()
         return START_STICKY
     }
 
@@ -52,14 +58,67 @@ class LinkService : Service() {
         private val main = android.os.Handler(android.os.Looper.getMainLooper())
         private val again = Runnable { refresh() }
 
+        // A computer that's off or asleep isn't worth a notification that never
+        // goes away, so after two minutes without it the service steps down.
+        // A job checks back every 15 minutes, and once the link is back the
+        // service and its line come back with it. The phone's battery
+        // allowlist (setup adds it) lets that start happen from the background.
+        private val stepDown = Runnable {
+            running?.let { it.stopForeground(STOP_FOREGROUND_REMOVE); it.stopSelf() }
+            if (Hub.paired) Retry.schedule(Hub.app)
+        }
+
+        private fun follow() {
+            val state = Hub.link.optString("state")
+            if (state == "online") {
+                main.removeCallbacks(stepDown)
+                Retry.cancel(Hub.app)
+                if (running == null) start(Hub.app)
+            } else if (running != null && !main.hasCallbacks(stepDown)) {
+                main.postDelayed(stepDown, if (state == "unpaired") 0 else 2 * 60_000L)
+            }
+        }
+
         fun refresh() {
             Widget.update(Hub.app)
+            follow()
             val s = running ?: return
             s.getSystemService(NotificationManager::class.java).notify(Notifier.STATUS_ID, Notifier.status(s))
             // Done shows for 10 minutes, then the line goes back to idle.
             main.removeCallbacks(again)
             Notifier.doneUntil()?.let { main.postDelayed(again, it - System.currentTimeMillis() + 500) }
         }
+    }
+}
+
+// Tries the computer again while the service is stepped down.
+class Retry : JobService() {
+    override fun onStartJob(params: JobParameters): Boolean {
+        Hub.init(this)
+        if (!Hub.paired) return false
+        Hub.start()
+        Hub.reconnectNow()
+        // Long enough for a relay dial and the first events.
+        android.os.Handler(mainLooper).postDelayed({ jobFinished(params, false) }, 30_000)
+        return true
+    }
+
+    override fun onStopJob(params: JobParameters) = false
+
+    companion object {
+        private const val ID = 7
+
+        fun schedule(context: Context) {
+            val js = context.getSystemService(JobScheduler::class.java)
+            if (js.getPendingJob(ID) != null) return
+            js.schedule(JobInfo.Builder(ID, ComponentName(context, Retry::class.java))
+                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                .setPeriodic(15 * 60_000L)
+                .setPersisted(true)
+                .build())
+        }
+
+        fun cancel(context: Context) = context.getSystemService(JobScheduler::class.java).cancel(ID)
     }
 }
 
