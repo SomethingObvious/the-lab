@@ -82,7 +82,7 @@ class Channel implements AsyncIterable<SDKUserMessage> {
 }
 
 const NOTICE: Record<string, string> = {
-  authentication_failed: 'The Mac is signed out of Claude. Open Claude on the Mac and sign in, then send your message again.',
+  authentication_failed: 'The Lab on the Mac is signed out of Claude. Open the Claude app on the Mac and ask it to sign The Lab back in, then send your message again.',
   billing_error: 'The Claude plan on the Mac has a billing problem. Check the account, then send your message again.',
   rate_limit: 'The Claude plan hit its usage limit for now. It will carry on once the limit resets.',
   account_on_hold: 'The Claude account on the Mac is on hold.',
@@ -109,6 +109,7 @@ export class Lab {
   private stateFile: string;
   private filesDir: string;
   asks = new Map<string, (allow: boolean, by: string) => void>();
+  private youIds = new Map<string, number>();
   private unanswered: SDKUserMessage[] = [];
   private seen = new Set<string>();
   private stopping = false;
@@ -155,7 +156,8 @@ export class Lab {
   send(text: string, cid: string, files: Attached[] = [], scheduled?: string): boolean {
     if (this.seen.has(cid)) return false;
     this.seen.add(cid);
-    this.store.add({ kind: 'you', text, cid, ...(files.length ? { files } : {}), ...(scheduled ? { scheduled } : {}) }, true);
+    const you = this.store.add({ kind: 'you', text, cid, ...(files.length ? { files } : {}), ...(scheduled ? { scheduled } : {}) }, true);
+    this.youIds.set(cid, you.id);
     this.state.open = { text: text || files.map((f) => f.name).join(', '), at: new Date().toISOString() };
     this.save();
     const list = files.map((f) => `- ${join(this.filesDir, basename(decodeURIComponent(f.url)))} (${f.name}, ${f.type})`).join('\n');
@@ -164,7 +166,7 @@ export class Lab {
     this.setStatus(true, 'Reading your message');
     if (this.opts.engine === 'codex') {
       this.codex ??= new Codex(this, this.opts.home, PROMPT, this.opts.model);
-      this.codex.send(content, files.filter((f) => f.type.startsWith('image/')).map((f) => join(this.filesDir, basename(decodeURIComponent(f.url)))));
+      this.codex.send(content, files.filter((f) => f.type.startsWith('image/')).map((f) => join(this.filesDir, basename(decodeURIComponent(f.url)))), you.id);
       return true;
     }
     const m: SDKUserMessage = { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, uuid: cid as any, session_id: this.state.sessionId ?? '' };
@@ -329,7 +331,12 @@ export class Lab {
         this.stopping = false;
         this.unanswered = [];
         const ok = m.subtype === 'success' && !m.is_error;
-        this.store.add({ kind: 'done', ok, stopped, ms: m.duration_ms, ...(ok || stopped ? {} : { error: clip(('errors' in m ? m.errors : []).join('; ') || m.subtype, 300) }) });
+        // The messages this result answered, so a message still waiting
+        // behind it doesn't get this done too.
+        const ids = (m.user_message_uuids ?? []).map((c) => this.youIds.get(c) ?? 0);
+        const upto = ids.length ? Math.max(...ids) : 0;
+        for (const c of m.user_message_uuids ?? []) this.youIds.delete(c);
+        this.store.add({ kind: 'done', ok, stopped, ms: m.duration_ms, ...(upto ? { upto } : {}), ...(ok || stopped ? {} : { error: clip(('errors' in m ? m.errors : []).join('; ') || m.subtype, 300) }) });
         this.state.open = null;
         this.save();
         this.setStatus(false);

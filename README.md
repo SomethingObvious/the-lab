@@ -2,7 +2,7 @@
 
 The Lab lets you message the agent on your Mac from an Android phone. You see each step it takes as it happens, approve anything risky from the phone, and change how the app looks by asking for it in plain words.
 
-It runs on whichever plan you already pay for, Claude (Pro or Max) or ChatGPT (Plus or Pro, through Codex). It has two parts. A small server on the Mac runs the agent, keeps the conversation and history, and restarts itself after a crash or a reboot. The Android app (built for the Pixel Fold, and fine on any phone running Android 12 or later) holds a live connection to that server, keeps an ongoing notification showing what the agent is doing, and queues messages while the Mac is out of reach. The two talk over Tailscale, so nothing is open to the internet.
+It runs on whichever plan you already pay for, Claude (Pro or Max) or ChatGPT (Plus or Pro, through Codex). It has two parts. A small server on the Mac runs the agent, keeps the conversation and history, and restarts itself after a crash or a reboot. The Android app (built for the Pixel Fold, and fine on any phone running Android 13 or later) holds a live connection to that server, keeps an ongoing notification showing what the agent is doing, and queues messages while the Mac is out of reach. The two talk over Tailscale, so nothing is open to the internet.
 
 The app's interface is a web page kept on the Mac in `~/TheLab/app`. When you ask the agent for a change, it edits that page and the phone picks it up within a couple of seconds. If a change ever breaks things, the app falls back to a built-in safe screen with an undo button.
 

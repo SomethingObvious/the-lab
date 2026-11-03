@@ -34,7 +34,10 @@ export function commandTitle(item: { command: string; commandActions?: any[] }):
     if (a.type === 'listFiles') return `Looking in ${a.path ? title('Read', { file_path: a.path }).slice(8) : 'the folder'}`;
     if (a.type === 'search' && a.query) return title('Grep', { pattern: a.query });
   }
-  return clip(unwrap(item.command), 80);
+  const cmd = unwrap(item.command);
+  const send = /^(?:cp|mv)\s+(?:-\S+\s+)*("[^"]+"|'[^']+'|\S+)\s+\S*to-phone\/?\S*$/.exec(cmd);
+  if (send) return title('mcp__lab__send_to_phone', { path: send[1].replace(/^["']|["']$/g, '') });
+  return clip(cmd, 80);
 }
 
 export class Codex {
@@ -44,7 +47,10 @@ export class Codex {
   private pending = new Map<number, { ok: (r: any) => void; fail: (e: Error) => void }>();
   private turn: string | null = null;
   private started = 0;
-  private queue: { text: string; images: string[] }[] = [];
+  private queue: { text: string; images: string[]; you: number }[] = [];
+  private starting: Promise<void> | null = null;
+  private taken = 0;
+  private lastError: Error | null = null;
   private seen = new Map<string, { tool: string; title: string; detail: string }>();
 
   private lab: Lab;
@@ -59,8 +65,10 @@ export class Codex {
     this.model = model;
   }
 
-  send(text: string, images: string[]) {
-    this.queue.push({ text, images });
+  // `you` is the id of his message's event, so the turn's done can say which
+  // messages it answered.
+  send(text: string, images: string[], you: number) {
+    this.queue.push({ text, images, you });
     this.pump().catch((e) => this.broke(e));
   }
 
@@ -72,7 +80,16 @@ export class Codex {
 
   async stop() {
     this.queue = [];
-    if (this.turn && this.lab.state.threadId) await this.call('turn/interrupt', { threadId: this.lab.state.threadId, turnId: this.turn }).catch(() => {});
+    await this.starting?.catch(() => {});
+    if (this.turn && this.lab.state.threadId) {
+      await this.call('turn/interrupt', { threadId: this.lab.state.threadId, turnId: this.turn }).catch(() => {});
+      return;
+    }
+    // Stopped before a turn began, so nothing else will end it.
+    this.lab.store.add({ kind: 'done', ok: false, stopped: true, ms: 0 });
+    this.lab.state.open = null;
+    this.lab.save();
+    this.lab.setStatus(false);
   }
 
   private input({ text, images }: { text: string; images: string[] }) {
@@ -82,30 +99,38 @@ export class Codex {
   private async pump() {
     if (!this.queue.length) return;
     await this.start();
+    // A turn still being started has no id to steer into yet. This must not
+    // await when nothing is starting, or a second message slips in between.
+    while (this.starting) await this.starting.catch(() => {});
     const threadId = this.lab.state.threadId!;
     // A message sent mid-task joins the running turn, the same as with
     // Claude. If it can't, it waits for the turn to end.
     if (this.turn) {
       const m = this.queue[0];
+      if (!m) return;
       const steered = await this.call('turn/steer', { threadId, input: this.input(m), expectedTurnId: this.turn }).then(() => true, () => false);
-      if (steered) this.queue.shift();
+      if (steered) { this.queue.shift(); this.taken = m.you; }
       return;
     }
-    const m = this.queue.shift()!;
+    const m = this.queue.shift();
+    if (!m) return;
     this.turn = 'starting';
     this.started = Date.now();
-    const r = await this.call('turn/start', {
+    this.starting = this.call('turn/start', {
       threadId,
       input: this.input(m),
       cwd: this.home,
       approvalPolicy: 'on-request',
       // He uses it to do things across his home folder, the way the Claude
-      // side works, so writes there run without asking. Anything outside it
-      // comes to the phone as an Allow and Deny.
+      // side works. The instructions send anything destructive through an
+      // escalation, which comes to the phone as an Allow and Deny.
       sandboxPolicy: { type: 'workspaceWrite', writableRoots: [homedir()], networkAccess: true, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
       ...(this.model ? { model: this.model } : {}),
-    }).catch((e) => { this.turn = null; throw e; });
-    if (this.turn === 'starting') this.turn = r.turn.id;
+    }).then((r) => {
+      if (this.turn === 'starting') this.turn = r.turn.id;
+      this.taken = m.you;
+    }, (e) => { this.turn = null; throw e; }).finally(() => { this.starting = null; });
+    await this.starting;
   }
 
   private start(): Promise<void> {
@@ -130,7 +155,7 @@ export class Codex {
       this.write({ method: 'initialized', params: {} });
       const acct = await this.call('account/read', { refreshToken: false });
       if (!acct.account && acct.requiresOpenaiAuth) throw new Error(NOTICE.unauthorized);
-      const instructions = `${this.prompt} Your notes about him are in memory.md in the working directory, so read it at the start of a conversation and keep it up to date.`;
+      const instructions = `${this.prompt} Your notes about him are in memory.md in the working directory, so read it at the start of a conversation and keep it up to date. Before any command that deletes or overwrites his files, sends or shares anything outside this Mac, or changes system settings, run it with sandbox_permissions set to require_escalated and a justification he'll understand in one short sentence, so he gets Allow and Deny on his phone first.`;
       const opts = { cwd: this.home, approvalPolicy: 'on-request', sandbox: 'workspace-write', developerInstructions: instructions, ...(this.model ? { model: this.model } : {}) };
       const saved = this.lab.state.threadId;
       const r = saved
@@ -157,6 +182,9 @@ export class Codex {
 
   // Something failed before a turn could even start, like a sign-in.
   private broke(e: Error) {
+    // Every message waiting on a failed start rejects with the same error.
+    if (e === this.lastError) return;
+    this.lastError = e;
     console.error('codex:', e.message);
     this.lab.store.add({ kind: 'notice', text: Object.values(NOTICE).includes(e.message) ? e.message : `Codex couldn't start (${clip(e.message, 160)}). Send your message again in a minute.` });
     this.queue = [];
@@ -213,7 +241,10 @@ export class Codex {
   private completed(item: any) {
     switch (item.type) {
       case 'agentMessage':
-        if (item.text?.trim()) this.lab.store.add({ kind: 'reply', text: item.text });
+        // Commentary is Codex talking to itself between steps, so it goes in
+        // the toolbar rather than becoming a reply he gets notified about.
+        if (item.phase === 'commentary') { if (item.text?.trim()) this.lab.setStatus(true, clip(item.text.trim(), 80)); }
+        else if (item.text?.trim()) this.lab.store.add({ kind: 'reply', text: item.text });
         return;
       // The query is only filled in once the search has run.
       case 'webSearch': {
@@ -238,8 +269,9 @@ export class Codex {
     const ok = turn.status === 'completed';
     const info = typeof turn.error?.codexErrorInfo === 'string' ? turn.error.codexErrorInfo : '';
     if (NOTICE[info]) this.lab.store.add({ kind: 'notice', text: NOTICE[info] });
-    this.lab.store.add({ kind: 'done', ok, stopped, ms: turn.durationMs ?? Date.now() - this.started, ...(ok || stopped ? {} : { error: clip(turn.error?.message ?? 'It stopped without saying why.', 300) }) });
+    this.lab.store.add({ kind: 'done', ok, stopped, ms: turn.durationMs ?? Date.now() - this.started, ...(this.taken ? { upto: this.taken } : {}), ...(ok || stopped ? {} : { error: clip(turn.error?.message ?? 'It stopped without saying why.', 300) }) });
     this.turn = null;
+    this.taken = 0;
     this.seen.clear();
     for (const finish of this.lab.asks.values()) finish(false, 'stop');
     this.lab.state.open = null;
@@ -258,8 +290,10 @@ export class Codex {
     switch (method) {
       case 'item/commandExecution/requestApproval': {
         const cmd = unwrap(p.command ?? '');
-        const t = cmd ? commandTitle({ command: cmd, commandActions: p.commandActions ?? [] }) : 'Run a command';
-        const allow = await ask(p.approvalId ?? p.itemId, 'Bash', `Allow: ${t}?`, [cmd, p.reason].filter(Boolean).join('\n\n'));
+        // The reason is Codex's own plain-words justification. The command
+        // stays in the detail, since a reason can be wrong.
+        const t = p.reason ? clip(String(p.reason).replace(/[.?]\s*$/, ''), 100) : cmd ? commandTitle({ command: cmd, commandActions: p.commandActions ?? [] }) : 'Run a command';
+        const allow = await ask(p.approvalId ?? p.itemId, 'Bash', `Allow: ${t}?`, cmd || p.reason || '');
         return reply({ decision: allow ? 'accept' : 'decline' });
       }
       case 'item/fileChange/requestApproval': {

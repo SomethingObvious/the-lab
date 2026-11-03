@@ -65,7 +65,7 @@ The events are saved in history and replayed to `subscribe` when the page loads.
 | `failed` | `ref`, `text`. The step with that `ref` failed. |
 | `ask` | `ref`, `tool`, `title`, `detail`. Needs Allow or Deny. |
 | `answered` | `ref`, `allow`, `by`. |
-| `done` | `ok`, `stopped`, `ms`, `error`. The end of a turn. |
+| `done` | `ok`, `stopped`, `ms`, `error`, and `upto`, the `id` of the last `you` event this run answered. The end of a turn. A message sent mid-task usually joins the running turn, so give this `done` to every turn since the last one up to `upto` (all of them when `upto` is missing), and leave any later turn running. |
 | `notice` | `text`, and maybe `action` (`label`, `send`), a button that sends `send` as a message. |
 | `file` | `name`, `url`, `size`, `caption`. |
 

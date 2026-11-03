@@ -116,10 +116,82 @@ test('codex turns map onto the phone events', async () => {
   const pick = (kind: string) => seen.filter((e) => e.kind === kind);
   assert.deepEqual(pick('step').map((e) => [e.ref, e.title, e.detail]), [['c1', 'Reading notes.md', 'cat notes.md'], ['c2', 'rm -rf ~/Downloads/old', 'rm -rf ~/Downloads/old']]);
   assert.deepEqual(pick('failed').map((e) => e.text), ['No such file']);
-  assert.equal(pick('ask')[0].title, 'Allow: rm -rf ~/Downloads/old?');
+  assert.equal(pick('ask')[0].title, 'Allow: Deletes files?');
+  assert.equal(pick('ask')[0].detail, 'rm -rf ~/Downloads/old');
   assert.deepEqual(pick('reply').map((e) => e.text), ['Decision was accept']);
   assert.deepEqual(pick('done').map((e) => [e.ok, e.stopped, e.ms]), [[true, false, 1234]]);
   assert.equal(lab.state.threadId, 'thr_1');
   assert.equal(lab.status.working, false);
   lab.close();
+});
+
+// Answers turn/start late, accepts a steer into t1, and talks to itself
+// once before the answer.
+const SLOW = String.raw`
+const rl = require('readline').createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+let n = 0;
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
+  if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thr_2' }, model: 'fake' } });
+  if (m.method === 'turn/interrupt') return out({ id: m.id, result: {} });
+  if (m.method === 'turn/start') {
+    const id = 't' + ++n;
+    return setTimeout(() => out({ id: m.id, result: { turn: { id, status: 'inProgress' } } }), 150);
+  }
+  if (m.method === 'turn/steer') {
+    if (m.params.expectedTurnId !== 't' + n) return out({ id: m.id, error: { code: -32600, message: 'no such turn' } });
+    out({ id: m.id, result: { turnId: 't' + n } });
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a0', phase: 'commentary', text: 'Checking both folders' } } });
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a1', phase: 'final_answer', text: 'Both done' } } });
+    return out({ method: 'turn/completed', params: { turn: { id: 't' + n, status: 'completed', durationMs: 50, error: null } } });
+  }
+});
+`;
+
+async function codexLab(script: string) {
+  const root = mkdtempSync(join(tmpdir(), 'lab-codex-'));
+  writeFileSync(join(root, 'fake.cjs'), script);
+  process.env.LAB_CODEX_BIN = join(root, 'fake.cjs');
+  const { Lab } = await import('./lab.ts');
+  const lab = new Lab({ home: root, engine: 'codex' });
+  const seen: any[] = [];
+  lab.store.listen((e) => seen.push(e));
+  const until = async (ok: () => boolean) => { for (let i = 0; i < 100 && !ok(); i++) await wait(50); };
+  return { lab, seen, until, pick: (kind: string) => seen.filter((e) => e.kind === kind) };
+}
+
+test('codex folds a message sent while the turn starts into it', async () => {
+  const { lab, seen, until, pick } = await codexLab(SLOW);
+  lab.send('Tidy Downloads', crypto.randomUUID());
+  lab.send('And the Desktop', crypto.randomUUID());
+  await until(() => pick('done').length > 0);
+  const yous = pick('you');
+  assert.deepEqual(pick('done').map((e) => [e.ok, e.upto]), [[true, yous[1].id]]);
+  assert.deepEqual(pick('reply').map((e) => e.text), ['Both done']);
+  assert.ok(seen.some((e) => e.kind === 'status' && e.label === 'Checking both folders'));
+  lab.close();
+});
+
+test('codex stop before a turn begins leaves it usable', async () => {
+  const { lab, until, pick } = await codexLab(SLOW);
+  lab.send('Tidy Downloads', crypto.randomUUID());
+  await lab.stop();
+  await until(() => pick('done').length > 0);
+  await wait(400);
+  assert.equal(pick('notice').length, 0);
+  assert.equal(lab.status.working, false);
+  lab.send('Tidy Downloads', crypto.randomUUID());
+  lab.send('And the Desktop', crypto.randomUUID());
+  await until(() => pick('reply').length > 0);
+  assert.deepEqual(pick('reply').map((e) => e.text), ['Both done']);
+  lab.close();
+});
+
+test('codex titles', async () => {
+  const { commandTitle } = await import('./codex.ts');
+  assert.equal(commandTitle({ command: "/bin/zsh -lc 'cp ~/Desktop/shot.png ~/TheLab/to-phone/'" }), 'Sending shot.png to your phone');
+  assert.equal(commandTitle({ command: "/bin/zsh -lc 'du -sh ~/Downloads'" }), 'du -sh ~/Downloads');
 });

@@ -323,6 +323,8 @@ async function phone() {
   const adb = join(sdk, 'platform-tools', WIN ? 'adb.exe' : 'adb');
   const serial = adbDevice(adb);
   const sh = (...a: string[]) => run(adb, ['-s', serial, 'shell', ...a]);
+  const sdkLevel = Number(sh('getprop', 'ro.build.version.sdk').out);
+  if (sdkLevel && sdkLevel < 33) fail(`This phone runs Android API ${sdkLevel}, and The Lab needs Android 13 (API 33) or later.`);
 
   const store = keystore(javaHome);
   const project = join(REPO, 'phone');

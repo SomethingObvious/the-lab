@@ -260,11 +260,18 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     else if (e.kind === 'answered') t.answers[e.ref] = e;
     else if (e.kind === 'reply' || e.kind === 'file') t.out.push(e);
     else if (e.kind === 'done') {
+      // `upto` is the last message this run answered. One queued behind it
+      // waits for its own done.
+      let last = settled;
       for (let i = settled + 1; i < items.length; i++) {
         const o = items[i];
-        if (o.type === 'turn' && !o.done) { o.done = e; dirty.add(o); }
+        if (o.type !== 'turn' || o.done) continue;
+        if (e.upto && o.you && o.you.id > e.upto) break;
+        o.done = e;
+        dirty.add(o);
+        last = i;
       }
-      settled = items.length - 1;
+      settled = last;
     }
     byEid.set(String(e.id), t);
     dirty.add(t);
@@ -563,7 +570,8 @@ ${Object.keys(P).map((k) => `.s-${k}{d:${P[k]}}`).join('\n')}
     bar.classList.toggle('asking', !!ask);
     $('now-label').textContent = ask ? 'Needs your OK' : status.label || 'Working';
     $('now-jump').hidden = !ask;
-    const since = Date.parse(cur?.at || status.since);
+    // An ask counts from when it was asked, and work from when the run began.
+    const since = Date.parse(ask ? ask.at : status.since || cur?.at);
     const upd = () => {
       $('now-time').textContent = ask ? `Asked ${mmss(Date.now() - since)} ago` : `Working for ${mmss(Date.now() - since)}`;
       if (!ask && beat++ % 2 === 0) $('now-mark').querySelector('.shape').setAttribute('class', `shape s-${CYCLE[(beat >> 1) % 4]}`);

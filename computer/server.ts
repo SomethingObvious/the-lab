@@ -73,7 +73,8 @@ async function serve() {
     if (name.startsWith('.') || !existsSync(p) || !statSync(p).isFile()) return;
     // Wait until the copy has finished growing.
     for (let size = -1; size !== statSync(p).size;) { size = statSync(p).size; await new Promise((r) => setTimeout(r, 800)); }
-    await lab.sendFile(p);
+    const r = await lab.sendFile(p);
+    if ('isError' in r) lab.store.add({ kind: 'notice', text: `Couldn't send ${name} to your phone. ${r.content[0].text}` });
     rmSync(p, { force: true });
   };
   const sending = new Set<string>();

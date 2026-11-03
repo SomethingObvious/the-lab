@@ -40,7 +40,8 @@ cd source/computer && npm ci
 The server runs his messages through the same kind of agent you are. If you're Claude, use `--engine claude`. If you're Codex, use `--engine codex`.
 
 ```sh
-node setup.ts auth --engine claude
+node setup.ts auth --engine claude   # if you're Claude
+node setup.ts auth --engine codex    # if you're Codex
 ```
 
 The choice is saved, so later steps don't need it again. The Claude engine keeps its own sign-in, so this opens a browser page unless it's already signed in. **He signs in** with the account that has his paid plan and clicks Authorize. The Codex engine shares the Codex app's sign-in, so if he's signed into the app it's already done. Otherwise **he signs in with ChatGPT** on the page that opens.
@@ -106,5 +107,5 @@ When he asks to update The Lab, fetch the newer tag into `~/TheLab/source` the s
 - `node setup.ts check` shows what isn't working.
 - The server log is `~/TheLab/.lab/server.log`.
 - "Signed out" notices on the phone mean `node setup.ts auth` needs running again.
-- To switch between Claude and ChatGPT later, run `node setup.ts auth --engine codex` (or `claude`), then `node setup.ts computer`. The conversation starts fresh on the other one, and the history on the phone stays.
+- To switch between Claude and ChatGPT later, run `node setup.ts auth --engine codex` (or `claude`), then `node setup.ts computer`. It picks up the last conversation it had on that engine, or starts a fresh one, and the history on the phone stays.
 - If the phone says it can't reach the Mac, check that the Mac is awake and on Tailscale, then that Tailscale is connected on the phone.
