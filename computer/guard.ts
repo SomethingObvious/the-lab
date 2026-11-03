@@ -165,6 +165,28 @@ const smuggles = (u: string) => /[?#][^\s]{40,}|\/[A-Za-z0-9+/=_-]{60,}/.test(u)
 const clip = (s: string) => (s.length > 60 ? s.slice(0, 59) + '…' : s);
 const count = (k: number, one: string) => `${k} ${k === 1 ? one : one + 's'}`;
 
+// A folder that holds The Lab's own folder somewhere inside it.
+const above = (p: string, w: Where) => within(w.lab, p) && !same(p, w.lab);
+const globRe = (p: string) => new RegExp('^' + fold(p).replace(/[.+^${}()|\\]/g, '\\$&').replace(/\*\*/g, '\0').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]').replace(/\0/g, '.*') + '$');
+const globReaches = (p: string, w: Where) => /[*?[]/.test(p) && ['config.json', 'tunnel.json'].some((f) => globRe(p).test(fold(`${w.lab}/${f}`)));
+const SEARCH_BLOCK = "That search would reach into The Lab's own folder, where the token that pairs your phone is kept. Search a narrower folder instead.";
+// Reads the files under the folders it's given, hidden ones included.
+// The name as typed, since nameOf folds findstr and Select-String into grep.
+const typed = (argv0: string) => (argv0.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
+const searchesInside = (cmd: string, argv: string[]) =>
+  (typed(argv[0]) === 'findstr' && argv.some((a) => /^\/[a-z]*s[a-z]*$/i.test(a)))
+  || (['grep', 'egrep', 'fgrep'].includes(cmd) && (has(argv, '-r', '-R') || argv.some((a) => /^--(dereference-)?recursive$|^(-d|--directories)=?recurse$/.test(a))))
+  || (['rg', 'ag'].includes(cmd) && argv.some((a) => /^--hidden$|^--unrestricted$|^-u{2,}$|^-\.$/.test(a)))
+  || (cmd === 'find' && argv.some((a) => /^-(exec|execdir|ok|okdir)$/.test(a)));
+// Lists every file under a folder, which a reader after a pipe then opens.
+const listsDeep = (s: Seg) => {
+  const cmd = nameOf(s.argv[0]);
+  return cmd === 'find' || (['get-childitem', 'gci', 'dir', 'ls'].includes(cmd) && s.argv.some((a) => param(a, 'recurse', 1) || a === '-R' || /^\/s$/i.test(a)));
+};
+// In bash a reader after the pipe only sees the names unless xargs opens
+// them. PowerShell hands over the files themselves.
+const opensPiped = (s: Seg) => { const cmd = typed(s.argv[0]); return cmd === 'xargs' || (!!s.ps && /^(select-string|sls|get-content|gc|cat|type)$/.test(cmd)); };
+
 function expand(p: string, w: Where): { path: string; unsure: boolean } {
   const win = /^[a-z]:\//i.test(w.user);
   let s = p.replace(/^~(?=$|[\/\\])/, w.user).replace(/\$\{?HOME\}?|\$env:USERPROFILE|%USERPROFILE%/gi, w.user);
@@ -334,8 +356,11 @@ function command(seg: Seg, w: Where): Judgement {
   const readOnly = (READ.has(cmd) || (!!seg.ps && PS_READ.test(cmd))) && !seg.out.length && !(cmd === 'sed' && has(argv, '-i'));
   const owned = named.find((p) => protectedPath(p.path, w));
   if (owned && !readOnly) return { ...never(`Change ${basename(owned.path)}`, protectedPath(owned.path, w)!, 'change'), touches: [owned.path] };
-  // Searching the whole folder reads the token as surely as naming it does.
-  if (named.some((p) => within(p.path, w.lab) && (TOKEN.test(p.path) || same(p.path, w.lab)))) return { ...never("Read The Lab's token", 'The token that pairs your phone is never read by the agent.', 'read'), secret: true };
+  // Searching the whole folder reads the token as surely as naming it does,
+  // and so does a glob like ~/.the*/config.json.
+  if (named.some((p) => (within(p.path, w.lab) && (TOKEN.test(p.path) || same(p.path, w.lab))) || globReaches(p.path, w))) return { ...never("Read The Lab's token", 'The token that pairs your phone is never read by the agent.', 'read'), secret: true };
+  // findstr /s takes a file pattern and searches every folder under it.
+  if (named.some((p) => above(p.path, w) || (typed(argv[0]) === 'findstr' && above(dirname(p.path), w))) && searchesInside(cmd, argv)) return { ...never("Search The Lab's folder", SEARCH_BLOCK, 'read'), secret: true };
   const secret = named.find((p) => SECRET.test(p.path));
 
   // Sending.
@@ -444,7 +469,12 @@ export function judgeShell(line: string, w: Where, ps = false): Judgement {
   // A cd carries to the commands after it, so relative paths land where they will.
   let cwd = w.cwd;
   const stack: (string | undefined)[] = [];
-  const parts = segments(line, ps).map((s) => {
+  const segs = segments(line, ps);
+  const deep: boolean[] = [];
+  const parts = segs.map((s, i) => {
+    // A recursive listing of a folder above The Lab's, piped into a reader.
+    if (i && s.pipedIn && opensPiped(s) && listsDeep(segs[i - 1]) && deep[i - 1]) return { ...blank(), effect: 'read' as const, plain: "Search The Lab's folder", block: SEARCH_BLOCK, secret: true };
+    if (listsDeep(s)) { const at = args(s.argv); deep[i] = (at.length ? at : [cwd ?? w.home]).some((a) => above(expand(a, { ...w, cwd }).path, w)); }
     const j = command(s, { ...w, cwd });
     const name = nameOf(s.argv[0]);
     if (name === 'cd') {
@@ -520,6 +550,7 @@ export function judge(tool: string, input: Record<string, any>, w: Where): Judge
     return { ...blank(), effect: 'change', touches: [p], plain: `${tool === 'Write' ? 'Write' : 'Edit'} ${basename(p)}${within(p, w.home) ? '' : ` in ${place(p, w)}`}`, block: protectedPath(p, w) ?? undefined };
   }
   if (['Read', 'Glob', 'Grep', 'LS', 'NotebookRead'].includes(tool)) {
+    if (tool === 'Grep' && p && above(p, w)) return { ...blank(), secret: true, touches: [p], plain: "Search The Lab's folder", block: SEARCH_BLOCK };
     if (p && within(p, w.lab) && (TOKEN.test(p) || (tool === 'Grep' && same(p, w.lab)))) return { ...blank(), secret: true, touches: [p], plain: "Read The Lab's token", block: 'The token that pairs your phone is never read by the agent.' };
     if (p && SECRET.test(p)) return { ...blank(), secret: true, touches: [p], plain: `Read ${basename(p)}, which holds a password or key` };
     return blank();

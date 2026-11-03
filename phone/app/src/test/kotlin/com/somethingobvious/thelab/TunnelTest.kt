@@ -71,6 +71,19 @@ class TunnelTest {
         assertThrows(IOException::class.java) { http.newCall(Request.Builder().url("$once/health").header("Connection", "close").build()).execute() }
     }
 
+    @Test fun aDownloadNobodyReadsDoesNotHoldUpTheRest() {
+        assumeTrue("set LAB_TUNNEL_TEST to run against computer/tunnel.ts", conf.isNotEmpty())
+        Tunnel.direct = { true }
+        Tunnel.spec = spec()
+        val port = Tunnel.base().substringAfterLast(':').toInt()
+        java.net.Socket("127.0.0.1", port).use { stuck ->
+            stuck.getOutputStream().write("GET /big HTTP/1.1\r\nHost: lab\r\n\r\n".toByteArray())
+            Thread.sleep(1500)
+            val quick = http.newBuilder().callTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build()
+            assertEquals("ok", quick.newCall(Request.Builder().url(Tunnel.base() + "/health").build()).execute().use { it.body.string() })
+        }
+    }
+
     @Test fun aPairingLinkWithABadAddressIsTurnedDown() {
         val good = JSONObject().put("relay", "https://relay.example.workers.dev").put("room", "r").put("key", Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(65)))
             .put("pass", Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32))).put("lan", JSONArray().put("192.168.0.18:8418"))

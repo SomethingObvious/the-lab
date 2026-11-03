@@ -276,10 +276,14 @@ object Tunnel {
         override fun close() { open = false; socket.cancel() }
     }
 
+    // What the computer sent waits in inbox for the stream's own writer, so a
+    // caller that stops reading holds up only its own stream. The peer's
+    // window keeps inbox under a megabyte.
     private class Stream(val sock: Socket) {
         var unacked = 0L
-        var pending = 0
+        val inbox = LinkedBlockingQueue<ByteArray>()
     }
+    private val ENDED = ByteArray(0)
 
     private class Session(private val link: Link, val spec: Spec, p2c: ByteArray, c2p: ByteArray) {
         private val out = Box(p2c)
@@ -293,6 +297,27 @@ object Tunnel {
             val id = next.getAndAdd(2)
             val st = Stream(sock)
             streams[id] = st
+            // Acks go out once the bytes are written, so they also pace the computer.
+            thread(name = "tunnel-out", isDaemon = true) {
+                var pending = 0
+                var tell = false
+                try {
+                    val out = sock.getOutputStream()
+                    while (true) {
+                        val b = st.inbox.take()
+                        if (b === ENDED) break
+                        out.write(b)
+                        pending += b.size
+                        if (pending >= ACK_EVERY) {
+                            send(id, ACK, ByteBuffer.allocate(4).putInt(pending).array())
+                            pending = 0
+                        }
+                    }
+                } catch (_: Exception) {
+                    tell = true
+                }
+                finish(id, tell)
+            }
             try {
                 send(id, OPEN)
                 val inp = sock.getInputStream()
@@ -317,6 +342,7 @@ object Tunnel {
             val st = streams.remove(id) ?: return
             if (tell && alive) runCatching { send(id, END) }
             runCatching { st.sock.close() }
+            st.inbox.offer(ENDED)
             synchronized(st) { (st as java.lang.Object).notifyAll() }
         }
 
@@ -329,18 +355,10 @@ object Tunnel {
             val type = b.get()
             val st = streams[id] ?: return
             when (type) {
-                DATA -> try {
-                    st.sock.getOutputStream().write(pt, 5, pt.size - 5)
-                    st.pending += pt.size - 5
-                    if (st.pending >= ACK_EVERY) {
-                        send(id, ACK, ByteBuffer.allocate(4).putInt(st.pending).array())
-                        st.pending = 0
-                    }
-                } catch (e: IOException) {
-                    finish(id, true)
-                }
+                DATA -> st.inbox.put(pt.copyOfRange(5, pt.size))
                 ACK -> if (pt.size == 9) synchronized(st) { st.unacked -= b.getInt().toLong() and 0xffffffffL; (st as java.lang.Object).notifyAll() }
-                END -> finish(id, false)
+                // After whatever is still waiting to be written.
+                END -> st.inbox.put(ENDED)
             }
         }
 
