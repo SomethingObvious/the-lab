@@ -105,15 +105,6 @@ export class Room extends DurableObject {
   }
 }
 
-const PAIR = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pair The Lab</title><style>body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:#1d1b20;background:#fdf7ff}
-h1{font-size:1.6rem;line-height:1.2}a{display:inline-block;background:#4419c9;color:#fff;padding:.9rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}
-@media (prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}}</style></head><body>
-<h1>Pair This Phone</h1><p>Tap the button to open The Lab and finish pairing. The code stays on this phone and never reaches this site.</p>
-<p><a id="go" href="#">Open The Lab</a></p>
-<script>document.getElementById('go').href = 'intent://pair?' + location.hash.slice(1) + '#Intent;scheme=thelab;package=com.somethingobvious.thelab;end'; history.replaceState(null, '', '/p');</script>
-</body></html>`;
-
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -122,7 +113,6 @@ export default {
       if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') return new Response('Expected a WebSocket.', { status: 426 });
       return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(req);
     }
-    if (url.pathname === '/p') return new Response(PAIR, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } });
     if (url.pathname === '/') return new Response('The Lab relay.\n');
     return new Response('Not found.\n', { status: 404 });
   },

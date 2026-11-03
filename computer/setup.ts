@@ -454,7 +454,7 @@ async function pair() {
   if (MAC) run('open', [link]);
   else if (WIN) run('explorer.exe', [link]);
   else say(`Open this on the computer: ${link}`);
-  say(config().relay ? 'The pairing code is open in the browser. On the phone, point the camera at the code, open the link it finds and tap Open The Lab. It works once and lasts 10 minutes.'
+  say(config().relay ? 'The pairing code is open in the browser. On the phone, point the camera at the code, and tap the link it finds. It works once and lasts 10 minutes.'
     : 'The pairing code is open in the browser. On the phone, turn Tailscale on, then point the camera at the code and tap the link. It works once and lasts 10 minutes.');
 }
 

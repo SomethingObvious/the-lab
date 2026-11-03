@@ -97,7 +97,7 @@ The first run downloads Java and the Android build tools into `~/.thelab/tools` 
 
 He can turn USB debugging back off afterwards if he likes, though leaving it on makes updates easier.
 
-If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the computer that works once for 10 minutes. He points the phone's camera at it, opens the link, taps Open The Lab and then Pair, and no cable is needed. The link opens a page on the relay, but everything after the `#` stays on the phone.
+If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the computer that works once for 10 minutes. He points the phone's camera at it, taps the link it finds and then Pair, and no cable is needed. The link opens The Lab directly, so nothing in it goes through the relay.
 
 ### Tailscale (Optional)
 

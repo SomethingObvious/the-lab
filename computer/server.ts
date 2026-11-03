@@ -280,12 +280,12 @@ async function serve() {
 
   const tunnel = startTunnel({ dir: DIR, port, relay, lanPort: port + 1, lanHost: process.env.LAB_LAN_HOST });
   const reach = () => ({ kind: 'reach' as const, lan: tunnel.spec().lan, relay: relay ?? null });
-  // Everything the phone needs to find and trust this computer, in the
-  // fragment of the relay's pairing page, which browsers never send to it.
+  // Everything the phone needs to find and trust this computer. The Pixel
+  // camera opens a thelab:// link straight into the app (it won't follow an
+  // intent:// one), so none of it passes through a web page.
   const pairLink = (claim: string) => {
     const s = tunnel.spec();
-    const q = new URLSearchParams({ r: s.relay ?? '', o: s.room, k: s.key, p: s.pass, l: s.lan.join(','), c: claim });
-    return `${(s.relay ?? '').replace(/^ws/, 'http').replace(/\/+$/, '')}/p#${q}`;
+    return `thelab://pair?${new URLSearchParams({ r: s.relay ?? '', o: s.room, k: s.key, p: s.pass, l: s.lan.join(','), c: claim })}`;
   };
 
   // Behind tailscale serve every request carries the Tailscale login it came
@@ -415,7 +415,7 @@ async function serve() {
         const { qrSvg } = await import('./qr.ts');
         const link = relay ? pairLink(code('claim', 10 * 60_000)) : `${readFileSync(urlFile, 'utf8').trim()}/pair?c=${code('scan', 10 * 60_000)}`;
         const img = `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString('base64')}`;
-        return html(res, 200, 'Pair a Phone', `<h1>Point the Phone's Camera at This</h1><p>${relay ? 'Open the link the camera finds, then tap Open The Lab.' : 'Turn on Tailscale on the phone first.'} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`);
+        return html(res, 200, 'Pair a Phone', `<h1>Point the Phone's Camera at This</h1><p>${relay ? 'Tap the link the camera finds and The Lab opens.' : 'Turn on Tailscale on the phone first.'} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`);
       }
       if (req.method === 'GET' && path === '/events') return events(req, res, url);
       if (req.method === 'POST' && path === '/send') {
