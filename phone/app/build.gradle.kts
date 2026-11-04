@@ -34,6 +34,10 @@ android {
     }
 
     buildTypes {
+        // A test build installs beside the real app, so it can't replace his.
+        debug {
+            applicationIdSuffix = ".test"
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
