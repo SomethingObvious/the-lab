@@ -71,8 +71,8 @@ The first sets up `~/TheLab`, installs the login item and starts the server, whi
 
 The computer asks for permission once or twice as the server starts, so he should be at the screen for it.
 
-- On Windows, a Windows Security window asks whether Node.js may communicate on private networks. **He clicks Allow.** That's the encrypted tunnel that lets the phone come straight in over the Wi-Fi. Without it the phone still works through the relay. In Task Manager's Startup apps the server shows up as Console Window Host, from Microsoft, because that's what starts it without a window. Tell him it's The Lab so he doesn't turn it off.
-- On a Mac, it asks whether node may access the Desktop, Documents and Downloads folders. **He clicks Allow on each**, or the agent can't see the files he asks about.
+- On Windows, a Windows Security window asks whether Node.js may communicate on private networks. **He clicks Allow.** That's the encrypted tunnel that lets the phone come straight in over the Wi-Fi. Without it the phone still works through the relay, and if he clicks Cancel by mistake, step 5 notices and fixes it with one Yes. In Task Manager's Startup apps the server shows up as Console Window Host, from Microsoft, because that's what starts it without a window. Tell him it's The Lab so he doesn't turn it off.
+- On a Mac, it asks whether node may access the Desktop, Documents and Downloads folders. **He clicks Allow on each**, or the agent can't see the files he asks about. The step waits for his answers. If he clicks Don't Allow, it opens System Settings at Files and Folders and waits while he switches them on under node.
 
 ## 4. The Relay
 
@@ -90,7 +90,7 @@ Otherwise put up his own. It's a Cloudflare Worker on the free plan, which is fa
 node setup.ts relay
 ```
 
-The first time, a Cloudflare page opens in the browser. **He signs in, or makes a free account, and clicks Allow.** On a brand new account Cloudflare may say a workers.dev subdomain has to be picked first and print a link to its dashboard. Open it with him, have him pick any name, then run the step again. The step checks the relay answers, saves its address and restarts the server.
+The first time, a Cloudflare page opens in the browser. **He signs in, or makes a free account, and clicks Allow.** On a brand new account Cloudflare wants a name for the workers.dev address first. The step opens that page itself and waits while he types any name and clicks Set Up. The step checks the relay answers, saves its address and restarts the server.
 
 If the relay can't go up at all, carry on without it. Pairing still works, and the phone reaches the computer whenever they're on the same Wi-Fi. Running this step later gives the phone the relay without pairing again.
 
@@ -109,7 +109,9 @@ Then:
 node setup.ts phone
 ```
 
-The first run downloads Java and the Android build tools into `~/.thelab/tools` (about 1 GB, 5 to 15 minutes), builds the app with a signing key that stays on this computer, installs it, grants notifications, keeps it running through battery saving, pairs it with this computer and opens it.
+It's fine to start this before he's done with developer mode. It downloads and builds first, then waits up to 10 minutes for the phone and says what it's waiting on, so tell him each thing it prints.
+
+The first run downloads Java and the Android build tools into `~/.thelab/tools` (about 1 GB, 5 to 15 minutes), builds the app with a signing key that stays on this computer, installs it, grants notifications, keeps it running through battery saving, pairs it with this computer and opens it. Then it checks the phone came straight in over the Wi-Fi. If a firewall turned it away, it says so, and on Windows a prompt asks whether The Lab may make changes. **He clicks Yes**, and that opens the tunnel's port to the home Wi-Fi only.
 
 He can turn USB debugging back off afterwards if he likes, though leaving it on makes updates easier.
 

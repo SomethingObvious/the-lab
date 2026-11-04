@@ -68,6 +68,13 @@ const flag = (name: string) => {
 };
 
 const say = (s: string) => console.log(s);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Opens a web page or a settings screen on this computer for him.
+function show(link: string) {
+	if (MAC) run("open", [link]);
+	else if (WIN) run("explorer.exe", [link]);
+	else say(`Open this on the computer: ${link}`);
+}
 function fail(s: string): never {
 	console.error(s);
 	process.exit(1);
@@ -368,6 +375,65 @@ async function computer() {
 			`The server didn't come up within 30 seconds. Its log is ${join(LAB, "server.log")}.`,
 		);
 	say(`The server is running and starts at login. Workspace: ${HOME}`);
+	if (MAC) await folderAccess();
+}
+
+// The server reads Desktop, Documents and Downloads as it starts, which is
+// when macOS asks about each one. A read waits for his answer, so this waits
+// on the server, and a refusal takes him to the switch that undoes it.
+async function folderAccess() {
+	const { port, token } = config();
+	let f: Record<string, string> = {};
+	const ask = async (method = "GET") => {
+		f = await fetch(`http://127.0.0.1:${port}/folders`, {
+			method,
+			headers: { authorization: `Bearer ${token}` },
+		})
+			.then((r) => r.json() as Promise<Record<string, string>>)
+			.catch(() => f);
+	};
+	const waiting = () => Object.values(f).includes("asking");
+	const refused = () =>
+		Object.entries(f)
+			.filter(([, v]) => v === "refused")
+			.map(([k]) => k);
+	await ask();
+	if (waiting()) {
+		say(
+			"macOS is asking whether node may see the Desktop, Documents and Downloads folders. He clicks Allow on each. This waits for him.",
+		);
+		for (let until = Date.now() + 180_000; waiting() && Date.now() < until; ) {
+			await sleep(1000);
+			await ask();
+		}
+		if (waiting())
+			say(
+				"The folder prompts haven't been answered. They may be behind another window, and the agent can't see those folders until they are.",
+			);
+	}
+	if (!refused().length) return;
+	show(
+		"x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
+	);
+	say(
+		`node was turned down for ${refused().join(", ")}, so the agent can't see what's in there. System Settings is open at Files and Folders. He finds node in the list and switches on ${refused().join(", ")}. This waits for him.`,
+	);
+	let restarted = false;
+	for (let until = Date.now() + 300_000; refused().length && Date.now() < until; ) {
+		await sleep(3000);
+		await ask("POST");
+		// macOS can hold on to a refusal for as long as the process runs.
+		if (refused().length && !restarted && Date.now() > until - 240_000) {
+			restarted = true;
+			await restart();
+			await ask("POST");
+		}
+	}
+	if (refused().length)
+		fail(
+			`The agent still can't see ${refused().join(", ")}. Switch them on under node in System Settings, Privacy & Security, Files and Folders, then run node setup.ts computer again.`,
+		);
+	say("node can see the Desktop, Documents and Downloads folders now.");
 }
 
 // ---------- relay ----------
@@ -405,8 +471,24 @@ async function relay() {
 				fail("Cloudflare sign-in didn't finish. Run this step again to retry.");
 		}
 		say("Putting up the relay");
-		const r = wrangler(["deploy"]);
-		const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+		let r = wrangler(["deploy"]);
+		let out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+		// A brand new Cloudflare account has no workers.dev address until he
+		// picks a name for it, and only the dashboard can do that.
+		if (r.status !== 0 && /workers\.dev subdomain/i.test(out)) {
+			show(
+				/https:\/\/dash\.cloudflare\.com\/[^\s"')]+/.exec(out)?.[0] ??
+					"https://dash.cloudflare.com/?to=/:account/workers/onboarding",
+			);
+			say(
+				"Cloudflare needs a name for this account's workers.dev address first, and its page is open in the browser. He types any name (it becomes part of the relay's address) and clicks Set Up. This waits for him.",
+			);
+			for (let until = Date.now() + 600_000; r.status !== 0 && Date.now() < until; ) {
+				await sleep(15_000);
+				r = wrangler(["deploy"]);
+				out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+			}
+		}
 		console.log(out);
 		url = /https:\/\/[\w.-]+\.workers\.dev/.exec(out)?.[0] ?? "";
 		if (r.status !== 0 || !url)
@@ -592,30 +674,37 @@ function keystore(javaHome: string) {
 	return { file, password: readFileSync(pwFile, "utf8").trim() };
 }
 
-function adbDevice(adb: string): string {
-	const out = run(adb, ["devices"])
-		.out.split("\n")
-		.slice(1)
-		.map((l) => l.trim().split(/\s+/))
-		.filter((p) => p.length >= 2);
+// He may still be turning on USB debugging when this gets here, so it waits
+// for the phone and says what it's waiting on rather than failing.
+async function adbDevice(adb: string): Promise<string> {
 	const wanted = flag("serial");
-	const ready = out.filter(
-		([s, state]) => state === "device" && (!wanted || s === wanted),
-	);
-	if (out.some(([, state]) => state === "unauthorized"))
-		fail(
-			'The phone is plugged in but hasn\'t allowed this computer yet. Unlock it and tap Allow on the "Allow USB debugging?" prompt (tick Always allow), then run this again.',
+	let told = "";
+	for (const until = Date.now() + 600_000; ; ) {
+		const out = run(adb, ["devices"])
+			.out.split("\n")
+			.slice(1)
+			.map((l) => l.trim().split(/\s+/))
+			.filter((p) => p.length >= 2);
+		const ready = out.filter(
+			([s, state]) => state === "device" && (!wanted || s === wanted),
 		);
-	if (ready.length > 1)
-		fail(
-			`More than one device is connected (${ready.map((r) => r[0]).join(", ")}). Pass --serial to pick one.`,
-		);
-	return (
-		ready[0]?.[0] ??
-		fail(
-			"No phone found over USB. Plug it in with a data cable, unlock it, and check Developer options > USB debugging is on.",
-		)
-	);
+		if (ready.length > 1)
+			fail(
+				`More than one device is connected (${ready.map((r) => r[0]).join(", ")}). Pass --serial to pick one.`,
+			);
+		const serial = ready[0]?.[0];
+		if (serial) return serial;
+		const now = out.some(([, state]) => state === "unauthorized")
+			? 'The phone is plugged in but hasn\'t allowed this computer yet. He unlocks it and taps Allow on "Allow USB debugging?", with Always allow ticked.'
+			: "No phone yet. He plugs it in with a data cable, unlocks it, and checks Developer options > USB debugging is on. If nothing changes once it's in, the cable may only charge, so try another.";
+		if (now !== told) {
+			told = now;
+			say(now);
+		}
+		if (Date.now() > until)
+			fail(`Still no phone after 10 minutes. ${now.replace(/^No phone yet\. /, "")}`);
+		await sleep(2000);
+	}
 }
 
 async function phone() {
@@ -628,13 +717,6 @@ async function phone() {
 	const javaHome = await jdk();
 	const sdk = await androidSdk(javaHome);
 	const adb = join(sdk, "platform-tools", WIN ? "adb.exe" : "adb");
-	const serial = adbDevice(adb);
-	const sh = (...a: string[]) => run(adb, ["-s", serial, "shell", ...a]);
-	const sdkLevel = Number(sh("getprop", "ro.build.version.sdk").out);
-	if (sdkLevel && sdkLevel < 33)
-		fail(
-			`This phone runs Android API ${sdkLevel}, and The Lab needs Android 13 (API 33) or later.`,
-		);
 
 	const store = keystore(javaHome);
 	const project = join(REPO, "phone");
@@ -669,6 +751,16 @@ async function phone() {
 		"release",
 		"app-release.apk",
 	);
+
+	// After the downloads and the build, so he has had all that time to get
+	// developer mode on.
+	const serial = await adbDevice(adb);
+	const sh = (...a: string[]) => run(adb, ["-s", serial, "shell", ...a]);
+	const sdkLevel = Number(sh("getprop", "ro.build.version.sdk").out);
+	if (sdkLevel && sdkLevel < 33)
+		fail(
+			`This phone runs Android API ${sdkLevel}, and The Lab needs Android 13 (API 33) or later.`,
+		);
 
 	say("Installing on the phone");
 	let inst = run(adb, ["-s", serial, "install", "-r", apk]);
@@ -714,11 +806,95 @@ async function phone() {
 		token,
 	);
 	if (!/result=0/.test(paired.out)) fail(`Pairing didn't take: ${paired.out}`);
+	const opened = sh("date", "+%m-%d %H:%M:%S.000").out.trim();
 	sh("am", "start", "-n", `${PKG}/.MainActivity`);
+	await firewall(adb, serial, opened, port + 1);
 	say(
 		relayUrl
 			? "The app is installed, paired and open on the phone. It reaches this computer straight over Wi-Fi at home and through the relay everywhere else."
 			: "The app is installed, paired and open on the phone. Without a relay it only reaches this computer on the same Wi-Fi, so run `node setup.ts relay` next.",
+	);
+}
+
+const ipNumber = (ip: string) => ip.split(".").reduce((n, x) => n * 256 + Number(x), 0);
+
+// The app logs which way it reached this computer. On the same Wi-Fi it
+// should come straight in, so anything else there means a firewall on this
+// computer turned the tunnel's port down, usually a Cancel on the prompt in
+// step 3. Windows can be put right with one Yes, a Mac only from Settings.
+async function firewall(adb: string, serial: string, since: string, lanPort: number) {
+	const route = async (from: string) => {
+		for (let i = 0; i < 20; i++) {
+			await sleep(1000);
+			const log = run(adb, [
+				"-s",
+				serial,
+				"logcat",
+				"-d",
+				"-T",
+				from,
+				"-s",
+				"Lab:I",
+			]).out;
+			const last = [...log.matchAll(/tunnel: (direct|relay)\s*$/gm)].at(-1)?.[1];
+			if (last) return last;
+		}
+		return "none";
+	};
+	const wifi = /inet (\d+\.\d+\.\d+\.\d+)\/(\d+)/.exec(
+		run(adb, ["-s", serial, "shell", "ip", "-4", "-o", "addr", "show", "wlan0"]).out,
+	);
+	if (!wifi) return;
+	const [, phoneIp = "", bits = "24"] = wifi;
+	const block = 2 ** (32 - Number(bits));
+	const sameWifi = lanAddresses(lanPort).some(
+		(a) =>
+			Math.floor(ipNumber(a.split(":")[0] ?? "") / block) ===
+			Math.floor(ipNumber(phoneIp) / block),
+	);
+	if (!sameWifi || (await route(since)) === "direct") return;
+	if (!WIN) {
+		say(
+			"The phone is on the same Wi-Fi but can't come straight in, so it goes through the relay, which is slower. The Mac's firewall is probably blocking node. In System Settings, Network, Firewall, Options, set node to allow incoming connections.",
+		);
+		return;
+	}
+	say(
+		"The phone is on the same Wi-Fi but Windows blocked it from coming straight in, so it went through the relay. A Windows prompt asks whether to let The Lab make changes. He clicks Yes.",
+	);
+	const node = process.execPath.replace(/'/g, "''");
+	const script = [
+		// Block rules win over allow rules, and a Cancel on the first prompt leaves one for node.
+		`Get-NetFirewallApplicationFilter -Program '${node}' | Get-NetFirewallRule | Where-Object Action -eq Block | Remove-NetFirewallRule`,
+		...["TCP", "UDP"].map(
+			(p) =>
+				`New-NetFirewallRule -DisplayName 'The Lab (${p})' -Direction Inbound -Program '${node}' -Protocol ${p} -LocalPort ${lanPort} -RemoteAddress LocalSubnet -Action Allow -Profile Any | Out-Null`,
+		),
+	].join("; ");
+	const elevated = run("powershell.exe", [
+		"-NoProfile",
+		"-Command",
+		`Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-EncodedCommand','${Buffer.from(script, "utf16le").toString("base64")}'`,
+	]);
+	if (!elevated.ok) {
+		say(
+			"The firewall wasn't changed, so at home the phone keeps going through the relay. It still works, just a bit slower. Run node setup.ts phone again to retry.",
+		);
+		return;
+	}
+	run(adb, ["-s", serial, "shell", "am", "force-stop", PKG]);
+	const again = run(adb, [
+		"-s",
+		serial,
+		"shell",
+		"date",
+		"+%m-%d %H:%M:%S.000",
+	]).out.trim();
+	run(adb, ["-s", serial, "shell", "am", "start", "-n", `${PKG}/.MainActivity`]);
+	say(
+		(await route(again)) === "direct"
+			? "Fixed. The phone now comes straight in over the Wi-Fi."
+			: "The firewall is changed, but the phone still can't come straight in. It works through the relay, and a router that keeps devices apart (guest Wi-Fi often does) would explain it.",
 	);
 }
 
@@ -727,7 +903,7 @@ async function phoneVpn() {
 	const javaHome = await jdk();
 	const sdk = await androidSdk(javaHome);
 	const adb = join(sdk, "platform-tools", WIN ? "adb.exe" : "adb");
-	const serial = adbDevice(adb);
+	const serial = await adbDevice(adb);
 	const r = run(adb, [
 		"-s",
 		serial,
@@ -778,9 +954,7 @@ async function pair() {
 	if (!(await health()))
 		fail("The server is not running. Run `node setup.ts computer` first.");
 	const link = `http://127.0.0.1:${port}/pair?t=${encodeURIComponent(token)}&next=/pair-phone`;
-	if (MAC) run("open", [link]);
-	else if (WIN) run("explorer.exe", [link]);
-	else say(`Open this on the computer: ${link}`);
+	show(link);
 	say(
 		`The pairing code is open in the browser. On the phone, point the camera at the code and tap the link it finds. It works once and lasts 10 minutes.${config().relay ? "" : " With no relay set up, the phone has to be on the same Wi-Fi as this computer, now and later."}`,
 	);

@@ -106,6 +106,8 @@ const login = (req: IncomingMessage) =>
 
 const hasError = (b: unknown): b is { error: string } =>
 	typeof b === "object" && b !== null && "error" in b && typeof b.error === "string";
+const MAC_FOLDERS = ["Desktop", "Documents", "Downloads"];
+
 const json = (res: ServerResponse, status: number, body: unknown) => {
 	res.writeHead(status, {
 		"content-type": "application/json",
@@ -405,12 +407,22 @@ async function serve() {
 	}, 60_000).unref();
 
 	// macOS asks before an app reads these, so the prompts come up while he's
-	// at the computer setting up rather than partway through a task.
-	if (process.platform === "darwin")
-		for (const d of ["Desktop", "Documents", "Downloads"])
-			readdir(join(homedir(), d)).catch(() => {
-				// The agent hears about a refusal when it gets there.
-			});
+	// at the computer setting up rather than partway through a task. A read
+	// waits for his answer, so setup can wait on it too, and a refusal shows
+	// in Check Setup rather than only when the agent gets there.
+	const folders: Record<string, "asking" | "ok" | "refused"> = {};
+	const askFolders = () =>
+		Promise.all(
+			MAC_FOLDERS.map(async (d) => {
+				folders[d] ??= "asking";
+				folders[d] = await readdir(join(homedir(), d)).then(
+					() => "ok" as const,
+					(e: NodeJS.ErrnoException) =>
+						e.code === "EPERM" || e.code === "EACCES" ? "refused" : "ok",
+				);
+			}),
+		);
+	if (process.platform === "darwin") void askFolders();
 
 	// While The Lab is open and in front on the computer and he's using it, the
 	// phone doesn't buzz for what he can already see.
@@ -780,6 +792,14 @@ async function serve() {
 								"One is taken before each task. If this stays, turn on Time Machine in System Settings.",
 						},
 			);
+		const refused = MAC_FOLDERS.filter((d) => folders[d] === "refused");
+		if (refused.length > 0)
+			out.push({
+				ok: false,
+				title: `The agent can't see your ${refused.join(" or ")} folder${refused.length > 1 ? "s" : ""}`,
+				detail:
+					"On the Mac, open System Settings, Privacy & Security, Files and Folders, and switch them on under node.",
+			});
 		const mem = lab.memory();
 		if (mem.chars > mem.cap * 0.8)
 			out.push({
@@ -1100,6 +1120,14 @@ async function serve() {
 		["GET /models", async (_req, res) => json(res, 200, await lab.models())],
 		["POST /model", chooseModel],
 		["POST /app-error", appError],
+		["GET /folders", (_req, res) => json(res, 200, folders)],
+		[
+			"POST /folders",
+			async (_req, res) => {
+				await askFolders();
+				return json(res, 200, folders);
+			},
+		],
 		["POST /name", rename],
 		[
 			"GET /check",
