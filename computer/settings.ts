@@ -33,6 +33,7 @@ export const DEFAULTS: Settings = {
 	effort: null,
 	replies: "normal",
 	statusCard: "tasks",
+	autoUpdate: true,
 };
 
 export function cleanSettings(v: unknown): Settings | null {

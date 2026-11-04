@@ -14,8 +14,10 @@
 //   node setup.ts stop         stop the server, before an update replaces the source
 //   node setup.ts remove       stop the server and take it out of the sign-in items
 //   node setup.ts bundle      build the app as an .aab for Play Console internal testing
+//   node setup.ts desktop      build The Lab's window for this computer and add it to the Start menu or Applications
+//   node setup.ts lint         run the lint rules, type check and tests after a change to The Lab's code
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	chmodSync,
 	cpSync,
@@ -27,7 +29,6 @@ import {
 	realpathSync,
 	renameSync,
 	rmSync,
-	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -46,9 +47,11 @@ import {
 	tailscaleState,
 } from "./checks.ts";
 import { codexBin } from "./codex.ts";
-import { config, home, labDir, setConfig, words } from "./config.ts";
+import { config, home, labDir, setConfig, setting } from "./config.ts";
+import { verify } from "./report.ts";
 import { launchers } from "./trash.ts";
 import { keys, lanAddresses, specOf } from "./tunnel.ts";
+import { fitTemplate, fitted, treeHash } from "./update.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(HERE);
@@ -224,28 +227,29 @@ async function selftest() {
 function workspace() {
 	mkdirSync(HOME, { recursive: true });
 	const template = join(HERE, "template");
+	const fresh = join(LAB, "update", "fitted");
+	fitTemplate(template, fresh);
+	// His app folder and notes are his after the first copy, so they're never
+	// overwritten here. Updates merge into them instead.
 	for (const name of readdirSync(template)) {
-		if (name === "skill") continue;
 		const dest = join(HOME, name);
-		// His app folder and notes are his after the first copy, so they're never overwritten.
-		if (existsSync(dest)) continue;
-		cpSync(join(template, name), dest, { recursive: true });
-		const files = statSync(dest).isDirectory()
-			? readdirSync(dest, { recursive: true }).map((f) => join(dest, String(f)))
-			: [dest];
-		for (const f of files) fitToSystem(f);
+		if (name === "skill" || existsSync(dest)) continue;
+		if (existsSync(join(fresh, name)))
+			cpSync(join(fresh, name), dest, { recursive: true });
+		else writeFileSync(dest, fitted(name, readFileSync(join(template, name))));
 	}
 	// Claude finds project skills in .claude/skills and Codex in .agents/skills.
 	// Copied one by one, since .claude may already be there for other reasons.
-	for (const name of readdirSync(join(template, "skill"))) {
-		for (const where of [".claude", ".agents"]) {
+	for (const where of [".claude", ".agents"])
+		for (const name of readdirSync(join(fresh, where, "skills"))) {
 			const dest = join(HOME, where, "skills", name);
-			if (existsSync(dest)) continue;
-			cpSync(join(template, "skill", name), dest, { recursive: true });
-			for (const f of readdirSync(dest, { recursive: true }))
-				fitToSystem(join(dest, String(f)));
+			if (!existsSync(dest))
+				cpSync(join(fresh, where, "skills", name), dest, { recursive: true });
 		}
-	}
+	// What his folder was copied from, for updates to merge over.
+	const base = join(LAB, "home-base");
+	if (existsSync(base)) rmSync(fresh, { recursive: true, force: true });
+	else renameSync(fresh, base);
 	// Codex reads AGENTS.md where Claude reads CLAUDE.md, so both see one file.
 	const agents = join(HOME, "AGENTS.md");
 	if (!existsSync(agents)) {
@@ -256,18 +260,6 @@ function workspace() {
 		}
 	}
 	config();
-}
-
-// The template is written for both systems. Each copy keeps only the blocks for its
-// own system, and on Windows it names the Recycle Bin.
-function fitToSystem(file: string) {
-	if (!/\.(md|js|html|json|css)$/.test(file)) return;
-	const other = WIN ? "mac" : "windows";
-	const text = readFileSync(file, "utf8")
-		.replace(new RegExp(`<!-- ${other} -->[\\s\\S]*?<!-- end -->\\n?`, "g"), "")
-		.replace(/<!-- (mac|windows|end) -->\n?/g, "")
-		.replace(/\n{3,}/g, "\n\n");
-	writeFileSync(file, words(text));
 }
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
@@ -616,9 +608,14 @@ async function download(url: string, to: string) {
 const sdkLine = (sdk: string) =>
 	`sdk.dir=${sdk.replace(/\\/g, "/").replace(/:/g, "\\:")}\n`;
 
+// Windows' own tar opens zips. The GNU tar that Git Bash puts first on PATH
+// reads C: in a path as a remote host instead.
+const TAR = WIN
+	? join(setting("WINDIR") ?? "C:\\Windows", "System32", "tar.exe")
+	: "tar";
 function extract(archive: string, into: string) {
 	mkdirSync(into, { recursive: true });
-	const r = run("tar", ["-xf", archive, "-C", into], { timeout: 0 });
+	const r = run(TAR, ["-xf", archive, "-C", into], { timeout: 0 });
 	if (!r.ok) fail(`Couldn't unpack ${archive}: ${r.out}`);
 	rmSync(archive, { force: true });
 }
@@ -1007,6 +1004,7 @@ async function check() {
 			? readFileSync(join(LAB, "url"), "utf8").trim()
 			: null,
 		phoneKeystore: existsSync(join(LAB, "phone.jks")),
+		desktopWindow: existsSync(join(LAB, "desktop", "built")),
 	};
 	say(JSON.stringify(status, null, 2));
 }
@@ -1096,8 +1094,215 @@ async function bundle() {
 	say(join(project, "app", "build", "outputs", "bundle", "release", "app-release.aab"));
 }
 
+// Code in the source folder can be fixed in place, and a fix has to pass the
+// same checks as every change to The Lab before any other step runs.
+const STAMP = join(LAB, "source-ok");
+function gate(name: string) {
+	if (["lint", "check", "stop", "remove", "report"].includes(name)) return;
+	const now = treeHash(REPO);
+	if (!existsSync(STAMP)) {
+		mkdirSync(LAB, { recursive: true });
+		writeFileSync(STAMP, now);
+	} else if (readFileSync(STAMP, "utf8") !== now)
+		fail(
+			"The Lab's code changed since it last passed its checks. Run node setup.ts lint, fix everything it lists the way the code around it is written, then run this step again.",
+		);
+}
+function lint() {
+	say("Checking The Lab's code (lint rules, types and tests, about a minute)");
+	const problem = verify(REPO);
+	if (problem) fail(`The code doesn't pass yet, because ${problem}`);
+	writeFileSync(STAMP, treeHash(REPO));
+	say("The code passes the lint rules, the type check and the tests.");
+}
+
+// The Lab's own window on this computer, built here from desktop/ so it's
+// never a download that SmartScreen or Gatekeeper has to vouch for.
+const WEBVIEW2 = {
+	version: "1.0.4258.31",
+	sha256: "56f7f4b8bf9aee4b8efefbbdd4f67d5f74ebd1b100ed0806da71bf76af481aa9",
+};
+async function webview2(): Promise<string> {
+	const dir = join(TOOLS, `webview2-${WEBVIEW2.version}`);
+	if (existsSync(join(dir, "lib"))) return dir;
+	const pkg = join(TOOLS, "webview2.nupkg");
+	await download(
+		`https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/${WEBVIEW2.version}/microsoft.web.webview2.${WEBVIEW2.version}.nupkg`,
+		pkg,
+	);
+	if (
+		createHash("sha256").update(readFileSync(pkg)).digest("hex") !== WEBVIEW2.sha256
+	) {
+		rmSync(pkg, { force: true });
+		fail(
+			"The WebView2 download from nuget.org wasn't the file it should be. Run this again.",
+		);
+	}
+	extract(pkg, dir);
+	return dir;
+}
+// The window holds these files open while it runs, so they're only copied
+// when they changed.
+function copyChanged(from: string, to: string) {
+	if (existsSync(to) && readFileSync(to).equals(readFileSync(from))) return;
+	try {
+		cpSync(from, to);
+	} catch (e) {
+		if (
+			!(e instanceof Error && "code" in e && (e.code === "EBUSY" || e.code === "EPERM"))
+		)
+			throw e;
+		fail("The Lab's window is open on this computer. Close it, then run this again.");
+	}
+}
+// A path inside single quotes in PowerShell.
+const q = (s: string) => s.replace(/'/g, "''");
+async function windowsShell(out: string): Promise<string> {
+	const sdk = await webview2();
+	const arch = process.arch === "arm64" ? "win-arm64" : "win-x64";
+	const lib = join(sdk, "lib", "net462");
+	const refs = [
+		"Microsoft.Web.WebView2.Core.dll",
+		"Microsoft.Web.WebView2.WinForms.dll",
+	];
+	for (const f of refs) copyChanged(join(lib, f), join(out, f));
+	copyChanged(
+		join(sdk, "runtimes", arch, "native", "WebView2Loader.dll"),
+		join(out, "WebView2Loader.dll"),
+	);
+	const csc = join(
+		setting("WINDIR") ?? "C:\\Windows",
+		"Microsoft.NET",
+		"Framework64",
+		"v4.0.30319",
+		"csc.exe",
+	);
+	const next = join(out, "TheLab.new.exe");
+	const built = run(csc, [
+		"-nologo",
+		"-target:winexe",
+		"-optimize+",
+		`-win32icon:${join(REPO, "desktop", "lab.ico")}`,
+		`-out:${next}`,
+		...refs.map((f) => `-r:${join(out, f)}`),
+		"-r:System.Windows.Forms.dll",
+		"-r:System.Drawing.dll",
+		join(REPO, "desktop", "windows", "TheLab.cs"),
+	]);
+	if (!built.ok) fail(`The window didn't build: ${built.out.slice(-2000)}`);
+	const exe = join(out, "TheLab.exe");
+	try {
+		renameSync(next, exe);
+	} catch (e) {
+		if (
+			!(e instanceof Error && "code" in e && (e.code === "EBUSY" || e.code === "EPERM"))
+		)
+			throw e;
+		fail("The Lab's window is open on this computer. Close it, then run this again.");
+	}
+	return exe;
+}
+function macShell(out: string): string {
+	if (!run("xcrun", ["--find", "swiftc"]).ok) {
+		run("xcode-select", ["--install"]);
+		fail(
+			"Building The Lab's window needs Apple's command line tools, and a window on the Mac is asking to install them. Ask him to click Install and wait for it to finish (5 to 10 minutes), then run node setup.ts desktop again.",
+		);
+	}
+	const next = join(out, "The Lab.app");
+	rmSync(next, { recursive: true, force: true });
+	mkdirSync(join(next, "Contents", "MacOS"), { recursive: true });
+	mkdirSync(join(next, "Contents", "Resources"), { recursive: true });
+	const built = run(
+		"xcrun",
+		[
+			"swiftc",
+			"-O",
+			"-o",
+			join(next, "Contents", "MacOS", "TheLab"),
+			join(REPO, "desktop", "mac", "TheLab.swift"),
+		],
+		{ timeout: 300_000 },
+	);
+	if (!built.ok) fail(`The window didn't build: ${built.out.slice(-2000)}`);
+	cpSync(join(HERE, "TheLab.icns"), join(next, "Contents", "Resources", "TheLab.icns"));
+	const pkg = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")) as {
+		version: string;
+	};
+	writeFileSync(
+		join(next, "Contents", "Info.plist"),
+		`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>TheLab</string>
+  <key>CFBundleIdentifier</key><string>${PKG}.desktop</string>
+  <key>CFBundleName</key><string>The Lab</string>
+  <key>CFBundleDisplayName</key><string>The Lab</string>
+  <key>CFBundleIconFile</key><string>TheLab</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>${pkg.version}</string>
+  <key>CFBundleVersion</key><string>${pkg.version}</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>LabDir</key><string>${esc(LAB)}</string>
+</dict>
+</plist>
+`,
+	);
+	run("codesign", ["--force", "--sign", "-", next]);
+	const app = join(homedir(), "Applications", "The Lab.app");
+	mkdirSync(dirname(app), { recursive: true });
+	rmSync(app, { recursive: true, force: true });
+	renameSync(next, app);
+	return join(app, "Contents", "MacOS", "TheLab");
+}
+// Start menu and desktop shortcuts to the window.
+function shortcuts(exe: string) {
+	const link = run("powershell.exe", [
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		`$w = New-Object -ComObject WScript.Shell; foreach ($d in [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop')) { $s = $w.CreateShortcut((Join-Path $d 'The Lab.lnk')); $s.TargetPath = '${q(exe)}'; $s.WorkingDirectory = '${q(dirname(exe))}'; $s.Description = 'Text the agent on this computer'; $s.Save() }`,
+	]);
+	if (!link.ok) fail(`Couldn't add The Lab to the Start menu: ${link.out}`);
+}
+async function desktop() {
+	if (!(WIN || MAC)) fail("The Lab's window is for Windows and macOS.");
+	if (!(await health(30_000)))
+		fail(
+			"The server isn't running, so the window has nothing to show. Run node setup.ts computer first.",
+		);
+	const out = join(LAB, "desktop");
+	mkdirSync(out, { recursive: true });
+	const bin = WIN ? await windowsShell(out) : macShell(out);
+	// The window opens off screen, signs in and says what it found.
+	const shot = join(out, "check.png");
+	rmSync(`${shot}.txt`, { force: true });
+	run(bin, ["--check", shot], { timeout: 90_000 });
+	const found = existsSync(`${shot}.txt`) ? readFileSync(`${shot}.txt`, "utf8") : "";
+	if (!found.includes('platform "desktop"'))
+		fail(
+			`The window built but didn't open the app. ${found ? `It found: ${found.trim()}` : "It didn't answer within 90 seconds."} A picture of what it showed is at ${shot}.`,
+		);
+	writeFileSync(join(out, "built"), treeHash(join(REPO, "desktop")));
+	if (args.includes("--quiet")) return;
+	if (WIN) shortcuts(bin);
+	if (WIN) run("explorer.exe", [bin]);
+	else run("open", [dirname(dirname(dirname(bin)))]);
+	say(
+		WIN
+			? "The Lab's window is open, and it's in the Start menu and on the desktop as The Lab."
+			: "The Lab's window is open, and it's in Applications as The Lab. It can go in the Dock from there.",
+	);
+	say(`A picture of the check is at ${shot}.`);
+}
+
 const steps: Record<string, () => Promise<void>> = {
 	check,
+	desktop,
+	lint: async () => lint(),
 	auth: async () => auth(),
 	computer,
 	workspace: async () => workspace(),
@@ -1113,4 +1318,5 @@ const steps: Record<string, () => Promise<void>> = {
 };
 const step = steps[process.argv[2] ?? ""];
 if (!step) fail(`Usage: node setup.ts ${Object.keys(steps).join("|")}`);
+gate(process.argv[2] ?? "");
 await step();

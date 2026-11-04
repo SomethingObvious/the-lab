@@ -16,6 +16,7 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 - A login item that keeps the server running. On a Mac it's `~/Library/LaunchAgents/com.somethingobvious.thelab.plist`, which starts `~/.thelab/The Lab.app`, a small app holding Node so macOS names The Lab in its prompts and settings. On Windows it's a `TheLab` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which starts it hidden when he signs in.
 - A relay on Cloudflare's free plan, unless he was given the address of one that's already up.
 - The Lab on the phone, built on this computer and installed over a USB cable.
+- The Lab's window on the computer, built here too. It's `~/.thelab/desktop/TheLab.exe` with shortcuts in the Start menu and on the desktop on Windows, and `~/Applications/The Lab.app` on a Mac. That's a different app from the one in `~/.thelab` that the server runs in, and only the server's one needs Full Disk Access.
 
 Nothing is exposed to the internet. The server itself listens only on the computer, and the phone reaches it through an encrypted tunnel. The tunnel listens on the home Wi-Fi so the phone can come straight in when they share one, and goes through the relay otherwise. It also answers a phone on the Wi-Fi that asks where the computer went, with nothing but its port, so a new address from the router doesn't break the link. The keys come from pairing and never leave the two devices, so neither the Wi-Fi nor the relay can read or change anything that passes.
 
@@ -68,6 +69,14 @@ node setup.ts selftest
 ```
 
 The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the computer awake while it's plugged in (it uses `caffeinate -s` on a Mac and `SetThreadExecutionState` on Windows, so on battery it sleeps as usual, except while a task is running). Tell him that, since it's a change he'd otherwise notice. The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
+
+Then build The Lab's window for the computer:
+
+```sh
+node setup.ts desktop
+```
+
+It builds a small native window around the system's own web view, opens it off screen to check it signs in and draws the app, then opens it for him. On Windows it downloads Microsoft's WebView2 SDK from nuget.org (about 10 MB, checked against a fixed hash) and compiles with the C# compiler Windows already has, which takes a few seconds. On a Mac it compiles with Swift, which needs Apple's command line tools. If they're missing, the step opens Apple's installer and stops. **He clicks Install**, it takes 5 to 10 minutes, and then run the step again. Tell him the window is there for when he's at the computer, that it's the same app as the phone, and that closing it doesn't stop anything.
 
 The computer asks for permission once or twice as the server starts, so he should be at the screen for it.
 
@@ -135,7 +144,19 @@ On Android he can also make The Lab the phone's assistant (Settings, Apps, Defau
 
 ## Updating
 
-Updates run from the Claude or Codex app on the computer, because the agent on the phone can't write to `~/.thelab`. First run `node setup.ts stop` from the current `source/computer`, since Windows won't replace files the running server holds open. Unpack the newer tag next to it as `source.new` and run `npm ci` in `source.new/computer`. Then rename `source` to `source.old` and `source.new` to `source`, and run `node setup.ts computer` from the new one to start the server again. Delete `source.old` once that works. His `~/TheLab/app` is never touched. Then compare `source/computer/template/CLAUDE.md` with `~/TheLab/CLAUDE.md` and add any sections his copy is missing, keeping his own changes. Setup already adds any other template file he doesn't have. If anything under `source/phone` changed, plug the phone in and run `node setup.ts phone` again. The app keeps its history and pairing across updates.
+The server updates itself, with no agent involved. Twice a day it asks GitHub for the newest release tag, which needs `gh` signed in while the repository is private. A newer one gets merged with whatever was changed in `~/.thelab/source` since the last release, three ways and line by line, so a fix made here survives the update. Then it runs the tests on the merged copy at low priority, swaps it in while the agent is idle and restarts. If the new version exits within a minute of starting three times in a row before it settles, the supervisor puts the old one back and won't try that version again. The same merge runs over `~/TheLab`, so new template sections reach his `CLAUDE.md` and his app without losing his changes. Anything that can't merge cleanly stays as he had it, with the new version beside it in `~/TheLab/.lab-update/` for the agent to bring together.
+
+He can check or install from Settings, Updates on the phone, and turn off installing by itself there too. The one thing an update can't do alone is the phone app. If anything under `phone/` changed, plug the phone in and run `node setup.ts phone` again. It keeps its history and pairing.
+
+## When The Lab's Own Code Is Wrong
+
+If a step fails because of a bug in The Lab rather than something on this computer, fix it in `~/.thelab/source` and send the fix up. These rules are the same ones every change to The Lab is held to, and setup enforces them.
+
+- Fix the cause, in the smallest change that does it. Don't add a retry, a timeout, a try/catch or a special case that makes the symptom go away while the cause stays.
+- Match the file you're in, its names, its layout and the way it handles errors. Search for an existing helper before writing one.
+- Never switch a lint rule off, add a suppression comment, loosen a type to `any`, skip or weaken a test, or leave a `TODO`.
+- Once the code changes, every setup step except `check`, `lint`, `stop` and `remove` refuses to run until `node setup.ts lint` passes. It runs the lint rules with warnings counted, the type check and the tests, which takes 20 or so seconds. Fix what it lists the way the code around it is written, then run it again.
+- Then send the fix with `report "What's wrong, in a few words" "What happened and what you changed"` from `source/computer`. It opens a pull request on SomethingObvious/the-lab, and an issue with the change written out when it can't. Without `gh` signed in it saves the report in `~/.thelab/reports` instead. Ask him before sending it, since it goes out under his GitHub account.
 
 ## When Something's Wrong
 

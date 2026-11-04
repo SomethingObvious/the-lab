@@ -397,7 +397,8 @@ const SECRET =
 // Both NTFS and the computer's APFS ignore case, so every match here does too.
 // tunnel.json holds the keys that would let it pose as this computer to the
 // phone, which then hands over the token.
-const TOKEN = /config\.json$|tunnel\.json$|password$|\.jks$/i;
+const TOKEN =
+	/config\.json$|tunnel\.json$|password$|\.jks$|[\\/]desktop[\\/]data([\\/]|$)/i;
 
 interface Seg {
 	argv: string[];
@@ -1378,6 +1379,19 @@ function webRequest({ cmd, argv, line, j }: Call): Judgement | undefined {
 	};
 }
 
+// The Lab's own report command, which posts to its GitHub repository.
+function reporting({ cmd, argv, j }: Call): Judgement | undefined {
+	if (cmd !== "report" || argv.includes("--copy")) return undefined;
+	return {
+		...j,
+		effect: "send",
+		leaves: true,
+		undo: "no",
+		touches: ["github.com"],
+		plain: "Send a problem report or a fix to The Lab on GitHub",
+	};
+}
+
 function sending({ cmd, sub, argv, rest, line, j }: Call): Judgement | undefined {
 	if (cmd === "send-mailmessage")
 		return { ...j, effect: "send", leaves: true, undo: "no", plain: "Send an email" };
@@ -1661,6 +1675,7 @@ function command(seg: Seg, w: Where): Judgement {
 		touchesLab(c, named) ??
 		curl(c) ??
 		webRequest(c) ??
+		reporting(c) ??
 		sending(c) ??
 		appleScript(c) ??
 		installing(c) ??

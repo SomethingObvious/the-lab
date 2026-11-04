@@ -36,7 +36,7 @@ import {
 import { z } from "zod";
 import { Codex } from "./codex.ts";
 import { saveFile, setting, WIN, words } from "./config.ts";
-import { checkApp } from "./design.ts";
+import { checkApp, published } from "./design.ts";
 import { type Judgement, judge, needsOk, type Where } from "./guard.ts";
 import { awake, type Mac, snapshot } from "./mac.ts";
 import { CAP, diff, type Memory, parse, render, suspect } from "./memory.ts";
@@ -56,7 +56,7 @@ type Listener = (e: Ev | Live) => void;
 export type Live =
 	| Mac
 	| {
-			kind: "status" | "design" | "shortcuts" | "settings" | "reach";
+			kind: "status" | "design" | "shortcuts" | "settings" | "reach" | "update";
 			[k: string]: unknown;
 	  };
 export interface Attached {
@@ -517,7 +517,7 @@ export class Lab {
 		text: string,
 		cid: string,
 		files: Attached[] = [],
-		scheduled?: { label: string; quiet?: boolean },
+		scheduled?: { label: string; quiet?: boolean; about?: string },
 	): boolean {
 		if (this.seen.has(cid)) return false;
 		this.seen.add(cid);
@@ -553,7 +553,7 @@ export class Lab {
 				? `${text}\n\nHe attached ${files.length === 1 ? "a file" : `${files.length} files`} from his phone:\n${list}`.trim()
 				: text;
 		if (scheduled)
-			content = `This is "${scheduled.label}", a scheduled message from schedules.json, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.${scheduled.quiet ? " If there is nothing worth telling him, reply with exactly [SILENT] and he won't be notified." : ""}\n\n${content}`;
+			content = `This is "${scheduled.label}", ${scheduled.about ?? "a scheduled message from schedules.json"}, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.${scheduled.quiet ? " If there is nothing worth telling him, reply with exactly [SILENT] and he won't be notified." : ""}\n\n${content}`;
 		const notes = [...this.notes, this.memoryNote(), REPLIES[this.replies]]
 			.filter(Boolean)
 			.join(" ");
@@ -840,7 +840,11 @@ export class Lab {
 			file &&
 			resolve(file).startsWith(resolve(app) + sep)
 		) {
-			const problem = checkApp(app, resolve(file));
+			const problem = checkApp(
+				app,
+				resolve(file),
+				published(join(this.opts.dir, "design-history")),
+			);
 			if (problem)
 				return {
 					hookSpecificOutput: {

@@ -59,6 +59,9 @@ repos:
         language: pygrep
         entry: biome-ignore|oxlint-disable|eslint-disable|@ts-ignore|@ts-expect-error|@ts-nocheck|@Suppress\(|@SuppressLint|tools:ignore
         types_or: [javascript, ts, html, css, kotlin, xml]
+        # The app gate looks for these comments in app/, so its code and its
+        # test have to spell them out.
+        exclude: ^computer/(design|test)\.ts$
       - id: biome
         name: Biome
         language: system

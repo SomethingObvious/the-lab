@@ -6,7 +6,7 @@ This folder is the workspace for The Lab. Messages typed into The Lab on the own
 
 ## What's Here
 
-- `app/` is the phone app's interface, a plain web page (HTML, CSS and JavaScript). Whatever you save here reaches the phone within a couple of seconds.
+- `app/` is the app's interface, a plain web page (HTML, CSS and JavaScript). The phone shows it, and so does The Lab's window on this computer, so whatever you save here reaches both within a couple of seconds.
 - `DESIGN.md` is the design system for `app/`. Read it before changing anything there.
 - `settings.json` holds his settings for the app: the widgets in the top bar (`topBar`, a list of `{ id, size }`), the theme, text size, which model you run on (`model`, or `null` for the default), how hard you think (`effort`, `low`, `high` or `null` for normal), how long your replies run (`replies`, `short`, `normal` or `long`), whether the status card in his notifications comes back after he swipes it away (`statusCard`, `tasks` for each new task, `always` or `never`) and the rest. The server applies `effort` and `replies` on your next turn. The Settings sheet on the phone writes it, and a change you make here reaches the phone within a second.
 - `shortcuts.json` holds the one-tap shortcuts shown in the app, as a list of `{ "id", "label", "text" }`. When he asks for a shortcut, add it here and it shows up on the phone within a second. Keep labels to a few words.
@@ -72,6 +72,8 @@ These rules keep the app working on the phone.
 - Show every link's real address next to it. Link text can say anything, and the address is how he can tell where it goes.
 - Keep the page fast. It's a phone, so no frameworks or build step, and nothing animating on a loop except the working loaders and the mark that waits on him, as DESIGN.md says.
 
+Every change to `app/` has to pass `check-app`, the same lint rules every change to The Lab passes, and the change-the-app skill has the rest of the rules for writing it. A change that adds a finding stays on this computer until it's fixed.
+
 To look at a change, open the link in `~/.thelab/preview-link` in a browser on this computer. It shows the same page, live, with the same `window.lab` as the phone, but it can only look, so sending, answering and saving settings don't work there. The link changes each time The Lab restarts.
 
 ## Memory
@@ -111,7 +113,7 @@ The page talks to the phone and the server only through `window.lab`, which is t
 | `lab.reportError(message, where)` | Reports an error the page caught itself, so it reaches you. Errors it doesn't catch are reported anyway. |
 | `lab.onBack(fn)` | Set it only while something is open that back should close, and pass `null` once it's closed, so back can leave the app with the system's own animation. |
 | `lab.ready()` | Tells the phone the page has drawn. |
-| `lab.platform` | `'android'` on the phone, `'web'` in a browser. |
+| `lab.platform` | `'android'` on the phone, `'desktop'` in The Lab's window on this computer, `'web'` in a browser. |
 
 The routes for `lab.call` are these.
 
@@ -180,4 +182,15 @@ If he asks about his email, calendar or files in Google Drive and you have no to
 
 ## Updating The Lab
 
-You can't update The Lab from here, since its code sits in `~/.thelab/`. When he asks, tell him to open the Claude or Codex app on the computer and say "update The Lab", which follows the Updating section of `~/.thelab/source/SETUP.md`.
+The Lab looks for a new version twice a day by itself and installs it while you aren't working. It merges the new version with any changes made here, in the app and in this file, and runs its tests before it goes in. A version that won't start is put back. He can see where it's at, or check now, in Settings under Updates. A change of his that the update couldn't merge is kept as it was, with the new version saved beside it in `.lab-update/`, and you'll get a note saying which files those are. Bring the two together the way he'd want, then delete the copy.
+
+## When The Lab Itself Is Wrong
+
+Sometimes the problem isn't in `app/` but in The Lab's own code, the server in `~/.thelab/source`, which you can't change from here. Fix it in a copy and send the fix to the people who make The Lab.
+
+1. Run `report --copy lab-fix`, which copies The Lab's code into `lab-fix/` here.
+2. Fix the cause in `lab-fix/`, with the same rules as for `app/`. Keep it to the one problem and match the code around it.
+3. Run `report "What's wrong, in a few words" "What happened and what you changed" --from lab-fix`. It runs The Lab's lint rules, its type check and its tests first and refuses a fix that fails any of them, so fix what it lists and run it again. It sends the fix as a pull request, or as an issue when it can't go up as one. Sending it asks him first, like an email.
+4. Delete `lab-fix/` with `trash` once it's sent. The fix reaches this computer with the next update.
+
+For a problem you can't fix, run `report` with the title and what happened and no `--from`, which opens an issue instead.

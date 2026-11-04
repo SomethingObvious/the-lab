@@ -15,11 +15,13 @@ import {
 import { readdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { extname, join, resolve, sep } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import process, { env } from "node:process";
 import { pipeline } from "node:stream";
+import { fileURLToPath } from "node:url";
 import type { tailscaleState } from "./checks.ts";
 import { config, home, labDir, saveFile, setConfig, setting, words } from "./config.ts";
+import type { Live } from "./lab.ts";
 import { awake, type Mac } from "./mac.ts";
 import {
 	cleanSchedules,
@@ -33,6 +35,18 @@ import {
 import { cleanSettings, DEFAULTS, type Settings } from "./settings.ts";
 import { launchers } from "./trash.ts";
 import { startTunnel } from "./tunnel.ts";
+import {
+	apply,
+	bad,
+	confirm,
+	desktopStale,
+	latest,
+	onTrial,
+	prepare,
+	rollback,
+	syncHome,
+	work,
+} from "./update.ts";
 
 const TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -223,6 +237,10 @@ const glance = (m: Mac | null) =>
 		Math.round(m.cpu / 5),
 	]);
 
+const SOURCE = dirname(dirname(fileURLToPath(import.meta.url)));
+// What the child exits with when an update is ready and the agent is idle.
+const INSTALL = 75;
+
 if (setting("LAB_CHILD")) serve();
 else supervise();
 
@@ -243,6 +261,7 @@ function supervise() {
 
 	let child: ReturnType<typeof spawn> | null = null;
 	let quickExits = 0;
+	let trialExits = 0;
 	const run = () => {
 		const started = Date.now();
 		child = spawn(process.execPath, process.argv.slice(1), {
@@ -251,6 +270,27 @@ function supervise() {
 		});
 		child.on("exit", (code, signal) => {
 			child = null;
+			const at = new Date().toISOString();
+			if (code === INSTALL) {
+				try {
+					console.error(`${at} installed v${apply(SOURCE, labDir())}`);
+				} catch (e) {
+					console.error(
+						`${at} the update didn't go in, so nothing changed: ${(e as Error).message}`,
+					);
+				}
+				setTimeout(run, 500);
+				return;
+			}
+			// This process still runs the code from before the update, so it can
+			// put that back when the new server won't stay up.
+			if (onTrial(labDir()) && Date.now() - started < 60_000 && ++trialExits >= 3) {
+				rollback(SOURCE, labDir());
+				trialExits = 0;
+				console.error(
+					`${at} the update kept stopping, so the version before it is back`,
+				);
+			}
 			quickExits = Date.now() - started < 10_000 ? quickExits + 1 : 0;
 			const wait = Math.min(2000 * 2 ** quickExits, 60_000);
 			console.error(
@@ -271,7 +311,7 @@ function supervise() {
 async function serve() {
 	// Loaded here so the supervisor never pays for the SDK.
 	const { Lab } = await import("./lab.ts");
-	const { Design } = await import("./design.ts");
+	const { Design, checkApp, published } = await import("./design.ts");
 	const { mac, idle } = await import("./mac.ts");
 	const { token, port, engine, relay } = config();
 	const Home = home();
@@ -361,6 +401,44 @@ async function serve() {
 	};
 	sweep();
 	setInterval(sweep, 60_000).unref();
+	try {
+		const { held } = syncHome(
+			Home,
+			join(SOURCE, "computer", "template"),
+			join(Dir, "home-base"),
+			(dir) => checkApp(dir, undefined, published(join(Dir, "design-history"))),
+		);
+		if (held.length > 0)
+			lab.note(
+				`An update to The Lab changed ${held.join(", ")}, and those clash with changes made here, so they were left as they are. The update's versions are in .lab-update/ in the Lab folder. Bring their changes in, keeping his look, the next time he asks for something in the app.`,
+			);
+	} catch (e) {
+		console.error("template update:", e);
+	}
+	// An update that changed the window's code builds it again. If the window
+	// is open the build waits for the next start.
+	if (desktopStale(SOURCE, Dir)) {
+		const build = spawn(
+			process.execPath,
+			[join(SOURCE, "computer", "setup.ts"), "desktop", "--quiet"],
+			{
+				cwd: join(SOURCE, "computer"),
+				windowsHide: true,
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		);
+		let said = "";
+		build.stdout.on("data", (d) => {
+			said += d;
+		});
+		build.stderr.on("data", (d) => {
+			said += d;
+		});
+		build.on("close", (status) => {
+			if (status !== 0) console.error(`desktop window build: ${said.trim()}`);
+		});
+	}
+
 	// A change to app/ that can't run stays on the computer. The agent hears why,
 	// and he hears about it once the turn is over.
 	let told = "";
@@ -374,9 +452,45 @@ async function serve() {
 		},
 		(problem) => lab.note(`${Held} from the phone because ${problem} Fix that first.`),
 	);
+	// A problem in app/ gets a repair turn of its own once the agent is free,
+	// so the app heals without him asking. One try per problem and four a day,
+	// so a fix that doesn't take can't go round and round.
+	// ponytail: the count resets on a restart, keep it in state.json if a crash loop ever meets a broken app.
+	const repairs: number[] = [];
+	const tried = new Set<string>();
+	const toRepair: string[] = [];
+	const repair = (problem: string) => {
+		const now = Date.now();
+		while (now - (repairs[0] ?? now) > 86_400_000) repairs.shift();
+		if (tried.has(problem) || repairs.length >= 4) return false;
+		tried.add(problem);
+		repairs.push(now);
+		toRepair.push(problem);
+		setImmediate(startRepair);
+		return true;
+	};
+	const startRepair = () => {
+		const problem = toRepair.shift();
+		if (problem === undefined || lab.status.working) {
+			if (problem !== undefined) toRepair.unshift(problem);
+			return;
+		}
+		lab.send(
+			`The app reported a problem: ${problem}\n\nFix it now without waiting for him. Read the change-the-app skill first, find the cause in app/ and make the smallest change that fixes it, written the way the code around it is written. Run check-app before you finish and fix everything it lists, since the phone only takes a version that passes. If the cause isn't in app/, change nothing. Then say in one sentence what was wrong and what you changed.`,
+			randomUUID(),
+			[],
+			{
+				label: "Self-Repair",
+				quiet: true,
+				about: "a repair the server started by itself",
+			},
+		);
+	};
 	lab.store.listen((e) => {
+		if (e.kind === "done") setImmediate(startRepair);
 		if (e.kind !== "done" || !design.broken || told === design.broken) return;
 		told = design.broken;
+		if (repair(`a change to app/ was held back because ${design.broken}`)) return;
 		// After this done has reached every listener, so it keeps the lower id.
 		setImmediate(() =>
 			lab.store.add({
@@ -1026,14 +1140,83 @@ async function serve() {
 			lab.note(
 				`Your last change to app/ stopped the phone app from opening (${text}), so the server put the version before it back. Find what broke before trying again.`,
 			);
+			repair(
+				`the last change to app/ stopped the app from opening (${text}), so the version before it is back. Find what broke, then make that change again so it works`,
+			);
 		} else if (!reported.has(text) && reported.size < 20) {
 			reported.add(text);
 			lab.note(
 				`The phone app hit an error in ${String(where ?? "the page").slice(0, 80)}: "${text}". If it comes from a change you made to app/, fix it.`,
 			);
+			repair(`${String(where ?? "the page").slice(0, 80)} threw "${text}"`);
 		}
 		return json(res, 200, {});
 	};
+
+	// Updates come from GitHub with no agent involved. A release is merged,
+	// installed and tested in update/trial, then put in while the agent is idle.
+	let update: Live & { kind: "update" } = {
+		kind: "update",
+		state: "idle",
+		current: pkg.version,
+	};
+	const setUpdate = (change: Record<string, unknown>) => {
+		update = { ...update, ...change, at: new Date().toISOString() };
+		lab.store.live(update);
+	};
+	let preparing: Promise<void> | null = null;
+	const checkUpdate = () => {
+		preparing ??= (async () => {
+			try {
+				setUpdate({ state: "checking", detail: "" });
+				const v = await latest(pkg.version);
+				if (!v || v === bad(Dir)) {
+					setUpdate({
+						state: "current",
+						version: null,
+						detail: v
+							? `v${v} kept stopping on this computer, so the version before it is back. The next release tries again.`
+							: "",
+					});
+					return;
+				}
+				setUpdate({ state: "preparing", version: v, detail: "Downloading" });
+				await prepare(v, SOURCE, Dir, (detail) => setUpdate({ detail }));
+				setUpdate({ state: "ready", detail: "" });
+				installWhenIdle();
+			} catch (e) {
+				setUpdate({ state: "failed", detail: (e as Error).message });
+			} finally {
+				preparing = null;
+			}
+		})();
+		return preparing;
+	};
+	const install = () => {
+		if (update["state"] !== "ready" || lab.status.working) return false;
+		setUpdate({ state: "installing", detail: "" });
+		lab.save();
+		setTimeout(() => process.exit(INSTALL), 300);
+		return true;
+	};
+	const installWhenIdle = () => {
+		if (settings["autoUpdate"] !== false) install();
+	};
+	lab.store.listen((e) => {
+		if (e.kind === "done" && update["state"] === "ready")
+			setTimeout(installWhenIdle, 60_000);
+	});
+	setTimeout(checkUpdate, 2 * 60_000).unref();
+	setInterval(checkUpdate, 12 * 3_600_000).unref();
+	if (onTrial(Dir))
+		setTimeout(() => {
+			const t = confirm(Dir);
+			if (!t) return;
+			lab.store.add({
+				kind: "notice",
+				text: `The Lab updated itself to v${t.version}.${t.conflicts.length > 0 ? ` Changes made on this computer to ${t.conflicts.slice(0, 3).join(", ")} clashed with it, so the release's version is in and the old one is kept in ${join(work(Dir), "conflicts")}.` : ""}`,
+			});
+		}, 120_000).unref();
 
 	const rename: Route = async (req, res) => {
 		const { name } = await readBody(req);
@@ -1082,6 +1265,24 @@ async function serve() {
 		],
 		// Setup calls this after an update or a new relay. The supervisor
 		// starts a fresh child, which reads the new code and config.
+		["GET /update", (_req, res) => json(res, 200, update)],
+		[
+			"POST /update",
+			async (req, res) => {
+				const { action } = await readBody(req);
+				if (action === "install")
+					return install()
+						? json(res, 202, update)
+						: json(res, 409, {
+								error:
+									update["state"] === "ready"
+										? "The agent is working, so the update goes in once it's done."
+										: "There's no update ready to install.",
+							});
+				checkUpdate();
+				return json(res, 202, update);
+			},
+		],
 		[
 			"POST /restart",
 			(_req, res) => {

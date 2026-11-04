@@ -36,6 +36,7 @@ const DefaultSettings = {
 	modelChip: true,
 	effort: null,
 	replies: "normal",
+	autoUpdate: true,
 };
 let settings = { ...DefaultSettings };
 
@@ -455,6 +456,10 @@ function take(e) {
 		case "mac":
 			mac = e;
 			drawGlance();
+			return;
+		case "update":
+			updates = e;
+			if (sheetKind === "updates") drawUpdates();
 			return;
 		case "settings": {
 			const was = settings;
@@ -1539,6 +1544,18 @@ const Settings = [
 	},
 	{
 		type: "open",
+		label: "Updates",
+		hint: () => updateLine(),
+		open: () => openUpdates(),
+	},
+	{
+		key: "autoUpdate",
+		type: "switch",
+		label: "Install Updates by Themselves",
+		hint: "While the agent isn't working. One that won't start is put back.",
+	},
+	{
+		type: "open",
 		label: "Rename This Computer",
 		hint: () => mac?.name || "",
 		open: () => openRename(),
@@ -1771,6 +1788,51 @@ async function pickModel(id) {
 		);
 	}
 }
+// Where The Lab's own update is, from the computer.
+let updates = null;
+function updateLine() {
+	const u = updates;
+	if (!u) return "";
+	if (u.state === "checking") return "Checking for a new version";
+	if (u.state === "preparing")
+		return `Getting v${u.version} ready: ${u.detail || "working"}`;
+	if (u.state === "ready") return `v${u.version} is ready to install`;
+	if (u.state === "installing") return `Installing v${u.version}`;
+	if (u.state === "failed") return `The last check didn't work. ${u.detail}`;
+	return u.detail || `Up to date with v${u.current}`;
+}
+async function openUpdates() {
+	openSheet("updates", "Updates", "", closeBtn);
+	drawUpdates();
+	try {
+		updates = await call("GET", "/update");
+	} catch (err) {
+		if (sheetKind === "updates") setHTML($("sheet-body"), offline(err));
+		return;
+	}
+	if (sheetKind === "updates") drawUpdates();
+}
+function drawUpdates() {
+	const u = updates;
+	const busy = u && ["checking", "preparing", "installing"].includes(u.state);
+	setHTML(
+		$("sheet-body"),
+		`<p class="hint">The computer looks for a new version of The Lab twice a day. It merges it with any changes made here, tests it, and only then puts it in.</p>
+      <div class="set-list"><div class="set-row"><span class="set-text"><b>${esc(u ? `This is v${u.current}` : "Asking the computer")}</b><span>${esc(updateLine())}</span></span></div></div>`,
+	);
+	setHTML(
+		$("sheet-actions"),
+		`${closeBtn}${u?.state === "ready" ? '<button type="button" class="primary" data-updateinstall>Install Now</button>' : `<button type="button" class="primary" data-updatecheck${busy ? " disabled" : ""}>Check Now</button>`}`,
+	);
+}
+async function askUpdate(action) {
+	try {
+		updates = await call("POST", "/update", { action });
+		if (sheetKind === "updates") drawUpdates();
+	} catch (err) {
+		toast(err.message || "Couldn't reach the computer.", true);
+	}
+}
 let memo = null;
 let plan = null;
 let rules = null;
@@ -1788,6 +1850,7 @@ function openMenu() {
       ${menuRow("allowed", "shield", "Always Allowed", "Commands that run without asking")}
       ${menuRow("check", "check", "Check My Setup", "Whether the computer and this phone are ready")}
       ${menuRow("rename", "edit", "Rename This Computer", mac ? `It's called ${esc(mac.name)} on this phone` : "What this phone calls it")}
+      ${lab.platform === "desktop" ? menuRow("pair", "wifi", "Pair a Phone", "A code to scan with the phone's camera") : ""}
     </ul>`,
 		closeBtn,
 	);
@@ -2636,6 +2699,7 @@ function clickMenu(d) {
 		else if (d.menu === "check") openCheck();
 		else if (d.menu === "rename") openRename();
 		else if (d.menu === "settings") openSettings();
+		else if (d.menu === "pair") lab.open("/pair-phone");
 		return true;
 	}
 	if (d.forget) {
@@ -2972,6 +3036,8 @@ function clickSettings(d) {
 	else if (d.setopen) guard("a setting", () => Settings[Number(d.setopen)].open());
 	else if (d.model) pickModel(d.model);
 	else if (d.modelother !== undefined) pickOtherModel();
+	else if (d.updatecheck !== undefined) askUpdate("check");
+	else if (d.updateinstall !== undefined) askUpdate("install");
 	else if (d.welcome !== undefined) {
 		saveSettings({ welcomeDone: true });
 		text.focus();

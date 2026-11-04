@@ -111,7 +111,8 @@
 	};
 
 	globalThis.lab = {
-		platform: "web",
+		// The Lab's own window on Windows and macOS says so before the page runs.
+		platform: globalThis.labShell === "desktop" ? "desktop" : "web",
 		subscribe(fn) {
 			listeners.add(fn);
 			fn(link);

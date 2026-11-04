@@ -165,32 +165,38 @@ export function trash(paths: string[], bin?: string): string[] {
 
 const fwd = (p: string) => p.replace(/\\/g, "/");
 
-// The trash command on the agent's PATH. Git Bash runs the sh one, and
-// PowerShell and cmd run trash.cmd.
+// The commands on the agent's PATH: trash, check-app, which holds app/ to
+// the same code rules the server does, and report, for The Lab's own bugs. Git Bash runs the sh ones, and
+// PowerShell and cmd run the .cmd ones.
 export function launchers(dir: string) {
-	const self = fileURLToPath(import.meta.url);
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(
-		join(dir, "trash"),
-		`#!/bin/sh\nexec "${fwd(process.execPath)}" "${fwd(self)}" "$@"\n`,
-	);
-	// cmd reads this file in the console's code page, so it switches to UTF-8
-	// for a path like C:\Users\José and then puts the agent's console back.
-	if (WIN)
+	for (const [name, script] of [
+		["trash", fileURLToPath(import.meta.url)],
+		["check-app", fileURLToPath(new URL("./design.ts", import.meta.url))],
+		["report", fileURLToPath(new URL("./report.ts", import.meta.url))],
+	] as const) {
 		writeFileSync(
-			join(dir, "trash.cmd"),
-			[
-				"@echo off",
-				'for /f "tokens=2 delims=:." %%c in (\'chcp\') do set "LAB_CP=%%c"',
-				"chcp 65001 >nul",
-				`"${process.execPath}" "${self}" %*`,
-				'set "LAB_RC=%errorlevel%"',
-				"if defined LAB_CP chcp %LAB_CP% >nul",
-				"exit /b %LAB_RC%",
-				"",
-			].join("\r\n"),
+			join(dir, name),
+			`#!/bin/sh\nexec "${fwd(process.execPath)}" "${fwd(script)}" "$@"\n`,
 		);
-	else chmodSync(join(dir, "trash"), 0o755);
+		// cmd reads this file in the console's code page, so it switches to UTF-8
+		// for a path like C:\Users\José and then puts the agent's console back.
+		if (WIN)
+			writeFileSync(
+				join(dir, `${name}.cmd`),
+				[
+					"@echo off",
+					'for /f "tokens=2 delims=:." %%c in (\'chcp\') do set "LAB_CP=%%c"',
+					"chcp 65001 >nul",
+					`"${process.execPath}" "${script}" %*`,
+					'set "LAB_RC=%errorlevel%"',
+					"if defined LAB_CP chcp %LAB_CP% >nul",
+					"exit /b %LAB_RC%",
+					"",
+				].join("\r\n"),
+			);
+		else chmodSync(join(dir, name), 0o755);
+	}
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

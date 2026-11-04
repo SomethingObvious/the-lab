@@ -26,5 +26,6 @@
 	"modelChip": true,
 	"effort": null,
 	"replies": "normal",
-	"statusCard": "tasks"
+	"statusCard": "tasks",
+	"autoUpdate": true
 }

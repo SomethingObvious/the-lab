@@ -10,6 +10,10 @@ Ask for something regular ("every weekday at 8, tell me what's on my calendar") 
 
 Settings, also in More, covers the look (theme, text size, motion), how steps show, and the model, picked from whatever the provider offers right now. The top bar is a row of widgets you choose and size the way you would on a home screen, such as battery, storage, memory, uptime, the current task or the next schedule, and it folds away with one tap. The agent can add a widget or a setting when you ask for one.
 
+The computer has its own window for The Lab too, in the Start menu on Windows and in Applications on a Mac. It shows the same app as the phone, laid out with the conversations down the side, and anything the agent changes in the app shows up in both. It's a native window around the web view the system already has (WebView2 on Windows, WebKit on a Mac), built on the computer during setup, so it comes to about 125 MB with nothing to download or vouch for. Closing it closes it, and the server keeps running without it.
+
+The server keeps itself up to date. Twice a day it checks this repository for a newer release, merges it with any changes made on that computer, tests the result and swaps it in while the agent is idle, putting the old version back if the new one won't stay up. When the agent finds a bug in The Lab itself, it can fix it in a copy and send the fix here as a pull request, but only once it passes the same lint rules and tests as every other change, and only after you say yes.
+
 The agent can read and change files freely, but it asks on the phone before it sends anything off the computer, installs software, changes settings or deletes something it can't put in the Trash. Each request says in plain words what it does and whether it can be undone, worked out from the command itself rather than from what the agent says about it. Deleted files go to the Trash (the Recycle Bin on Windows), and on a computer the server takes a Time Machine local snapshot before each task, so a task that went wrong can be put back from the phone.
 
 ## Setting It Up
