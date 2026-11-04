@@ -152,6 +152,12 @@ object Notifier {
                 description = "Shows whether the computer is reachable and what it's working on"
                 setShowBadge(false)
             },
+            // Minimum importance keeps the always-on card out of the status bar
+            // and folded at the bottom of the shade.
+            NotificationChannel("idle", "Standing by", NotificationManager.IMPORTANCE_MIN).apply {
+                description = "The quiet card that keeps the link to the computer open"
+                setShowBadge(false)
+            },
             NotificationChannel("replies", "Replies", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Replies and files from the computer"
             },
@@ -188,7 +194,7 @@ object Notifier {
         val online = link.optString("state") == "online"
         val working = online && Hub.status.optBoolean("working")
         val waiting = working && Hub.status.optString("label") == "Waiting for you"
-        val b = Notification.Builder(context, "status")
+        val b = Notification.Builder(context, if (working) "status" else "idle")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentIntent(open(context))
             .setOngoing(true)
@@ -210,7 +216,7 @@ object Notifier {
             b.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
         } else if (working) {
             val label = Hub.status.optString("label").ifBlank { "Working" }
-            b.setContentTitle("Working").setContentText(label)
+            b.setContentTitle(task() ?: "Working").setContentText(label)
                 .setWhen(since).setShowWhen(true).setUsesChronometer(true)
                 .addAction(Notification.Action.Builder(null, "Stop", action(context, AnswerReceiver.STOP, "", 10)).build())
             if (Build.VERSION.SDK_INT >= 36) {
@@ -221,19 +227,26 @@ object Notifier {
         } else if (online && doneUntil() != null) {
             val d = Hub.lastDone!!
             val title = if (d.optBoolean("stopped")) "Stopped" else if (d.optBoolean("ok")) "Done" else "Didn't finish"
-            b.setContentTitle(title).setContentText("Open The Lab to see what it did.")
+            b.setContentTitle(task() ?: title).setContentText(if (task() == null) "Open The Lab to see what it did." else title)
                 .setWhen(runCatching { Instant.parse(d.optString("at")).toEpochMilli() }.getOrDefault(0)).setShowWhen(true)
         } else {
-            val title = when (link.optString("state")) {
-                "online" -> "Connected to the computer"
-                "connecting" -> "Reaching the computer"
-                "unpaired" -> "Not paired"
-                else -> "Can't reach the computer"
+            val name = Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer"
+            val (title, text) = when (link.optString("state")) {
+                "online" -> name to "Ready"
+                "connecting" -> name to "Connecting"
+                "unpaired" -> "Not paired yet" to "Open The Lab to pair it with your computer."
+                else -> name to link.optString("detail").ifBlank { "Can't reach it right now" }
             }
-            b.setContentTitle(title).setShowWhen(false)
-            if (link.optString("state") != "online") b.setContentText(link.optString("detail"))
+            b.setContentTitle(title).setContentText(text).setShowWhen(false)
         }
         return b.build()
+    }
+
+    // What he asked for, so the card names the task rather than the step.
+    private fun task(): String? {
+        val e = Hub.events.lastOrNull { it.optString("kind") == "you" } ?: return null
+        val t = e.optString("scheduled").ifBlank { null } ?: plain(e.optString("text")).lineSequence().firstOrNull { it.isNotBlank() } ?: return null
+        return if (t.length > 60) t.take(59).trimEnd() + "…" else t
     }
 
     // The newest question with no answer after it.
