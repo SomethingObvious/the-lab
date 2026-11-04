@@ -20,11 +20,12 @@ import {
 	randomBytes,
 } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { type Duplex, duplexPair } from "node:stream";
+import { saveFile } from "./config.ts";
 
 const LABEL = Buffer.from("the lab tunnel 1");
 const HELLO = 1;
@@ -42,6 +43,8 @@ const CHUNK = 32 * 1024;
 const WINDOW = 1024 * 1024;
 const ACK_EVERY = 64 * 1024;
 const MAX_PACKET = 256 * 1024;
+// Direct connections kept at once, of each kind.
+const SLOTS = 32;
 
 export interface Keys {
 	secret: string;
@@ -72,9 +75,26 @@ const raw = (s: string) => Buffer.from(s, "base64url");
 export const roomOf = (secret: string) =>
 	b64(createHash("sha256").update(secret).digest());
 
+// A file a power cut tore is moved aside and replaced, as a server that
+// can't start is worse than pairing the phone again.
 export function keys(dir: string): Keys {
 	const file = join(dir, "tunnel.json");
-	if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+	if (existsSync(file)) {
+		try {
+			const k: unknown = JSON.parse(readFileSync(file, "utf8"));
+			if (isKeys(k)) return k;
+			throw new Error("it is missing its keys");
+		} catch (e) {
+			console.error(
+				`tunnel.json couldn't be read (${(e as Error).message}), so it was moved to tunnel.json.bad and the phone needs pairing again`,
+			);
+			try {
+				renameSync(file, `${file}.bad`);
+			} catch {
+				// Kept only to look at later, so the save below can write over it.
+			}
+		}
+	}
 	const ec = createECDH("prime256v1");
 	ec.generateKeys();
 	const k = {
@@ -82,9 +102,14 @@ export function keys(dir: string): Keys {
 		priv: b64(ec.getPrivateKey()),
 		pass: b64(randomBytes(32)),
 	};
-	writeFileSync(file, `${JSON.stringify(k, null, 2)}\n`, { mode: 0o600 });
+	saveFile(file, `${JSON.stringify(k, null, 2)}\n`, 0o600);
 	return k;
 }
+
+const isKeys = (k: unknown): k is Keys =>
+	typeof k === "object" &&
+	k !== null &&
+	["secret", "priv", "pass"].every((f) => typeof Reflect.get(k, f) === "string");
 
 const staticKey = (k: Keys) => {
 	const ec = createECDH("prime256v1");
@@ -271,6 +296,7 @@ export class Responder {
 			this.session.mux.take(this.session.inBox.open(b), () =>
 				connect(this.port, "127.0.0.1"),
 			);
+			this.proven = true;
 		} catch {
 			this.close();
 			this.drop();
@@ -304,9 +330,9 @@ export class Responder {
 		this.session = { mux: new Mux((pt) => this.send(outBox.seal(pt))), inBox };
 	}
 
-	get ready() {
-		return this.session !== undefined;
-	}
+	// Anyone can send a HELLO, so only a frame sealed with the pass shows
+	// that the other end is the phone.
+	proven = false;
 
 	close() {
 		this.session?.mux.closeAll();
@@ -356,27 +382,45 @@ export function startTunnel(o: TunnelOptions) {
 	};
 	let stopped = false;
 
-	// Anyone on the same Wi-Fi can connect, so a connection that hasn't
-	// finished the handshake in 10 s goes, and only 32 are kept at once.
-	// Keepalive notices a phone that walked off the network.
+	// Anyone on the same Wi-Fi can connect, so one that hasn't proven it's the
+	// phone within 5 s goes, and a newcomer pushes out the oldest of 32 still
+	// unproven. Proven phones get 32 slots of their own, which strangers can't
+	// fill. Keepalive notices a phone that walked off the network.
+	const unproven = new Set<Socket>();
+	let held = 0;
 	const lan = createServer((sock) => {
 		sock.setNoDelay(true);
 		sock.setKeepAlive(true, 30_000);
 		let r: Responder | null = null;
-		const send = framed(sock, (p) => r?.packet(p));
+		let mine = false;
+		const send = framed(sock, (p) => {
+			r?.packet(p);
+			if (!(r?.proven && unproven.delete(sock))) return;
+			clearTimeout(hello);
+			if (held >= SLOTS) return void sock.destroy();
+			held++;
+			mine = true;
+		});
 		r = new Responder(k, o.port, send, () => sock.destroy());
 		state.peers++;
-		const hello = setTimeout(() => {
-			if (!r?.ready) sock.destroy();
-		}, 10_000);
+		if (unproven.size >= SLOTS) {
+			const [oldest] = unproven;
+			if (oldest) {
+				unproven.delete(oldest);
+				oldest.destroy();
+			}
+		}
+		unproven.add(sock);
+		const hello = setTimeout(() => sock.destroy(), 5000);
 		sock.on("error", ignore);
 		sock.on("close", () => {
 			clearTimeout(hello);
+			unproven.delete(sock);
+			if (mine) held--;
 			state.peers--;
 			r?.close();
 		});
 	});
-	lan.maxConnections = 32;
 	lan.on("error", (e) => {
 		state.lan = `off: ${e.message}`;
 	});

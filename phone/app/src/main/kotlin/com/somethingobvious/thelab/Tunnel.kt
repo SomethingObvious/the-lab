@@ -231,7 +231,8 @@ object Tunnel {
             for (a in found) {
                 try {
                     val s = Session.start(TcpLink(a), sp, 2000)
-                    if (a !in tried) lan = listOf(a) + addresses
+                    // Only for the paired computer, never for a claim to another one.
+                    if (a !in tried && sp === spec) lan = listOf(a) + addresses
                     return s to "direct"
                 } catch (e: WrongKey) {
                     wrongKey = true

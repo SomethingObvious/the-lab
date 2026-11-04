@@ -86,8 +86,9 @@
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
 
-        <!-- Only adb's shell user (and the system) holds WRITE_SECURE_SETTINGS,
-             so no app on the phone can repoint The Lab at another server. -->
+        <!-- adb's shell user holds WRITE_SECURE_SETTINGS, and so can an app it
+             was granted to, so a switch to another computer still waits for
+             his yes on the phone. -->
         <receiver
             android:name=".PairReceiver"
             android:exported="true"

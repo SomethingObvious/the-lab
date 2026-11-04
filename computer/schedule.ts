@@ -185,5 +185,10 @@ export function missed(
 // When an entry runs next, or null if it never will again.
 export function next(item: Schedule, now: Date): Date | null {
 	if (item.paused) return null;
+	// A one-off can be dated months ahead, past the week a repeat is looked for in.
+	if (item.date) {
+		const at = new Date(`${item.date}T${item.time}`);
+		return at >= now ? at : null;
+	}
 	return times(item, now, new Date(now.getTime() + 8 * 86_400_000))[0] ?? null;
 }

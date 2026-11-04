@@ -3,7 +3,7 @@
 //
 //   node trash.ts PATH...
 //   node trash.ts --restore PATH...   Windows only: puts PATH back from the Recycle Bin
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { basename, dirname, extname, join, parse, resolve } from "node:path";
 import process, { env } from "node:process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { setting } from "./config.ts";
 
 // macOS 15 ships /usr/bin/trash, which records where each file came from so
@@ -30,6 +31,7 @@ const WIN = process.platform === "win32";
 // ponytail: fixed cap, the bin's real size per drive is MaxCapacity under
 // HKCU\...\Explorer\BitBucket\Volume if this ever turns something away wrongly.
 const WIN_CAP = 2 * 1024 ** 3;
+const run = promisify(execFile);
 
 function size(p: string, cap: number): number {
 	const s = lstatSync(p);
@@ -42,7 +44,11 @@ function size(p: string, cap: number): number {
 	return total;
 }
 
-function recycle(paths: string[]) {
+// A move that hangs, on a slow drive or behind a file held open, gives up
+// rather than holding the server.
+const TRASH_MS = 60_000;
+
+async function recycle(paths: string[]) {
 	const full = paths.map((p) => resolve(p));
 	for (const p of full) {
 		if (size(p, WIN_CAP) > WIN_CAP)
@@ -50,25 +56,40 @@ function recycle(paths: string[]) {
 				`${basename(p)} is over 2 GB, too big for the Recycle Bin, so it would be deleted for good. Ask him to delete it himself if he wants it gone.`,
 			);
 	}
-	const script = `Add-Type -AssemblyName Microsoft.VisualBasic
+	// The shell's own move, with every dialog turned off: ALLOWUNDO, SILENT,
+	// NOCONFIRMATION, NOCONFIRMMKDIR and NOERRORUI. Visual Basic's version
+	// still shows error dialogs, like File In Use, to a desktop nobody watches.
+	// Fail writes its own line, as a thrown error is wrapped at the console width.
+	const script = `Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class LabBin {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  struct Op { public IntPtr hwnd; public uint func; public string from; public string to; public ushort flags; public bool aborted; public IntPtr map; public string title; }
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHFileOperationW(ref Op op);
+  public static int Recycle(string p) { var o = new Op { func = 3, from = p + "\\0\\0", flags = 0x654 }; int r = SHFileOperationW(ref o); return r != 0 ? r : o.aborted ? -1 : 0; }
+}
+'@
 $ErrorActionPreference = 'Stop'
+function Fail($why) { [Console]::Error.WriteLine($why); exit 1 }
 foreach ($p in $env:LAB_TRASH_PATHS -split "\`n") {
-  if ([System.IO.DriveInfo]::new($p).DriveType -ne 'Fixed') { throw "$p is on a network or removable drive, which has no Recycle Bin, so it was left alone." }
-  if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }
-  else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }
+  if ([System.IO.DriveInfo]::new($p).DriveType -ne 'Fixed') { Fail "$p is on a network or removable drive, which has no Recycle Bin, so it was left alone." }
+  $r = [LabBin]::Recycle($p)
+  if ($r -ne 0) { Fail ("Windows couldn't move $p to the Recycle Bin (error 0x{0:X}). Something may have it open, so close that and try again." -f $r) }
 }`;
 	try {
-		execFileSync(
-			"powershell.exe",
-			["-NoProfile", "-NonInteractive", "-Command", script],
-			{
-				env: { ...env, LAB_TRASH_PATHS: full.join("\n") },
-				stdio: ["ignore", "ignore", "pipe"],
-				windowsHide: true,
-			},
-		);
+		await run("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+			env: { ...env, LAB_TRASH_PATHS: full.join("\n") },
+			timeout: TRASH_MS,
+			windowsHide: true,
+		});
 	} catch (e) {
 		const err = typeof e === "object" && e !== null ? e : {};
+		if ("killed" in err && err.killed)
+			throw new Error(
+				`Moving to the Recycle Bin took over ${TRASH_MS / 1000} seconds, so it was stopped. Check what's still there before trying again.`,
+				{ cause: e },
+			);
 		const why =
 			("stderr" in err ? err.stderr : undefined) ??
 			("message" in err ? err.message : undefined);
@@ -132,7 +153,7 @@ export function restore(paths: string[]): string[] {
 	});
 }
 
-export function trash(paths: string[], bin?: string): string[] {
+export async function trash(paths: string[], bin?: string): Promise<string[]> {
 	const missing = paths.filter((p) => {
 		try {
 			lstatSync(p);
@@ -144,11 +165,11 @@ export function trash(paths: string[], bin?: string): string[] {
 	if (missing.length > 0)
 		throw new Error(`Nothing at ${missing.join(", ")}, so nothing was moved.`);
 	if (!bin && WIN) {
-		recycle(paths);
+		await recycle(paths);
 		return paths;
 	}
 	if (!bin && process.platform === "darwin" && existsSync(SYSTEM)) {
-		execFileSync(SYSTEM, paths, { stdio: "inherit" });
+		await run(SYSTEM, paths, { timeout: TRASH_MS });
 		return paths.map((p) => join(homedir(), ".Trash", basename(p)));
 	}
 	const to = bin ?? join(homedir(), ".Trash");
@@ -207,7 +228,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 		process.exit(2);
 	}
 	try {
-		const done = back ? restore(paths) : trash(paths, setting("LAB_TRASH_DIR"));
+		const done = back ? restore(paths) : await trash(paths, setting("LAB_TRASH_DIR"));
 		const what = done.length === 1 ? basename(paths[0] ?? "") : `${done.length} items`;
 		process.stdout.write(
 			back

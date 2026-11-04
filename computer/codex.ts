@@ -3,13 +3,21 @@
 // one Codex interface with approval requests, and maps its items onto the
 // same events the phone already draws.
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, delimiter, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { setting } from "./config.ts";
 import { type Judgement, judge, needsOk } from "./guard.ts";
-import { type Card, cleanEnv, type Lab, STOP_MS, UNFINISHED } from "./lab.ts";
+import {
+	type Card,
+	cleanEnv,
+	type Lab,
+	STOP_MS,
+	type State,
+	UNFINISHED,
+} from "./lab.ts";
 import { scheduleProblem } from "./schedule.ts";
 import { clip, title } from "./steps.ts";
 
@@ -196,7 +204,14 @@ export class Codex {
 	>();
 	private turn: string | null = null;
 	private started = 0;
-	private queue: { text: string; images: string[]; you: number }[] = [];
+	// `open` is what state.open says while it runs, so a restart partway
+	// through still ends it.
+	private queue: {
+		text: string;
+		images: string[];
+		you: number;
+		open: State["open"];
+	}[] = [];
 	private starting: Promise<void> | null = null;
 	private taken = 0;
 	private lastError: Error | null = null;
@@ -222,13 +237,14 @@ export class Codex {
 	// `you` is the id of his message's event, so the turn's done can say which
 	// messages it answered.
 	send(text: string, images: string[], you: number) {
-		this.queue.push({ text, images, you });
+		this.queue.push({ text, images, you, open: this.lab.state.open ?? null });
 		this.pumpNext();
 	}
 
 	// One pump at a time. Two running together both steer the first message
 	// in the queue, and the one behind it is never sent.
 	private pumping: Promise<void> = Promise.resolve();
+	private steering: Promise<boolean> | null = null;
 	private pumpNext() {
 		this.pumping = this.pumping.then(() => this.pump()).catch((e) => this.broke(e));
 	}
@@ -357,7 +373,7 @@ export class Codex {
 		if (this.turn) {
 			const m = this.queue[0];
 			if (!m) return;
-			const steered = await this.call("turn/steer", {
+			const steer = this.call("turn/steer", {
 				threadId,
 				input: this.input(m),
 				expectedTurnId: this.turn,
@@ -365,6 +381,9 @@ export class Codex {
 				() => true,
 				() => false,
 			);
+			this.steering = steer;
+			const steered = await steer;
+			this.steering = null;
 			if (steered) {
 				this.queue.shift();
 				this.taken = m.you;
@@ -374,6 +393,8 @@ export class Codex {
 		const m = this.queue.shift();
 		if (!m) return;
 		this.turn = "starting";
+		// Set now, as a turn can end in the same chunk as the reply that starts it.
+		this.taken = m.you;
 		this.started = Date.now();
 		this.starting = (async () => {
 			try {
@@ -405,6 +426,7 @@ export class Codex {
 					// turn and told him, so this isn't a second failure to report.
 					const ended = this.turn !== "starting";
 					this.turn = null;
+					this.taken = 0;
 					if (ended) return;
 					throw e;
 				}
@@ -412,7 +434,6 @@ export class Codex {
 					if (!r.turn) throw new Error("Codex started a turn without saying its id.");
 					this.turn = r.turn.id;
 				}
-				this.taken = m.you;
 			} finally {
 				this.starting = null;
 			}
@@ -431,6 +452,12 @@ export class Codex {
 			});
 			this.proc = proc;
 			proc.stderr.on("data", (d) => process.stderr.write(d));
+			// A write to an app-server that just quit fails with EPIPE, and its
+			// exit, or the kill here, ends the turn.
+			proc.stdin.on("error", (e) => {
+				console.error("codex stdin:", e.message);
+				proc.kill();
+			});
 			createInterface({ input: proc.stdout }).on("line", (line) => {
 				let m: Incoming;
 				try {
@@ -440,19 +467,27 @@ export class Codex {
 				}
 				this.take(m);
 			});
-			proc.on("exit", (code) => {
+			const gone = (why: string) => {
 				if (this.proc !== proc) return;
 				this.proc = null;
 				this.ready = null;
-				for (const p of this.pending.values())
-					p.fail(new Error(`codex app-server exited (${code})`));
+				for (const p of this.pending.values()) p.fail(new Error(why));
 				this.pending.clear();
 				if (this.turn)
 					this.finish({
 						status: "failed",
-						error: { message: `Codex quit partway through (exit ${code}).` },
+						error: { message: `Codex quit partway through (${why}).` },
 					});
-			});
+			};
+			proc.on("exit", (code) => gone(`codex app-server exited (${code})`));
+			// A Lab folder or Codex that's missing fails here, with no exit after it.
+			proc.on("error", (e) =>
+				gone(
+					existsSync(this.home)
+						? `codex app-server couldn't run (${e.message})`
+						: `the Lab folder ${this.home} is missing`,
+				),
+			);
 			await this.call("initialize", {
 				clientInfo: { name: "the_lab", title: "The Lab", version: "1.0.0" },
 				capabilities: null,
@@ -586,8 +621,16 @@ export class Codex {
 				return p.item && this.begin(p.item);
 			case "item/completed":
 				return p.item && this.completed(p.item);
-			case "turn/completed":
-				return p.turn && this.finish(p.turn);
+			case "turn/completed": {
+				const ended = p.turn;
+				if (!ended) return;
+				// A steer answered in the same chunk as the turn's end settles first,
+				// so the message it carried is counted in the turn it joined, or
+				// waits for the next one if it came too late.
+				if (this.steering) this.steering.then(() => this.finish(ended));
+				else this.finish(ended);
+				return;
+			}
 			case "error":
 				if (p.willRetry) this.lab.setStatus(true, "Waiting on the API");
 				return;
@@ -715,7 +758,8 @@ export class Codex {
 			ok,
 			stopped,
 			ms: turn.durationMs ?? Date.now() - this.started,
-			...(this.taken ? { upto: this.taken } : {}),
+			// Stop took back the messages still waiting, so a stopped done is theirs too.
+			...(this.taken && !stopped ? { upto: this.taken } : {}),
 			...(ok || stopped ? {} : { error: UNFINISHED }),
 		});
 		if (!(ok || stopped)) console.error("codex turn failed:", turn.error?.message);
@@ -725,7 +769,7 @@ export class Codex {
 		this.changes.clear();
 		this.lab.hushed.clear();
 		for (const finish of this.lab.asks.values()) finish(false, "stop");
-		this.lab.state.open = null;
+		this.lab.state.open = this.queue[0]?.open ?? null;
 		this.lab.save();
 		this.lab.setStatus(false);
 		if (this.queue.length > 0) {
@@ -773,11 +817,11 @@ export class Codex {
 		const j: Judgement = cmd
 			? judge(SHELL, { command: cmd }, where)
 			: {
-					effect: "read",
+					effect: "send",
 					plain: `Reach ${host ?? "the internet"}`,
 					touches: [host ?? ""],
 					undo: null,
-					leaves: false,
+					leaves: true,
 				};
 		if (j.source && !lab.taint) lab.taint = j.source;
 		if (j.block) {
@@ -791,7 +835,11 @@ export class Codex {
 			return { decision: "decline" };
 		}
 		const risky = j.effect === "delete" || j.effect === "system" || j.effect === "run";
-		if (lab.allowedBefore(cmd, cwd) || !needsOk(j, where, Boolean(lab.taint))) {
+		// It only asks because the sandbox would refuse it, so a program or code
+		// the guard can't see into, or a path it can't know, goes to him too.
+		const asks =
+			needsOk(j, where, Boolean(lab.taint)) || j.effect === "run" || j.unsure === true;
+		if (lab.allowedBefore(cmd, cwd) || !asks) {
 			if (risky) await lab.snap(60_000);
 			return { decision: "accept" };
 		}

@@ -1,4 +1,4 @@
-import { randomUUID, type UUID } from "node:crypto";
+import { createHash, randomUUID, type UUID } from "node:crypto";
 import {
 	closeSync,
 	copyFileSync,
@@ -8,6 +8,7 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -37,7 +38,7 @@ import { z } from "zod";
 import { Codex } from "./codex.ts";
 import { saveFile, setting, WIN, words } from "./config.ts";
 import { checkApp, published } from "./design.ts";
-import { type Judgement, judge, needsOk, type Where } from "./guard.ts";
+import { type Judgement, judge, needsOk, segments, type Where } from "./guard.ts";
 import { awake, type Mac, snapshot } from "./mac.ts";
 import { CAP, diff, type Memory, parse, render, suspect } from "./memory.ts";
 import { scheduleProblem } from "./schedule.ts";
@@ -407,6 +408,9 @@ interface Rule {
 	cwd: string;
 	plain: string;
 	at: string;
+	// The files the command named when he allowed it, so a script that
+	// changed since asks again.
+	files?: Record<string, string>;
 }
 // One replacement from an Edit or MultiEdit call.
 interface Replace {
@@ -446,6 +450,58 @@ const toolError = (text: string) => ({
 	content: [{ type: "text" as const, text }],
 	isError: true,
 });
+
+// NTFS and APFS ignore case, so paths are compared the way the guard does.
+const FOLD = WIN || process.platform === "darwin";
+const pathKey = (p: string) => (FOLD ? resolve(p).toLowerCase() : resolve(p));
+const samePath = (a: string, b: string) => pathKey(a) === pathKey(b);
+const inside = (p: string, dir: string) => pathKey(p).startsWith(pathKey(dir) + sep);
+
+// Every file a command names, with a hash of what's in it. A script that
+// runs from his folder, like `bash fix.sh` or `crontab jobs.txt`, can be
+// changed with no card, so an Always Allow holds only while these match.
+// A big file goes by its size and time instead of being read.
+export function fingerprint(command: string, cwd: string): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const seg of segments(command, WIN))
+		for (const word of seg.argv) {
+			const p = resolve(cwd, word.replace(/^~(?=$|[/\\])/, homedir()));
+			try {
+				const s = statSync(p);
+				if (!s.isFile()) continue;
+				out[pathKey(p)] =
+					s.size > 16 * 1024 * 1024
+						? `${s.size}@${s.mtimeMs}`
+						: createHash("sha256").update(readFileSync(p)).digest("hex");
+			} catch {
+				// Not a file.
+			}
+		}
+	return out;
+}
+
+// The size and time of a file, which settle once whatever writes it is done.
+const stamp = (p: string) => {
+	const s = statSync(p);
+	return `${s.size}@${s.mtimeMs}`;
+};
+// Windows opens a file exclusively only when nothing else has it open, which
+// is how a copy still going is told apart from one that's done. Node doesn't
+// name libuv's UV_FS_O_EXLOCK, so it's spelled out.
+const EXLOCK = 0x10_00_00_00;
+const free = (p: string) => {
+	try {
+		closeSync(openSync(p, WIN ? EXLOCK : "r"));
+		return true;
+	} catch {
+		return false;
+	}
+};
+// How long a dropped file has to stay the same before it's sent.
+export const SETTLE_MS = 3000;
+// Retried the way saveFile does, as an antivirus or the indexer can hold a
+// file that was just written.
+const BUSY = new Set(["EBUSY", "EPERM", "EACCES"]);
 
 export class Lab {
 	store: Store;
@@ -693,8 +749,13 @@ export class Lab {
 			if (this.q === q && this.stopping) q.close();
 		}, STOP_MS);
 		end.unref();
+		// A message sent mid-task waits in the engine's queue, and Stop means
+		// that doesn't run either. The SDK takes the option but doesn't type it.
+		const interrupt = q.interrupt as (o: {
+			cancelQueued: boolean;
+		}) => ReturnType<Query["interrupt"]>;
 		await Promise.race([
-			q.interrupt().catch(() => {
+			interrupt.call(q, { cancelQueued: true }).catch(() => {
 				// An interrupt that fails means the turn already ended.
 			}),
 			sleep(STOP_MS, undefined, { ref: false }),
@@ -710,6 +771,11 @@ export class Lab {
 
 	// `always` keeps an exact command allowed in that folder from now on,
 	// which only the app offers, never the notification.
+	// The card for a question that's still waiting, for the shells to draw.
+	question(ref: string): Card | undefined {
+		return this.asks.has(ref) ? this.cards.get(ref) : undefined;
+	}
+
 	answer(ref: string, allow: boolean, always = false): boolean {
 		const finish = this.asks.get(ref);
 		if (!finish) return false;
@@ -723,6 +789,7 @@ export class Lab {
 				{
 					tool: WIN ? "PowerShell" : "Bash",
 					...rule,
+					files: fingerprint(rule.command, rule.cwd),
 					plain: card.plain || card.title,
 					at: new Date().toISOString(),
 				},
@@ -734,11 +801,21 @@ export class Lab {
 	}
 
 	saveRules() {
-		saveFile(this.rulesFile, JSON.stringify(this.rules, null, 2));
+		return saveFile(this.rulesFile, JSON.stringify(this.rules, null, 2));
 	}
 
+	// A rule from before files were recorded counts as naming none, so one
+	// that runs a file asks once more and is then kept with its hashes.
 	allowedBefore(command: string, cwd: string) {
-		return this.rules.some((r) => r.command === command && r.cwd === cwd);
+		const rule = this.rules.find((r) => r.command === command && r.cwd === cwd);
+		if (!rule) return false;
+		const now = fingerprint(command, cwd);
+		const then = rule.files ?? {};
+		const names = Object.keys(now);
+		return (
+			names.length === Object.keys(then).length &&
+			names.every((f) => now[f] === then[f])
+		);
 	}
 
 	// ---------- the guard rails ----------
@@ -912,7 +989,7 @@ export class Lab {
 		if (
 			["Write", "Edit", "MultiEdit"].includes(input.tool_name) &&
 			file &&
-			resolve(file) === resolve(this.opts.home, "schedules.json")
+			samePath(file, join(this.opts.home, "schedules.json"))
 		) {
 			const problem = scheduleProblem(file);
 			if (problem)
@@ -927,7 +1004,7 @@ export class Lab {
 		if (
 			["Write", "Edit", "MultiEdit"].includes(input.tool_name) &&
 			file &&
-			resolve(file).startsWith(resolve(app) + sep)
+			inside(file, app)
 		) {
 			const problem = checkApp(
 				app,
@@ -1044,8 +1121,10 @@ export class Lab {
 
 	private memoryGate(tool: string, args: Record<string, unknown>): string | null {
 		if (
-			!["Write", "Edit", "MultiEdit"].includes(tool) ||
-			resolve(String(args["file_path"] ?? "")) !== resolve(this.memoryFile)
+			!(
+				["Write", "Edit", "MultiEdit"].includes(tool) &&
+				samePath(String(args["file_path"] ?? ""), this.memoryFile)
+			)
 		)
 			return null;
 		if (this.state.memoryPaused)
@@ -1285,45 +1364,50 @@ export class Lab {
 		this.q = null;
 		this.input?.close();
 		this.input = null;
-		for (const finish of this.asks.values()) finish(false, "stop");
-		if (GONE.test(failure)) this.gone = true;
+		// A full disk makes these writes throw, and the task still has to end.
+		try {
+			for (const finish of this.asks.values()) finish(false, "stop");
+			if (GONE.test(failure)) this.gone = true;
 
-		// The saved conversation is gone (deleted, or from another machine), so
-		// a fresh one starts with whatever was waiting. Any other failure keeps
-		// it, as the conversation itself is still there to reopen.
-		if (this.gone && this.state.sessionId && this.unanswered.length > 0) {
-			this.state.sessionId = undefined;
-			this.save();
-			this.store.add({
-				kind: "notice",
-				text: "The last conversation could not be reopened, so this is a fresh one.",
-			});
-			const waiting = this.unanswered;
-			this.unanswered = [];
-			if (waiting.length > 0) {
-				const { input } = this.ensureRunning();
-				for (const m of waiting) {
-					this.unanswered.push(m);
-					input.push(m);
-				}
-				return;
-			}
-		}
-		// Messages it never answered went with the session, so nothing waits on them.
-		this.youIds.clear();
-		this.unanswered = [];
-		if (this.status.working) {
-			const stopped = this.stopping;
-			this.stopping = false;
-			// Without a done the turn's approvals would stay live on the phone.
-			this.store.add({ kind: "done", ok: false, stopped, ms: 0 });
-			if (!stopped)
+			// The saved conversation is gone (deleted, or from another machine), so
+			// a fresh one starts with whatever was waiting. Any other failure keeps
+			// it, as the conversation itself is still there to reopen.
+			if (this.gone && this.state.sessionId && this.unanswered.length > 0) {
+				this.state.sessionId = undefined;
+				this.save();
 				this.store.add({
 					kind: "notice",
-					text: "The agent stopped partway through. Send your message again, or ask it to carry on.",
+					text: "The last conversation could not be reopened, so this is a fresh one.",
 				});
-			this.state.open = null;
-			this.save();
+				const waiting = this.unanswered;
+				this.unanswered = [];
+				if (waiting.length > 0) {
+					const { input } = this.ensureRunning();
+					for (const m of waiting) {
+						this.unanswered.push(m);
+						input.push(m);
+					}
+					return;
+				}
+			}
+			// Messages it never answered went with the session, so nothing waits on them.
+			this.youIds.clear();
+			this.unanswered = [];
+			if (this.status.working) {
+				const stopped = this.stopping;
+				this.stopping = false;
+				// Without a done the turn's approvals would stay live on the phone.
+				this.store.add({ kind: "done", ok: false, stopped, ms: 0 });
+				if (!stopped)
+					this.store.add({
+						kind: "notice",
+						text: "The agent stopped partway through. Send your message again, or ask it to carry on.",
+					});
+				this.state.open = null;
+				this.save();
+			}
+		} catch (e) {
+			console.error("agent cleanup:", e);
 		}
 		this.setStatus(false);
 	}
@@ -1485,8 +1569,10 @@ export class Lab {
 		// The messages this result answered, so a message still waiting
 		// behind it doesn't get this done too.
 		const ids = (m.user_message_uuids ?? []).map((c) => this.youIds.get(c) ?? 0);
-		const upto = ids.length > 0 ? Math.max(...ids) : 0;
+		// A Stop took back the ones still waiting, so this done is theirs too.
+		const upto = ids.length > 0 && !stopped ? Math.max(...ids) : 0;
 		for (const c of m.user_message_uuids ?? []) this.youIds.delete(c);
+		if (stopped) this.youIds.clear();
 		// A message sent mid-task can run as its own turn after this one, and
 		// it stays open, so a restart still reports it, until its own result.
 		const waiting =
@@ -1549,6 +1635,10 @@ export class Lab {
 		card: Card,
 		signal?: AbortSignal,
 	): Promise<{ allow: boolean; by: By }> {
+		// A Stop while a snapshot was being taken has already ended the task,
+		// and a card now would keep the computer awake for five minutes.
+		if (signal?.aborted || !this.status.working)
+			return Promise.resolve({ allow: false, by: "stop" });
 		this.cards.set(ref, card);
 		const { always, ...shown } = card;
 		this.store.add(
@@ -1582,17 +1672,57 @@ export class Lab {
 		});
 	}
 
+	// Folders whose files never go to the phone, as the copy is kept in files/,
+	// where the agent can read it back. Links are followed first.
+	private unsendable(src: string): string | null {
+		let real = src;
+		try {
+			real = realpathSync(src);
+		} catch {
+			// Checked as written.
+		}
+		const user = homedir();
+		const shut = [
+			this.opts.dir,
+			join(user, ".thelab"),
+			join(user, ".ssh"),
+			join(user, ".claude"),
+			join(user, ".codex"),
+		];
+		for (const p of new Set([src, real])) {
+			if (inside(p, this.filesDir)) continue;
+			const dir = shut.find((d) => inside(p, d));
+			if (dir) return `${src} is in ${dir}`;
+			if (judge("Read", { file_path: p }, this.where).secret)
+				return `${src} holds a password or key`;
+		}
+		return null;
+	}
+
 	sendFile(path: string, caption?: string) {
 		const src = resolve(path);
 		if (!(existsSync(src) && statSync(src).isFile()))
 			return toolError(`There is no file at ${src}.`);
+		const shut = this.unsendable(src);
+		if (shut)
+			return toolError(
+				`${shut}, so it can't be sent to the phone. Tell him what you wanted to send instead.`,
+			);
 		const size = statSync(src).size;
 		if (size > 100 * 1024 * 1024)
 			return toolError(
 				`${src} is ${Math.round(size / 1_048_576)} MB and the limit is 100 MB.`,
 			);
 		const name = `${randomUUID().slice(0, 8)}-${basename(src).replace(/[^\w.\- ]+/g, "_")}`;
-		copyFileSync(src, join(this.filesDir, name));
+		const out = join(this.filesDir, name);
+		copyFileSync(src, out);
+		// Something still writing it would leave the phone a cut-off copy.
+		if (statSync(out).size !== size || statSync(src).size !== size) {
+			rmSync(out, { force: true });
+			return toolError(
+				`${src} changed while it was being copied. Send it once it's finished.`,
+			);
+		}
 		this.store.add({
 			kind: "file",
 			name: basename(src),
@@ -1605,13 +1735,19 @@ export class Lab {
 		};
 	}
 
-	// A file the agent put in to-phone/, sent once it stops growing. An agent
-	// can mv the only copy in there, so one that can't be sent goes to the
-	// Trash rather than being deleted. False means it's still there.
+	// A file the agent put in to-phone/, sent once it has stayed the same for
+	// a few seconds and nothing has it open. An agent can mv the only copy in
+	// there, so the original goes only after a full copy is made, and one that
+	// can't be sent goes to the Trash rather than being deleted. False means
+	// it's still there.
 	async sendDropped(p: string): Promise<boolean> {
-		for (let size = -1; size !== statSync(p).size; ) {
-			size = statSync(p).size;
-			await sleep(800);
+		for (let was = stamp(p), since = Date.now(); ; ) {
+			await sleep(500);
+			const now = stamp(p);
+			if (now !== was) {
+				was = now;
+				since = Date.now();
+			} else if (Date.now() - since >= SETTLE_MS && free(p)) break;
 		}
 		const r = this.sendFile(p);
 		if (!("isError" in r)) {
@@ -1620,7 +1756,7 @@ export class Lab {
 		}
 		const name = basename(p);
 		try {
-			moveToTrash([p], setting("LAB_TRASH_DIR"));
+			await moveToTrash([p], setting("LAB_TRASH_DIR"));
 		} catch (e) {
 			console.error("to-phone:", e);
 			this.store.add({
@@ -1664,7 +1800,20 @@ export class Lab {
 			throw e;
 		}
 		closeSync(fd);
-		renameSync(`${out}.part`, out);
+		for (let i = 1; ; i++) {
+			try {
+				renameSync(`${out}.part`, out);
+				break;
+			} catch (e) {
+				const code = e instanceof Error && "code" in e ? String(e.code) : "";
+				if (i < 6 && BUSY.has(code)) {
+					await sleep(50 * i);
+					continue;
+				}
+				rmSync(`${out}.part`, { force: true });
+				throw e;
+			}
+		}
 		return { name: clean, url: `/files/${encodeURIComponent(stored)}`, size, type };
 	}
 

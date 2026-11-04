@@ -15,6 +15,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.edit
 import androidx.core.graphics.scale
 import okhttp3.Call
@@ -64,6 +65,8 @@ object Hub {
         .build()
     // A notification button's receiver has about 10 s to finish.
     private val quick = client.newBuilder().callTimeout(8, TimeUnit.SECONDS).build()
+    // The server answers /stop only once the turn has ended, which can take 15 s.
+    private val stopping = client.newBuilder().callTimeout(25, TimeUnit.SECONDS).build()
     // Listing Claude's models can take the server 20 s, on top of a relay dial.
     private val slow = client.newBuilder().callTimeout(40, TimeUnit.SECONDS).build()
 
@@ -82,6 +85,15 @@ object Hub {
     // The last run's end, so the status line can say Done for a while after.
     var lastDone: JSONObject? = null
         private set
+    // Text or files shared in, held until the design is up and ready to take them.
+    val composing = ArrayList<JSONObject>()
+    // A pairing broadcast for a different computer, held in memory until he says yes on the phone.
+    class Pairing(val url: String?, val tunnel: Tunnel.Spec?, val token: String)
+    var pendingPair: Pairing? = null
+    // The computer's clock less this phone's, from the stream's Date header,
+    // so an event's time can be read on this phone's clock.
+    private var skew = 0L
+    private var warnedFull = 0L
 
     private val listeners = LinkedHashSet<(JSONObject) -> Unit>()
     val designListeners = LinkedHashSet<() -> Unit>()
@@ -115,6 +127,9 @@ object Hub {
     var designVersion
         get() = prefs.getString("design", null)
         private set(v) = prefs.edit { putString("design", v) }
+    // The newest design that got as far as lab.ready(), the only kind a slow start can't be blamed on.
+    val designOpened get() = prefs.getString("designOpened", null)
+    fun openedFine() { designVersion?.let { v -> if (v != designOpened) prefs.edit { putString("designOpened", v) } } }
 
     val designDir get() = File(app.filesDir, "design/current")
     private val eventsFile get() = File(app.filesDir, "events.jsonl")
@@ -175,10 +190,19 @@ object Hub {
     private fun loadEvents() {
         io.execute {
             var read = emptyList<JSONObject>()
-            if (eventsFile.exists()) {
-                val lines = eventsFile.readLines()
-                read = readHistory(lines.takeLast(KEEP))
-                if (lines.size > KEEP * 2) eventsFile.writeText(read.joinToString("\n", postfix = "\n") { it.toString() })
+            try {
+                if (eventsFile.exists()) {
+                    val lines = eventsFile.readLines()
+                    read = readHistory(lines.takeLast(KEEP))
+                    if (lines.size > KEEP * 2) {
+                        // Through a copy, so a full disk can't leave the history cut short.
+                        val tmp = File(eventsFile.path + ".tmp")
+                        tmp.writeText(read.joinToString("\n", postfix = "\n") { it.toString() })
+                        tmp.renameTo(eventsFile)
+                    }
+                }
+            } catch (e: IOException) {
+                Log.w(TAG, "couldn't read or trim the history", e)
             }
             main.post {
                 events.addAll(0, read)
@@ -213,9 +237,18 @@ object Hub {
         if (paired) connect()
     }
 
+    // The same computer as now: its room, key and secret for the tunnel, or its address for Tailscale.
+    fun pairedWith(newUrl: String?, tunnel: Tunnel.Spec?): Boolean {
+        if (!paired) return false
+        val now = Tunnel.spec
+        return if (tunnel != null) now != null && now.room == tunnel.room && now.key.contentEquals(tunnel.key) && now.pass.contentEquals(tunnel.pass)
+        else now == null && newUrl != null && newUrl.trimEnd('/') == prefs.getString("url", null)
+    }
+
     fun pair(newUrl: String?, tunnel: Tunnel.Spec?, newToken: String) = onLoaded {
         val was = prefs.getString("tunnel", null)?.let { runCatching { JSONObject(it).optString("room") }.getOrNull() } ?: prefs.getString("url", null)
         val changed = (tunnel?.room ?: newUrl) != was
+        pendingPair = null
         prefs.edit {
             if (newUrl != null) putString("url", newUrl.trimEnd('/')) else remove("url")
             if (tunnel != null) putString("tunnel", tunnel.json().toString()) else remove("tunnel")
@@ -231,6 +264,11 @@ object Hub {
             live.clear()
             prefs.edit { for (k in prefs.all.keys) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") remove(k) }
             File(app.filesDir, "design").deleteRecursively()
+            // What's still waiting was written to the old computer's agent.
+            for (i in outbox.length() - 1 downTo 0) outbox.remove(i)
+            saveOutbox()
+            emit(outboxEvent())
+            composing.clear()
         }
         if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "paired with ${tunnel?.relay ?: tunnel?.lan?.firstOrNull() ?: newUrl}")
         reconnectNow()
@@ -238,9 +276,28 @@ object Hub {
 
     private fun forgetHistory() {
         events.clear()
-        disk.execute { eventsFile.delete() }
+        onDisk { eventsFile.delete() }
         lastId = 0
     }
+
+    // A full disk mustn't take the app down. Whatever couldn't be written is
+    // still held in memory, the outbox included.
+    private fun onDisk(r: () -> Unit) = disk.execute {
+        try { r() } catch (e: IOException) {
+            Log.w(TAG, "couldn't write to storage", e)
+            main.post { storageFull() }
+        }
+    }
+
+    private fun storageFull() {
+        val now = SystemClock.elapsedRealtime()
+        if (warnedFull != 0L && now - warnedFull < 60_000) return
+        warnedFull = now
+        Toast.makeText(app, "This phone's storage is full, so The Lab couldn't save. Unsent messages are kept while the app stays open. Free up some space to keep them safe.", Toast.LENGTH_LONG).show()
+    }
+
+    // An event's time on this phone's clock, or null if it has none.
+    fun phoneTime(at: String): Long? = runCatching { Instant.parse(at).toEpochMilli() - skew }.getOrNull()
 
     private fun setLink(state: String, detail: String = "", fix: String? = null) {
         val next = JSONObject().put("kind", "link").put("state", state).put("detail", detail)
@@ -261,6 +318,11 @@ object Hub {
             .build()
         if (link.optString("state") != "online") setLink("connecting", "Reaching the computer")
         source = EventSources.createFactory(client).newEventSource(req, object : EventSourceListener() {
+            override fun onOpen(eventSource: EventSource, response: Response) {
+                val theirs = response.headers.getDate("Date")?.time ?: return
+                val ours = System.currentTimeMillis()
+                main.post { if (source === eventSource) skew = theirs - ours }
+            }
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 main.post { if (source === eventSource) onEvent(type, data) }
             }
@@ -349,7 +411,7 @@ object Hub {
         if (e.optString("kind") == "done") { lastDone = e; LinkService.refresh() }
         if (events.size > KEEP * 1.2) events.subList(0, events.size - KEEP).clear()
         val line = e.toString() + "\n"
-        disk.execute { eventsFile.appendText(line) }
+        onDisk { eventsFile.appendText(line) }
         emit(e)
         Notifier.onEvent(e)
     }
@@ -416,7 +478,7 @@ object Hub {
 
     private fun saveOutbox() {
         val text = outbox.toString()
-        disk.execute {
+        onDisk {
             val tmp = File(outboxFile.path + ".tmp")
             tmp.writeText(text)
             tmp.renameTo(outboxFile)
@@ -458,28 +520,41 @@ object Hub {
 
     fun queued(cid: String) = (0 until outbox.length()).any { outbox.getJSONObject(it).optString("cid") == cid }
 
-    // done gets false only when the computer never heard it.
-    fun stop(done: (Boolean) -> Unit = {}) = post("/stop", JSONObject(), quick) { done(it in 200..299) }
+    // done gets false only when the computer never heard it. A slow stop says
+    // nothing about the link, so it never drops the tunnel.
+    fun stop(done: (Boolean) -> Unit = {}) = post("/stop", JSONObject(), stopping, suspicious = false) { done(it in 200..299) }
     // done gets the status, and a 404 means it was already answered or has expired.
     fun answer(ref: String, allow: Boolean, always: Boolean = false, done: (Int) -> Unit = {}) =
-        post("/answer", JSONObject().put("ref", ref).put("allow", allow).put("always", always), quick, done)
+        post("/answer", JSONObject().put("ref", ref).put("allow", allow).put("always", always), quick, done = done)
 
     // Any JSON route on the computer, for the page's memory, schedules and setup
     // sheets. done gets the body, or null and an error in plain words.
     fun request(method: String, path: String, body: String?, done: (String?, String?) -> Unit) {
-        val base = url ?: return done(null, "This phone isn't paired with a computer yet.")
+        if (url == null) return done(null, "This phone isn't paired with a computer yet.")
         if (!path.startsWith("/") || path.contains("..")) return done(null, "That isn't a route on the computer.")
+        fetch(method, path, body, if (path == "/models" || path == "/check") slow else quick) { code, text ->
+            when {
+                code == 0 -> done(null, "Couldn't reach the computer. Try again once it's back.")
+                code in 200..299 -> done(text, null)
+                else -> done(null, runCatching { JSONObject(text ?: "").getString("error") }.getOrDefault("The computer couldn't do that just now. Try again in a minute."))
+            }
+        }
+    }
+
+    // The question behind an Allow card, for <lab-ask>. done gets the status, 0 when the computer couldn't be reached, and the body.
+    fun askInfo(ref: String, done: (Int, String?) -> Unit) = fetch("GET", "/asks/${Uri.encode(ref)}", null, quick, done)
+
+    // done gets the status, or 0 and null when the computer couldn't be reached.
+    private fun fetch(method: String, path: String, body: String?, via: OkHttpClient, done: (Int, String?) -> Unit) {
+        val base = url ?: return done(0, null)
         val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
             .method(method, if (method == "GET") null else (body ?: "{}").toRequestBody(JSON_TYPE)).build()
-        (if (path == "/models" || path == "/check") slow else quick).newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { suspect(); done(null, "Couldn't reach the computer. Try again once it's back.") } }
+        via.newCall(req).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) { main.post { suspect(); done(0, null) } }
             override fun onResponse(call: Call, response: Response) {
                 val code = response.code
-                val text = response.use { it.body.string() }
-                main.post {
-                    if (code in 200..299) done(text, null)
-                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer couldn't do that just now. Try again in a minute."))
-                }
+                val text = try { response.use { it.body.string() } } catch (e: IOException) { null }
+                main.post { if (text == null) done(0, null) else done(code, text) }
             }
         })
     }
@@ -559,19 +634,19 @@ object Hub {
             }
             if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer didn't take $name. Try again in a minute."))
             val j = JSONObject(text)
-            tmp.renameTo(File(dir, Uri.decode(j.getString("url").removePrefix("/files/"))))
+            plainName(Uri.decode(j.getString("url").removePrefix("/files/")))?.let { tmp.renameTo(File(dir, it)) }
             return j
         } finally {
             tmp.delete()
         }
     }
 
-    private fun post(path: String, body: JSONObject, via: OkHttpClient = client, done: (Int) -> Unit) {
+    private fun post(path: String, body: JSONObject, via: OkHttpClient = client, suspicious: Boolean = true, done: (Int) -> Unit) {
         val base = url ?: return done(-1)
         val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
             .post(body.toString().toRequestBody(JSON_TYPE)).build()
         via.newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { suspect(); done(-1) } }
+            override fun onFailure(call: Call, e: IOException) { main.post { if (suspicious) suspect(); done(-1) } }
             override fun onResponse(call: Call, response: Response) {
                 val code = response.code
                 response.close()
@@ -627,13 +702,13 @@ object Hub {
 
     // Blocking, for the WebView's request thread and for opening files.
     fun fetchFile(name: String): File? {
-        val clean = File(name).name
+        val clean = plainName(name) ?: return null
         val dir = File(app.cacheDir, "files").apply { mkdirs() }
         val out = File(dir, clean)
-        if (out.exists()) return out
+        if (out.isFile) return out
         val base = url ?: return null
         return runCatching {
-            val req = Request.Builder().url("$base/files/$clean").header("Authorization", "Bearer $token").build()
+            val req = Request.Builder().url("$base/files/${Uri.encode(clean)}").header("Authorization", "Bearer $token").build()
             client.newCall(req).execute().use { r ->
                 if (!r.isSuccessful) return null
                 val tmp = File.createTempFile("fetch", ".part", dir)
@@ -712,3 +787,7 @@ internal fun backoff(failures: Int, waiting: Boolean, spread: Double = Math.rand
 internal fun readHistory(lines: List<String>): List<JSONObject> = lines.mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
 
 internal fun newestId(events: List<JSONObject>): Long = events.maxOfOrNull { it.optLong("id") } ?: 0
+
+// A file's own name, with nothing in it that could reach another folder, or null.
+internal fun plainName(s: String): String? =
+    s.takeIf { it.isNotEmpty() && it.length <= 255 && it != "." && it != ".." && it.none { c -> c == '/' || c == '\\' || c < ' ' } }

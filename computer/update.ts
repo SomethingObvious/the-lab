@@ -9,11 +9,13 @@ import { createHash } from "node:crypto";
 import {
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	statfsSync,
 	statSync,
 	symlinkSync,
 	writeFileSync,
@@ -21,11 +23,52 @@ import {
 import { constants, setPriority, tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import process, { env } from "node:process";
-import { setting, words } from "./config.ts";
+import { saveFile, setting, words } from "./config.ts";
 import { lint } from "./design.ts";
 
 export const REPO = "SomethingObvious/the-lab";
 const WIN = process.platform === "win32";
+// Windows' own tar reads C: paths and opens zips. The GNU tar that Git Bash
+// puts first on PATH reads C: in a path as a remote host instead.
+export const TAR = WIN
+	? join(setting("SystemRoot") ?? "C:\\Windows", "System32", "tar.exe")
+	: process.platform === "darwin"
+		? "/usr/bin/tar"
+		: "tar";
+
+// cmd.exe runs a batch file. Node's shell option leaves a path with a space
+// unquoted, and its own quoting uses backslashes that cmd doesn't read, so the
+// whole line is quoted here and handed to cmd as it is.
+export function batch(cmd: string, a: string[]) {
+	if (!(WIN && /\.(bat|cmd)$/i.test(cmd)))
+		return { file: cmd, args: a, windowsVerbatimArguments: false };
+	const line = [cmd, ...a].map((x) => `"${x}"`).join(" ");
+	return {
+		file: setting("ComSpec") ?? "cmd.exe",
+		args: ["/d", "/s", "/c", `"${line}"`],
+		windowsVerbatimArguments: true,
+	};
+}
+
+// Windows turns a rename or delete into EPERM or EBUSY for a moment while an
+// antivirus or the search indexer has the file open.
+function retry<T>(f: () => T): T {
+	for (let i = 1; ; i++)
+		try {
+			return f();
+		} catch (e) {
+			const code = (e as NodeJS.ErrnoException).code;
+			if (i >= 6 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES"))
+				throw e;
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 * i);
+		}
+}
+
+// State files are read back after a crash, so a write that fails has to stop
+// whatever depended on it.
+function save(file: string, data: unknown) {
+	if (!saveFile(file, JSON.stringify(data))) throw new Error(`Couldn't save ${file}.`);
+}
 // Build output and installed packages, never part of a release.
 const SKIP = new Set([
 	"node_modules",
@@ -178,6 +221,13 @@ export function merge3(
 }
 
 const read = (p: string) => (existsSync(p) ? readFileSync(p) : undefined);
+const readJson = <T>(p: string): T | null => {
+	try {
+		return JSON.parse(readFileSync(p, "utf8")) as T;
+	} catch {
+		return null;
+	}
+};
 const same = (x?: Buffer, y?: Buffer) =>
 	x === undefined ? y === undefined : y !== undefined && x.equals(y);
 const isText = (x: Buffer) => !x.subarray(0, 8000).includes(0);
@@ -212,14 +262,15 @@ export function treeHash(dir: string): string {
 	return h.digest("hex");
 }
 
-// An update that changed desktop/ needs the window built again, once setup
+// The window is built from desktop/ with the Allow card from shared/ inside it.
+export const windowHash = (source: string): string =>
+	treeHash(join(source, "desktop")) + treeHash(join(source, "shared"));
+
+// An update that changed either needs the window built again, once setup
 // has built it the first time.
 export function desktopStale(source: string, lab: string): boolean {
 	const built = join(lab, "desktop", "built");
-	return (
-		existsSync(built) &&
-		readFileSync(built, "utf8") !== treeHash(join(source, "desktop"))
-	);
+	return existsSync(built) && readFileSync(built, "utf8") !== windowHash(source);
 }
 
 export function mergeTree(
@@ -298,6 +349,27 @@ export function inHome(rel: string): string[] {
 	return [];
 }
 
+// Codex reads AGENTS.md where Claude reads CLAUDE.md, so it's a link to it.
+// Where a link can't be made it's a copy, and whichever of the two changed
+// last is copied over the other.
+export function linkAgents(home: string) {
+	const guide = join(home, "CLAUDE.md");
+	const agents = join(home, "AGENTS.md");
+	if (!existsSync(guide)) return;
+	const was = lstatSync(agents, { throwIfNoEntry: false });
+	if (!was) {
+		try {
+			symlinkSync("CLAUDE.md", agents);
+		} catch {
+			cpSync(guide, agents);
+		}
+		return;
+	}
+	if (was.isSymbolicLink() || readFileSync(agents).equals(readFileSync(guide))) return;
+	if (was.mtimeMs > statSync(guide).mtimeMs) cpSync(agents, guide);
+	else cpSync(guide, agents);
+}
+
 // The template as his Lab folder would have it, written to `out`.
 export function fitTemplate(template: string, out: string) {
 	rmSync(out, { recursive: true, force: true });
@@ -319,7 +391,8 @@ export function fitTemplate(template: string, out: string) {
 // Merges the template into his Lab folder over `base`, the fitted template
 // his folder matches. His side wins wherever both changed the same lines,
 // and app/ only changes if the merged app passes `checkApp`. Returns the
-// files it couldn't bring over.
+// files it couldn't bring over. A held file whose copy in .lab-update is gone
+// was brought together by hand, so its base moves to that release.
 export function syncHome(
 	home: string,
 	template: string,
@@ -334,6 +407,17 @@ export function syncHome(
 		rmSync(next, { recursive: true, force: true });
 		return { changed: [], held: [] };
 	}
+	const waiting = `${base}.held.json`;
+	const copy = join(home, ".lab-update");
+	for (const rel of readJson<string[]>(waiting) ?? [])
+		if (!existsSync(join(copy, rel))) {
+			rmSync(join(base, rel), { force: true });
+			if (existsSync(join(next, rel))) {
+				mkdirSync(dirname(join(base, rel)), { recursive: true });
+				cpSync(join(next, rel), join(base, rel));
+			}
+		}
+	linkAgents(home);
 	const m = mergeTree(base, home, next, "ours", [
 		...new Set([...files(base), ...files(next)]),
 	]);
@@ -353,6 +437,7 @@ export function syncHome(
 			}
 	}
 	write(home, m.writes);
+	linkAgents(home);
 	// The new template becomes the base for what came over. A held file keeps
 	// its old base, so the next update tries it again.
 	const keep = new Set(held);
@@ -361,8 +446,8 @@ export function syncHome(
 			mkdirSync(dirname(join(base, rel)), { recursive: true });
 			cpSync(join(next, rel), join(base, rel));
 		}
+	saveFile(waiting, JSON.stringify([...keep]));
 	if (held.length > 0) {
-		const copy = join(home, ".lab-update");
 		rmSync(copy, { recursive: true, force: true });
 		for (const rel of held) {
 			mkdirSync(dirname(join(copy, rel)), { recursive: true });
@@ -387,7 +472,11 @@ const newer = (a: string, b: string) => {
 // gh's is used when it's signed in, and a public repository needs none.
 function token(): string | undefined {
 	for (const gh of WIN ? ["gh"] : ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "gh"]) {
-		const r = spawnSync(gh, ["auth", "token"], { encoding: "utf8", windowsHide: true });
+		const r = spawnSync(gh, ["auth", "token"], {
+			encoding: "utf8",
+			windowsHide: true,
+			timeout: 5000,
+		});
 		if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
 	}
 	return setting("GH_TOKEN") ?? setting("GITHUB_TOKEN");
@@ -429,7 +518,7 @@ async function download(version: string, dir: string): Promise<string> {
 	mkdirSync(dir, { recursive: true });
 	const file = join(dir, "release.tar.gz");
 	writeFileSync(file, Buffer.from(await r.arrayBuffer()));
-	const x = await run("tar", ["-xzf", file, "-C", dir], { timeout: 5 * 60_000 });
+	const x = await run(TAR, ["-xzf", file, "-C", dir], { timeout: 5 * 60_000 });
 	if (x.status !== 0) throw new Error(`Couldn't unpack the release: ${x.out.trim()}`);
 	rmSync(file);
 	const top = readdirSync(dir).find((n) => statSync(join(dir, n)).isDirectory());
@@ -444,10 +533,15 @@ async function download(version: string, dir: string): Promise<string> {
 function run(
 	cmd: string,
 	args: string[],
-	opts: { cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean; timeout: number },
+	opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeout: number },
 ): Promise<{ status: number | null; out: string }> {
 	return new Promise((done) => {
-		const p = spawn(cmd, args, { ...opts, windowsHide: true });
+		const b = batch(cmd, args);
+		const p = spawn(b.file, b.args, {
+			...opts,
+			windowsHide: true,
+			windowsVerbatimArguments: b.windowsVerbatimArguments,
+		});
 		if (p.pid)
 			try {
 				setPriority(p.pid, constants.priority.PRIORITY_LOW);
@@ -492,6 +586,20 @@ export async function prepare(
 	say: (detail: string) => void,
 ): Promise<Ready> {
 	say("Downloading");
+	const base = join(lab, "base");
+	if (!existsSync(base)) {
+		// A change made here is one against the release this was installed from.
+		const old = join(work(lab), "old");
+		try {
+			const pkg = JSON.parse(
+				readFileSync(join(source, "computer", "package.json"), "utf8"),
+			) as { version: string };
+			renameSync(await download(pkg.version, old), base);
+		} catch {
+			// Without it stage() counts every difference as a change made here.
+		}
+		rmSync(old, { recursive: true, force: true });
+	}
 	const theirs = await download(version, join(work(lab), "new"));
 	return await stage(version, theirs, source, lab, say);
 }
@@ -506,9 +614,9 @@ export async function stage(
 	say: (detail: string) => void,
 ): Promise<Ready> {
 	const dir = work(lab);
-	const base = join(lab, "base");
-	// Without a base the source counts as unchanged, so the release goes in whole.
-	const m = mergeTree(existsSync(base) ? base : source, source, theirs, "theirs");
+	// Without a base every file that differs from the release counts as changed
+	// here, so it is kept as a .mine copy, and a file only here stays.
+	const m = mergeTree(join(lab, "base"), source, theirs, "theirs");
 	const trial = join(dir, "trial");
 	rmSync(trial, { recursive: true, force: true });
 	say("Merging");
@@ -528,11 +636,13 @@ export async function stage(
 	const modules = !same(read(join(source, lock)), read(join(trial, lock)));
 	if (modules) {
 		say("Installing packages");
-		const npm = await run(WIN ? "npm.cmd" : "npm", ["ci", "--no-audit", "--no-fund"], {
-			cwd: join(trial, "computer"),
-			shell: WIN,
-			timeout: 15 * 60_000,
-		});
+		// A PATH from the sign-in items may not have npm, which sits beside node.
+		const beside = join(dirname(process.execPath), WIN ? "npm.cmd" : "npm");
+		const npm = await run(
+			existsSync(beside) ? beside : WIN ? "npm.cmd" : "npm",
+			["ci", "--no-audit", "--no-fund"],
+			{ cwd: join(trial, "computer"), timeout: 15 * 60_000 },
+		);
 		if (npm.status !== 0)
 			throw new Error(`npm ci failed: ${npm.out.trim().slice(-400)}`);
 	} else
@@ -568,105 +678,157 @@ export async function stage(
 		modules,
 		conflicts: m.conflicts,
 	};
-	writeFileSync(join(dir, "ready.json"), JSON.stringify(ready));
+	save(join(dir, "ready.json"), ready);
 	return ready;
 }
 
-const readJson = <T>(p: string): T | null => {
-	try {
-		return JSON.parse(readFileSync(p, "utf8")) as T;
-	} catch {
-		return null;
-	}
-};
+const size = (p: string) => (existsSync(p) ? statSync(p).size : 0);
 
 // Run by the supervisor with the server stopped. Every file it replaces is
-// kept in update/previous first, so rollback() can put it back.
+// kept in update/previous before anything changes, so rollback() can put it back.
 export function apply(source: string, lab: string): string | null {
 	const dir = work(lab);
 	const ready = readJson<Ready>(join(dir, "ready.json"));
 	if (!ready) return null;
+	const release = readdirSync(join(dir, "new"))[0];
+	if (!release) throw new Error("The downloaded release is gone.");
 	const prev = join(dir, "previous");
-	rmSync(prev, { recursive: true, force: true });
-	mkdirSync(prev, { recursive: true });
+	const base = join(lab, "base");
 	const touched = [...ready.writes, ...ready.deletes];
-	writeFileSync(join(dir, "touched.json"), JSON.stringify(touched));
+	const need =
+		touched.reduce((n, rel) => n + size(join(source, rel)), 0) +
+		ready.writes.reduce((n, rel) => n + size(join(dir, "trial", rel)), 0);
+	const disk = statfsSync(dir);
+	if (disk.bavail * disk.bsize < need + 50_000_000)
+		throw new Error("There isn't enough free space for the update.");
 	try {
+		retry(() => rmSync(prev, { recursive: true, force: true }));
+		mkdirSync(prev, { recursive: true });
 		for (const rel of touched)
 			if (existsSync(join(source, rel))) {
 				mkdirSync(dirname(join(prev, rel)), { recursive: true });
 				cpSync(join(source, rel), join(prev, rel));
 			}
+		if (!existsSync(base)) writeFileSync(join(prev, "no-base"), "");
+	} catch (e) {
+		rmSync(prev, { recursive: true, force: true });
+		throw e;
+	}
+	// From here on a file in touched with no copy in previous is one the update added.
+	save(join(dir, "touched.json"), touched);
+	try {
 		for (const rel of ready.writes) {
 			mkdirSync(dirname(join(source, rel)), { recursive: true });
-			cpSync(join(dir, "trial", rel), join(source, rel));
+			retry(() => cpSync(join(dir, "trial", rel), join(source, rel)));
 		}
-		for (const rel of ready.deletes) rmSync(join(source, rel), { force: true });
+		for (const rel of ready.deletes)
+			retry(() => rmSync(join(source, rel), { force: true }));
 		if (ready.modules) {
-			renameSync(join(source, "computer", "node_modules"), join(prev, "node_modules"));
-			renameSync(
-				join(dir, "trial", "computer", "node_modules"),
-				join(source, "computer", "node_modules"),
+			retry(() =>
+				renameSync(
+					join(source, "computer", "node_modules"),
+					join(prev, "node_modules"),
+				),
+			);
+			retry(() =>
+				renameSync(
+					join(dir, "trial", "computer", "node_modules"),
+					join(source, "computer", "node_modules"),
+				),
 			);
 		}
-		const base = join(lab, "base");
-		if (existsSync(base)) renameSync(base, join(prev, "base"));
-		renameSync(join(dir, "new", readdirSync(join(dir, "new"))[0] ?? ""), base);
+		if (existsSync(base)) retry(() => renameSync(base, join(prev, "base")));
+		retry(() => renameSync(join(dir, "new", release), base));
+		save(join(dir, "trial.json"), {
+			version: ready.version,
+			conflicts: ready.conflicts,
+		});
 	} catch (e) {
+		// If this throws too, touched.json without trial.json tells the
+		// supervisor to try again before it starts the server.
 		rollback(source, lab);
 		throw e;
 	}
 	// The release passed its checks, so setup's gate starts from it.
-	writeFileSync(join(lab, "source-ok"), treeHash(source));
+	saveFile(join(lab, "source-ok"), treeHash(source));
 	rmSync(join(dir, "ready.json"), { force: true });
 	rmSync(join(dir, "trial"), { recursive: true, force: true });
 	rmSync(join(dir, "new"), { recursive: true, force: true });
-	writeFileSync(
-		join(dir, "trial.json"),
-		JSON.stringify({ version: ready.version, conflicts: ready.conflicts }),
-	);
 	return ready.version;
 }
 
-// Puts back what apply() replaced, and remembers the version so it isn't tried again.
+// An apply() that stopped partway, or a rollback that couldn't finish.
+export const halfway = (lab: string) =>
+	existsSync(join(work(lab), "touched.json")) &&
+	!existsSync(join(work(lab), "trial.json"));
+
+// Puts back what apply() replaced, base included, and remembers the version so
+// it isn't tried again. It can be run again after it throws partway.
 export function rollback(source: string, lab: string) {
 	const dir = work(lab);
 	const prev = join(dir, "previous");
+	const base = join(lab, "base");
 	const touched = readJson<string[]>(join(dir, "touched.json")) ?? [];
-	for (const rel of touched) {
-		if (existsSync(join(prev, rel))) cpSync(join(prev, rel), join(source, rel));
-		else rmSync(join(source, rel), { force: true });
-	}
+	for (const rel of touched)
+		retry(() => {
+			if (existsSync(join(prev, rel))) cpSync(join(prev, rel), join(source, rel));
+			else rmSync(join(source, rel), { force: true });
+		});
 	if (existsSync(join(prev, "node_modules"))) {
-		rmSync(join(source, "computer", "node_modules"), { recursive: true, force: true });
-		renameSync(join(prev, "node_modules"), join(source, "computer", "node_modules"));
+		retry(() =>
+			rmSync(join(source, "computer", "node_modules"), {
+				recursive: true,
+				force: true,
+			}),
+		);
+		retry(() =>
+			renameSync(join(prev, "node_modules"), join(source, "computer", "node_modules")),
+		);
 	}
 	if (existsSync(join(prev, "base"))) {
-		rmSync(join(lab, "base"), { recursive: true, force: true });
-		renameSync(join(prev, "base"), join(lab, "base"));
-	}
+		retry(() => rmSync(base, { recursive: true, force: true }));
+		retry(() => renameSync(join(prev, "base"), base));
+	} else if (existsSync(join(prev, "no-base")))
+		retry(() => rmSync(base, { recursive: true, force: true }));
 	const trial = readJson<{ version: string }>(join(dir, "trial.json"));
-	if (trial)
-		writeFileSync(join(dir, "bad.json"), JSON.stringify({ version: trial.version }));
+	if (trial) save(join(dir, "bad.json"), { version: trial.version });
 	rmSync(join(dir, "trial.json"), { force: true });
 	rmSync(join(dir, "touched.json"), { force: true });
-	writeFileSync(join(lab, "source-ok"), treeHash(source));
+	saveFile(join(lab, "source-ok"), treeHash(source));
+}
+
+// The supervisor's count of how often the release on trial has stopped.
+// Every stop before it confirms counts, however long it ran, except an exit 0,
+// which is a restart he asked for, and an exit 98, which means something else
+// held the port. The third one puts the old version back.
+export function trialExit(
+	source: string,
+	lab: string,
+	code: number | null,
+	fails: number,
+): { fails: number; back: boolean } {
+	if (!onTrial(lab)) return { fails: 0, back: false };
+	if (code === 0 || code === 98) return { fails, back: false };
+	if (fails + 1 < 3) return { fails: fails + 1, back: false };
+	rollback(source, lab);
+	return { fails: 0, back: true };
 }
 
 // The new server calls this once it has stayed up, and gets the version it
-// came from an update to.
+// came from an update to. A trial.json that can't be read counts as no trial.
 export function confirm(lab: string): { version: string; conflicts: string[] } | null {
 	const dir = work(lab);
+	if (!existsSync(join(dir, "trial.json"))) return null;
 	const trial = readJson<{ version: string; conflicts: string[] }>(
 		join(dir, "trial.json"),
 	);
-	if (!trial) return null;
 	rmSync(join(dir, "trial.json"), { force: true });
 	rmSync(join(dir, "previous"), { recursive: true, force: true });
 	rmSync(join(dir, "touched.json"), { force: true });
 	return trial;
 }
 
-export const onTrial = (lab: string) => existsSync(join(work(lab), "trial.json"));
+export const onTrial = (lab: string) =>
+	readJson<{ version: string }>(join(work(lab), "trial.json")) !== null;
 export const bad = (lab: string) =>
 	readJson<{ version: string }>(join(work(lab), "bad.json"))?.version;

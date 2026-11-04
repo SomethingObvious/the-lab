@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
 	appendFileSync,
 	createReadStream,
@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	statSync,
 	truncateSync,
 	watch,
@@ -20,7 +21,16 @@ import process, { env } from "node:process";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { tailscaleState } from "./checks.ts";
-import { config, home, labDir, saveFile, setConfig, setting, words } from "./config.ts";
+import {
+	config,
+	home,
+	labDir,
+	saveFile,
+	setConfig,
+	setting,
+	WIN,
+	words,
+} from "./config.ts";
 import { EFFORTS, type Live } from "./lab.ts";
 import { awake, type Mac } from "./mac.ts";
 import {
@@ -40,11 +50,13 @@ import {
 	bad,
 	confirm,
 	desktopStale,
+	halfway,
 	latest,
 	onTrial,
 	prepare,
 	rollback,
 	syncHome,
+	trialExit,
 	work,
 } from "./update.ts";
 
@@ -80,6 +92,32 @@ const TYPES: Record<string, string> = {
 };
 const typeOf = (p: string) =>
 	TYPES[extname(p).toLowerCase()] ?? "application/octet-stream";
+// What a browser can show from /files/ without running anything in it. The
+// rest downloads, since a page or SVG there would run on the server's origin
+// with his cookie.
+const SHOWN = new Set(
+	[".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic"]
+		.concat([".mp4", ".mov", ".webm", ".mp3", ".m4a", ".wav", ".pdf", ".txt"])
+		.map((x) => TYPES[x]),
+);
+// Windows and macOS don't tell paths apart by case.
+const fold = (x: string) =>
+	WIN || process.platform === "darwin" ? x.toLowerCase() : x;
+// The real path of p when it lies inside root, so a link or junction in
+// there can't hand out a file from somewhere else.
+const within = (root: string, p: string) => {
+	let real: string;
+	let top: string;
+	try {
+		real = realpathSync(p);
+		top = realpathSync(root);
+	} catch {
+		return null;
+	}
+	return fold(real).startsWith(fold(top.endsWith(sep) ? top : `${top}${sep}`))
+		? real
+		: null;
+};
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const pkg = JSON.parse(
 	readFileSync(new URL("./package.json", import.meta.url), "utf8"),
@@ -137,17 +175,29 @@ const html = (res: ServerResponse, status: number, title: string, body: string) 
 		"content-type": TYPES[".html"],
 		"cache-control": "no-store",
 		"content-security-policy":
-			"default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+			"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+		"x-frame-options": "DENY",
 	});
 	res.end(
 		`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${words(title)}</title><style>:root{color-scheme:light dark;--bg:light-dark(#f5f1ff,#100c1e);--ink:light-dark(#1a1530,#f0ebff);--primary:light-dark(#5a2ee6,#6b45f0);--link:light-dark(#4a20d6,#c4b2ff);--focus:light-dark(#5a2ee6,#c4b2ff)}body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:var(--ink);background:var(--bg)}h1{font-size:1.6rem;line-height:1.2;text-wrap:balance}a{color:var(--link);text-underline-offset:3px}a.btn{display:inline-block;min-height:48px;box-sizing:border-box;background:var(--primary);color:#fff;padding:.75rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}::selection{background:var(--primary);color:#fff}img{width:100%;max-width:22rem;display:block;margin:1.5rem 0;border-radius:12px;image-rendering:pixelated}</style></head><body><main>${words(body)}</main></body></html>`,
 	);
 };
 
+// Requests from a page in a browser, which has to say its body is JSON so a
+// form or a no-cors fetch from another site can't pass for one.
+const fromPage = new WeakSet<IncomingMessage>();
+
 // The fields of a JSON request body. It can be any JSON value, and a field
 // read from one that isn't an object is undefined or throws into the 400.
 const readBody = (req: IncomingMessage): Promise<Record<string, unknown>> =>
 	new Promise((ok, fail) => {
+		if (
+			fromPage.has(req) &&
+			!/^application\/json\s*(;|$)/i.test(String(req.headers["content-type"] ?? ""))
+		) {
+			fail(new Error("Send the request body as application/json."));
+			return;
+		}
 		let size = 0;
 		const parts: Buffer[] = [];
 		req.on("data", (c: Buffer) => {
@@ -240,6 +290,10 @@ const glance = (m: Mac | null) =>
 const SOURCE = dirname(dirname(fileURLToPath(import.meta.url)));
 // What the child exits with when an update is ready and the agent is idle.
 const INSTALL = 75;
+// What it exits with when another program already has its port.
+const PORT_TAKEN = 98;
+// How long a pairing link from setup works.
+const PAIR_LINK = 120_000;
 
 if (setting("LAB_CHILD")) serve();
 else supervise();
@@ -262,21 +316,49 @@ function supervise() {
 	let child: ReturnType<typeof spawn> | null = null;
 	let quickExits = 0;
 	let trialExits = 0;
+	const later = (started: number, why: string) => {
+		quickExits = Date.now() - started < 10_000 ? quickExits + 1 : 0;
+		const wait = Math.min(2000 * 2 ** quickExits, 60_000);
+		console.error(`${new Date().toISOString()} ${why}, restarting in ${wait / 1000}s`);
+		setTimeout(run, wait);
+	};
 	const run = () => {
 		const started = Date.now();
-		child = spawn(process.execPath, process.argv.slice(1), {
+		// A half-applied update would only crash, so it goes back before the server starts.
+		if (halfway(labDir()))
+			try {
+				rollback(SOURCE, labDir());
+				console.error(
+					`${new Date().toISOString()} an update didn't finish going in, so the version before it is back`,
+				);
+			} catch (e) {
+				later(
+					started,
+					`couldn't put back the version from before an update (${(e as Error).message})`,
+				);
+				return;
+			}
+		const c = spawn(process.execPath, process.argv.slice(1), {
 			env: { ...env, LAB_CHILD: "1" },
 			stdio: "inherit",
 		});
-		child.on("exit", (code, signal) => {
+		child = c;
+		// A child that never started has no exit to wait for.
+		c.on("error", (e) => {
+			if (c.pid !== undefined) return;
+			child = null;
+			later(started, `the server couldn't start (${e.message})`);
+		});
+		c.on("exit", (code, signal) => {
 			child = null;
 			const at = new Date().toISOString();
 			if (code === INSTALL) {
 				try {
 					console.error(`${at} installed v${apply(SOURCE, labDir())}`);
+					trialExits = 0;
 				} catch (e) {
 					console.error(
-						`${at} the update didn't go in, so nothing changed: ${(e as Error).message}`,
+						`${at} the update didn't go in${halfway(labDir()) ? "" : ", so nothing changed"}: ${(e as Error).message}`,
 					);
 				}
 				setTimeout(run, 500);
@@ -284,19 +366,19 @@ function supervise() {
 			}
 			// This process still runs the code from before the update, so it can
 			// put that back when the new server won't stay up.
-			if (onTrial(labDir()) && Date.now() - started < 60_000 && ++trialExits >= 3) {
-				rollback(SOURCE, labDir());
-				trialExits = 0;
+			try {
+				const t = trialExit(SOURCE, labDir(), code, trialExits);
+				trialExits = t.fails;
+				if (t.back)
+					console.error(
+						`${at} the update kept stopping, so the version before it is back`,
+					);
+			} catch (e) {
 				console.error(
-					`${at} the update kept stopping, so the version before it is back`,
+					`${at} couldn't put back the version from before the update: ${(e as Error).message}`,
 				);
 			}
-			quickExits = Date.now() - started < 10_000 ? quickExits + 1 : 0;
-			const wait = Math.min(2000 * 2 ** quickExits, 60_000);
-			console.error(
-				`${new Date().toISOString()} server exited (${signal ?? code}), restarting in ${wait / 1000}s`,
-			);
-			setTimeout(run, wait);
+			later(started, `server exited (${signal ?? code})`);
 		});
 	};
 	run();
@@ -358,18 +440,16 @@ async function serve() {
 	// Codex has no send_to_phone tool, so it copies files in here instead.
 	const toPhone = join(Home, "to-phone");
 	// One that couldn't be sent or moved away stays put, and isn't tried
-	// again every minute.
-	const stuck = new Set<string>();
+	// again every minute. A new file under the same name is tried again.
+	const stuck = new Map<string, string>();
 	const drop = async (name: string) => {
 		const p = join(toPhone, name);
-		if (
-			name.startsWith(".") ||
-			stuck.has(name) ||
-			!existsSync(p) ||
-			!statSync(p).isFile()
-		)
-			return;
-		if (!(await lab.sendDropped(p))) stuck.add(name);
+		if (name.startsWith(".") || !existsSync(p)) return;
+		const st = statSync(p);
+		const which = `${st.size} ${st.mtimeMs}`;
+		if (!st.isFile() || stuck.get(name) === which) return;
+		stuck.delete(name);
+		if (!(await lab.sendDropped(p))) stuck.set(name, which);
 	};
 	const sending = new Set<string>();
 	let watcher: ReturnType<typeof watch> | null = null;
@@ -386,7 +466,9 @@ async function serve() {
 				watcher?.close();
 				watcher = null;
 			});
-			for (const name of readdirSync(toPhone)) {
+			const names = readdirSync(toPhone);
+			for (const name of stuck.keys()) if (!names.includes(name)) stuck.delete(name);
+			for (const name of names) {
 				if (sending.has(name)) continue;
 				sending.add(name);
 				drop(name)
@@ -507,7 +589,10 @@ async function serve() {
 	// What the page on the phone reports going wrong, for the agent to fix.
 	const errorsFile = join(Dir, "app-errors.log");
 	let undoneTo: string | null = null;
+	// Errors already passed on for the version the phone runs, at most 20 of
+	// them, so a page throwing in a loop can't flood the agent.
 	const reported = new Set<string>();
+	let reportedFor = "";
 	const bridge = readFileSync(new URL("./web-bridge.js", import.meta.url));
 	const want = Buffer.from(token);
 	// The agent can't read the token, so it checks a design change through
@@ -615,7 +700,10 @@ async function serve() {
 	const saveRan = () => writeJson(ranFile, ran);
 	let schedules: Schedule[] = [];
 	const readSchedules = () => {
-		if (!existsSync(schedulesFile)) return;
+		if (!existsSync(schedulesFile)) {
+			schedules = [];
+			return;
+		}
 		try {
 			schedules =
 				cleanSchedules(JSON.parse(readFileSync(schedulesFile, "utf8"))) ?? schedules;
@@ -728,6 +816,9 @@ async function serve() {
 		return got !== undefined && got.kind === kind && got.until > Date.now();
 	};
 	const urlFile = join(Dir, "url");
+	// Pairing links setup has opened, by the time each was made. One works
+	// once, within 2 minutes of when it was made.
+	const usedLinks = new Set<number>();
 
 	const tunnel = startTunnel({
 		dir: Dir,
@@ -771,14 +862,36 @@ async function serve() {
 		return lab.state.login === who;
 	};
 
-	const authed = (req: IncomingMessage) => {
+	// The phone and the window's shells send the token as a Bearer header. A
+	// browser has the cookie from a pairing link instead.
+	const authed = (req: IncomingMessage): "bearer" | "cookie" | null => {
 		const h = req.headers.authorization ?? "";
+		const bearer = h.startsWith("Bearer ");
 		const cookie = /(?:^|;\s*)lab=([^;]+)/.exec(req.headers.cookie ?? "")?.[1] ?? "";
-		const got = Buffer.from(
-			h.startsWith("Bearer ") ? h.slice(7) : decodeURIComponent(cookie),
-		);
-		return got.length === want.length && timingSafeEqual(got, want) && sameLogin(req);
+		const got = Buffer.from(bearer ? h.slice(7) : decodeURIComponent(cookie));
+		if (!(got.length === want.length && timingSafeEqual(got, want) && sameLogin(req)))
+			return null;
+		return bearer ? "bearer" : "cookie";
 	};
+	// A browser sends the cookie to any page that names this address, so it
+	// only counts from The Lab's own page, reached by its own name.
+	const own = [`127.0.0.1:${port}`, `localhost:${port}`];
+	const ownPage = (req: IncomingMessage) => {
+		if (!own.includes(req.headers.host ?? ""))
+			return `Open The Lab at http://127.0.0.1:${port} instead.`;
+		if (
+			req.method !== "GET" &&
+			req.method !== "HEAD" &&
+			!own.some((h) => req.headers.origin === `http://${h}`)
+		)
+			return "Only The Lab's own page can change things here.";
+		fromPage.add(req);
+		return null;
+	};
+	// Only the shells hold the token itself. A page has the cookie at most, and
+	// the agent can rewrite the page, so answering a question needs the token.
+	const bearer = (req: IncomingMessage) =>
+		(req.headers.authorization ?? "").startsWith("Bearer ") && authed(req);
 	const previewing = (req: IncomingMessage, path: string) => {
 		const got = Buffer.from(
 			decodeURIComponent(
@@ -994,13 +1107,28 @@ async function serve() {
 			});
 			return res.end();
 		}
-		const t = url.searchParams.get("t") ?? "";
-		if (Buffer.from(t).length !== want.length || !timingSafeEqual(Buffer.from(t), want))
-			return json(res, 401, { error: "That pairing link is not valid." });
+		const [at = "", sig = ""] = (url.searchParams.get("k") ?? "").split(".");
+		const made = /^\d{1,15}$/.test(at) ? Number(at) : Number.NaN;
+		const good = Buffer.from(
+			createHmac("sha256", token).update(`the-lab pair ${at}`).digest("hex"),
+		);
+		for (const u of usedLinks)
+			if (Math.abs(Date.now() - u) > PAIR_LINK) usedLinks.delete(u);
+		if (
+			!(Math.abs(Date.now() - made) <= PAIR_LINK) ||
+			usedLinks.has(made) ||
+			Buffer.from(sig).length !== good.length ||
+			!timingSafeEqual(Buffer.from(sig), good)
+		)
+			return json(res, 401, {
+				error:
+					"That pairing link has expired or was already used. Run node setup.ts pair for a new one.",
+			});
+		usedLinks.add(made);
 		const nextPath =
 			url.searchParams.get("next") === "/pair-phone" ? "/pair-phone" : "/";
 		res.writeHead(303, {
-			"set-cookie": `lab=${encodeURIComponent(t)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
+			"set-cookie": `lab=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`,
 			location: nextPath,
 		});
 		return res.end();
@@ -1028,7 +1156,14 @@ async function serve() {
 		],
 	]);
 
-	const pairPhone: Route = async (_req, res) => {
+	const pairPhone: Route = async (req, res) => {
+		// Only a page opened in a window gets a code, never a script's fetch
+		// or a frame, as whoever holds the code can pair and get the token.
+		if (
+			req.headers["sec-fetch-mode"] !== "navigate" ||
+			req.headers["sec-fetch-dest"] !== "document"
+		)
+			return json(res, 403, { error: "Open the pairing page in a window." });
 		// Without a relay or Tailscale the code still pairs over the Wi-Fi.
 		const tailscale = !relay && existsSync(urlFile);
 		if (!(relay || tailscale || tunnel.spec().lan.length > 0))
@@ -1103,9 +1238,23 @@ async function serve() {
 	const allowed: Route = async (req, res) => {
 		if (req.method === "POST") {
 			const { remove } = await readBody(req);
-			if (typeof remove === "number" && Number.isInteger(remove)) {
-				lab.rules.splice(remove, 1);
-				lab.saveRules();
+			if (
+				typeof remove !== "number" ||
+				!Number.isInteger(remove) ||
+				remove < 0 ||
+				remove >= lab.rules.length
+			)
+				return json(res, 400, {
+					error: `remove has to be the place of a rule in the list, and ${JSON.stringify(remove)} isn't one. Reload the list and try again.`,
+				});
+			const [rule] = lab.rules.splice(remove, 1);
+			// Gone here but still on disk would bring it back after a restart.
+			if (rule && !lab.saveRules()) {
+				lab.rules.splice(remove, 0, rule);
+				return json(res, 500, {
+					error:
+						"Couldn't save the change, so the command is still allowed. Try again.",
+				});
 			}
 		}
 		return json(res, 200, {
@@ -1138,6 +1287,10 @@ async function serve() {
 		const text = String(message ?? "").slice(0, 500);
 		// Reports from an older version of the app are already gone.
 		if (!text || (version && version !== design.version)) return json(res, 200, {});
+		if (reportedFor !== design.version) {
+			reported.clear();
+			reportedFor = design.version;
+		}
 		appendFileSync(
 			errorsFile,
 			`${new Date().toISOString()} ${design.version} ${String(where ?? "").slice(0, 80)} ${text}\n`,
@@ -1319,6 +1472,10 @@ async function serve() {
 		[
 			"POST /answer",
 			async (req, res) => {
+				if (!bearer(req))
+					return json(res, 403, {
+						error: "Answer this on your phone or in The Lab window.",
+					});
 				const { ref, allow, always } = await readBody(req);
 				return lab.answer(String(ref), allow === true, always === true)
 					? json(res, 200, {})
@@ -1368,7 +1525,11 @@ async function serve() {
 				json(
 					res,
 					200,
-					(url.searchParams.has("saved") && lab.state.models) || (await lab.models()),
+					// A list saved under the other engine names the wrong models.
+					(url.searchParams.has("saved") &&
+						lab.state.models?.engine === (engine ?? "claude") &&
+						lab.state.models) ||
+						(await lab.models()),
 				),
 		],
 		["POST /model", chooseModel],
@@ -1420,17 +1581,44 @@ async function serve() {
 		],
 	]);
 
+	const question: Route = (_req, res, _url, path) => {
+		const ref = path.slice(6);
+		const card = lab.question(ref);
+		if (!card)
+			return json(res, 404, {
+				error: "That question was already answered or has expired.",
+			});
+		const { always, ...shown } = card;
+		return json(res, 200, { ref, ...shown, always: Boolean(always) });
+	};
+	const filesDir = join(Dir, "files");
 	const stored: Route = (_req, res, _url, path) => {
-		const p = lab.fileFor(path.slice(7));
-		return p
-			? sendFile(res, p, { "cache-control": "private, max-age=31536000, immutable" })
-			: json(res, 404, { error: "That file is gone." });
+		const found = lab.fileFor(path.slice(7));
+		const p = found && within(filesDir, found);
+		if (!p) return json(res, 404, { error: "That file is gone." });
+		const type = typeOf(p);
+		return sendFile(res, p, {
+			"cache-control": "private, max-age=31536000, immutable",
+			"x-content-type-options": "nosniff",
+			// A sandboxed PDF won't open in Chrome or Safari, and their viewers
+			// don't run its script on this origin anyway.
+			...(type === TYPES[".pdf"]
+				? {}
+				: {
+						"content-security-policy":
+							"sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
+					}),
+			...(SHOWN.has(type) ? {} : { "content-disposition": "attachment" }),
+		});
 	};
 	// The desktop view of the same app, for checking a design change on
 	// the computer itself.
 	const desktop: Route = (_req, res, _url, path) => {
-		const p = resolve(appDir, `.${path === "/" ? "/index.html" : path}`);
-		if (!(p.startsWith(`${appDir}${sep}`) && existsSync(p) && statSync(p).isFile()))
+		const p = within(
+			appDir,
+			resolve(appDir, `.${path === "/" ? "/index.html" : path}`),
+		);
+		if (!p || !statSync(p).isFile())
 			return json(res, 404, { error: `No such file: ${path}` });
 		if (p.endsWith("index.html")) {
 			const page = readFileSync(p, "utf8").replace(
@@ -1445,6 +1633,12 @@ async function serve() {
 		}
 		return sendFile(res, p, { "cache-control": "no-store" });
 	};
+	const byPrefix = (method: string | undefined, path: string): Route | undefined => {
+		if (method !== "GET") return undefined;
+		if (path.startsWith("/files/")) return stored;
+		if (path.startsWith("/asks/")) return question;
+		return desktop;
+	};
 	const find = (table: Map<string, Route>, method: string | undefined, path: string) =>
 		table.get(`${method} ${path}`) ?? table.get(`* ${path}`);
 
@@ -1458,22 +1652,27 @@ async function serve() {
 		} catch {
 			return json(res, 400, { error: "That address isn't valid." });
 		}
+		// A service worker could sit between the page and the computer and
+		// see everything, so the browser is never given a script to run as one.
+		if (req.headers["service-worker"])
+			return json(res, 403, { error: "The Lab doesn't use service workers." });
 		try {
 			const before = find(open, req.method, path);
 			if (before) {
 				await before(req, res, url, path);
 				return;
 			}
-			if (!(authed(req) || previewing(req, path)))
+			const how = authed(req) ?? (previewing(req, path) ? "cookie" : null);
+			if (!how)
 				return json(res, 401, {
 					error:
 						req.method === "GET"
 							? "Not paired with this computer."
 							: "The preview only looks. Send from the phone instead.",
 				});
-			let route = find(routes, req.method, path);
-			if (!route && req.method === "GET")
-				route = path.startsWith("/files/") ? stored : desktop;
+			const refused = how === "cookie" ? ownPage(req) : null;
+			if (refused) return json(res, 403, { error: refused });
+			const route = find(routes, req.method, path) ?? byPrefix(req.method, path);
 			if (route) {
 				await route(req, res, url, path);
 				return;
@@ -1486,6 +1685,15 @@ async function serve() {
 	// Node gives a request 5 minutes to arrive, and a 100 MB upload over a
 	// slow phone connection can take longer than that.
 	server.requestTimeout = 60 * 60_000;
+	// Exiting at once would have the supervisor start it again straight into
+	// the same clash, so it waits a little first.
+	server.on("error", (e: NodeJS.ErrnoException) => {
+		const taken = e.code === "EADDRINUSE";
+		console.error(
+			`${new Date().toISOString()} ${taken ? `port ${port} is already in use by another program, so The Lab can't start` : `couldn't listen on port ${port}: ${e.message}`}`,
+		);
+		setTimeout(() => process.exit(taken ? PORT_TAKEN : 1), 3000);
+	});
 	server.listen(port, "127.0.0.1", () =>
 		process.stdout.write(
 			`${new Date().toISOString()} The Lab ${pkg.version} on 127.0.0.1:${port}, home ${Home}\n`,

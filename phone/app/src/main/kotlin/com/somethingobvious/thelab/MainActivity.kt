@@ -15,6 +15,7 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.WindowInsetsAnimation
@@ -40,6 +41,7 @@ import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
 import androidx.core.graphics.drawable.toDrawable
+import androidx.core.graphics.toColorInt
 import androidx.core.net.toUri
 import androidx.core.util.Consumer
 import androidx.core.view.WindowCompat
@@ -55,6 +57,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.FileInputStream
 import java.io.IOException
+import java.security.MessageDigest
+import java.security.SecureRandom
 import kotlin.math.roundToInt
 
 class MainActivity : Activity() {
@@ -65,8 +69,10 @@ class MainActivity : Activity() {
     private var rescueReason: String? = null
     private var ready = false
     private var picking: String? = null
-    // Text or files shared in, held until the page has subscribed.
-    private var compose: JSONObject? = null
+    // Only <lab-ask> knows it, so only it can answer an Allow card.
+    private var askKey = ""
+    private val askScript by lazy { assets.open("ask.js").bufferedReader().use { it.readText() } }
+    private var pairDialog: AlertDialog? = null
     private var insets = JSONObject().put("kind", "insets")
     private var fold = JSONObject().put("kind", "fold").put("posture", JSONObject.NULL).put("hinge", JSONObject.NULL)
     private var imeMoving = false
@@ -77,16 +83,17 @@ class MainActivity : Activity() {
     private val watchdog = Runnable {
         if (!ready && rescueReason == null) {
             // A busy phone can be slow to start the page, so a quiet first miss
-            // gets one more go before the design is blamed and put back.
+            // gets a longer second go before the design is blamed and put back.
             if (!slow && pageError == null) {
                 slow = true
                 load()
                 return@Runnable
             }
-            broken(pageError ?: "The page didn't call lab.ready() within 8 seconds, twice.")
+            broken(pageError ?: "The page didn't call lab.ready() within 8 seconds, then 20 more.")
             load()
         }
     }
+    private val patience get() = if (slow) 20_000L else 8000L
     private var slow = false
     // Renderer deaths before the page was ready, so a design that keeps killing it reaches the safe screen.
     private var deaths = 0
@@ -199,7 +206,17 @@ class MainActivity : Activity() {
     }
 
     private fun toCompose(e: JSONObject) {
-        if (port != null && ready) { send(e); keyboard() } else compose = e
+        Hub.composing.add(e)
+        deliverCompose()
+    }
+
+    // Held in Hub until the design is up and ready, so a share is kept
+    // through a slow start, a safe screen or a rebuilt screen.
+    private fun deliverCompose() {
+        if (port == null || !ready || !showingApp || Hub.composing.isEmpty()) return
+        for (e in Hub.composing) send(e)
+        Hub.composing.clear()
+        keyboard()
     }
 
     // The page focuses the message box, but a focus no one tapped doesn't
@@ -216,13 +233,21 @@ class MainActivity : Activity() {
         else intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
         if (uris.isEmpty()) return toCompose(JSONObject().put("kind", "compose").put("text", text))
         Toast.makeText(this, "Sending to the computer", Toast.LENGTH_SHORT).show()
+        uploadAll(uris, "Couldn't send that to the computer.") { out, error ->
+            if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+            toCompose(JSONObject().put("kind", "compose").put("text", text).put("files", out))
+        }
+    }
+
+    // The first 20, which is all one message can carry. error is what to tell him, if anything.
+    private fun uploadAll(uris: List<Uri>, fallback: String, done: (JSONArray, String?) -> Unit) {
         Hub.later {
             val out = JSONArray()
-            val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't send that to the computer." }
-            Hub.onMain {
-                if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
-                toCompose(JSONObject().put("kind", "compose").put("text", text).put("files", out))
-            }
+            val error = try {
+                for (u in uris.take(MAX_FILES)) out.put(Hub.upload(u))
+                if (uris.size > MAX_FILES) "Only the first $MAX_FILES files were attached. Send the rest in another message." else null
+            } catch (e: IOException) { e.message ?: fallback }
+            Hub.onMain { done(out, error) }
         }
     }
 
@@ -283,7 +308,7 @@ class MainActivity : Activity() {
         visible = true
         if (web == null) { stale = false; build() }
         else if (stale) { stale = false; load() }
-        else if (showingApp && !ready) { frame.removeCallbacks(watchdog); frame.postDelayed(watchdog, 8000) }
+        else if (showingApp && !ready) { frame.removeCallbacks(watchdog); frame.postDelayed(watchdog, patience) }
     }
 
     override fun onStop() {
@@ -297,10 +322,33 @@ class MainActivity : Activity() {
         super.onResume()
         Hub.foreground = true
         Notifier.clearReplies(this)
-        if (Hub.paired) {
+        if (Hub.pendingPair != null) confirmPair()
+        else if (Hub.paired) {
             Hub.reconnectNow()
             nudge()
         }
+    }
+
+    // A pairing that came in by broadcast for a different computer than this
+    // one, which only goes ahead on his yes here.
+    private fun confirmPair() {
+        val p = Hub.pendingPair ?: return
+        if (pairDialog?.isShowing == true) return
+        val drop = { if (Hub.pendingPair === p) Hub.pendingPair = null; Notifier.pairAnswered(this) }
+        pairDialog = AlertDialog.Builder(this)
+            .setTitle("Switch to Another Computer?")
+            .setMessage("Something on this phone asked The Lab to pair with a different computer from the one it uses now. Only say yes if you're setting The Lab up on your own computer right now. Switching clears this phone's history and unsent messages for the old one.")
+            .setNegativeButton("Cancel") { _, _ -> drop() }
+            .setOnCancelListener { drop() }
+            .setPositiveButton("Switch") { _, _ ->
+                if (Hub.pendingPair !== p) return@setPositiveButton
+                Notifier.pairAnswered(this)
+                Hub.pair(p.url, p.tunnel, p.token)
+                LinkService.start(this)
+                rescueReason = null
+                load()
+            }
+            .show()
     }
 
     // Either one quietly stops his questions reaching him, so it's worth a
@@ -346,6 +394,7 @@ class MainActivity : Activity() {
         Hub.resetListeners.remove(onReset)
         unlisten?.invoke()
         web?.destroy()
+        pairDialog?.dismiss()
         super.onDestroy()
     }
 
@@ -415,6 +464,10 @@ class MainActivity : Activity() {
             }
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            // A fresh key for each WebView, and ask.js first, so it holds the
+            // built-ins it needs before anything else on the page runs.
+            askKey = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+            WebViewCompat.addDocumentStartJavaScript(w, askScript.replace("__LAB_ASK_KEY__", askKey), setOf(ORIGIN))
             WebViewCompat.addDocumentStartJavaScript(w, assets.open("bridge.js").bufferedReader().readText(), setOf(ORIGIN))
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
@@ -440,7 +493,7 @@ class MainActivity : Activity() {
             w.loadUrl("$ORIGIN/shell/rescue.html")
         } else {
             w.loadUrl("$ORIGIN/app/index.html")
-            if (visible) frame.postDelayed(watchdog, 8000)
+            if (visible) frame.postDelayed(watchdog, patience)
         }
     }
 
@@ -453,8 +506,14 @@ class MainActivity : Activity() {
     private fun broken(why: String) {
         slow = false
         deaths = 0
-        Hub.reportBroken(why)
         autoRescue = true
+        // A version that has opened before is more likely a slow or busy
+        // phone than a broken design, so it isn't undone.
+        if (Hub.designVersion != null && Hub.designVersion == Hub.designOpened) {
+            rescueReason = "The design didn't finish opening this time, so this is the safe screen. It has opened fine before, so it stays as it is. Tap Back to My Design to try it again."
+            return
+        }
+        Hub.reportBroken(why)
         rescueReason = "The design didn't finish loading, so this is the safe screen. The computer is putting the version before it back."
     }
 
@@ -489,15 +548,14 @@ class MainActivity : Activity() {
                     history.put(JSONObject().put("kind", "loaded"))
                     post(reply, JSONObject().put("batch", history).toString())
                     unlisten = Hub.listen { send(it) }
-                    compose?.let { post(reply, it.toString()); keyboard() }
-                    compose = null
                 }
             }
             "send" -> {
                 val text = m.optString("text").trim()
                 val cid = m.optString("cid")
-                val files = m.optJSONArray("files")?.takeIf { it.length() in 1..20 }
+                val files = m.optJSONArray("files")?.takeIf { it.length() > 0 }
                 if (text.length > 50_000) send(Hub.sendFailed(cid, text, "That message is over 50,000 characters, so it didn't send. Try sending it in parts."))
+                else if (files != null && files.length() > MAX_FILES) send(Hub.sendFailed(cid, text, "That message has more than $MAX_FILES files, so it didn't send. Send them in smaller batches."))
                 else if ((text.isNotEmpty() || files != null) && cid.length == 36) Hub.send(text, cid, files)
                 else if (text.isNotEmpty()) send(Hub.sendFailed(cid, text, "That message didn't send. Try again."))
                 // Asked here, when replies and approvals start to matter, rather than on first launch.
@@ -513,14 +571,13 @@ class MainActivity : Activity() {
             }
             "attach" -> pick(m.optString("id"), m.optString("kind"))
             "stop" -> Hub.stop { ok -> if (!ok) send(JSONObject().put("kind", "stopFailed")) }
-            "answer" -> {
-                val ref = m.optString("ref")
-                Hub.answer(ref, m.optBoolean("allow"), m.optBoolean("always")) { code -> if (code !in 200..299 && code != 404) send(JSONObject().put("kind", "answerFailed").put("ref", ref)) }
-            }
+            "askInfo", "askAnswer" -> asked(m, reply)
             "call" -> {
                 val id = m.optString("id")
                 val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the computer.")
-                Hub.request(method, m.optString("path"), m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
+                val path = m.optString("path")
+                if (closedToPage(path)) return answer(id, null, "The page can't use that route. Questions are answered on their own card, and pairing happens on the phone.")
+                Hub.request(method, path, m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
             }
             "check" -> check(m.optString("id"))
             "undo" -> Hub.undoDesign { ok ->
@@ -539,8 +596,10 @@ class MainActivity : Activity() {
                 slow = false
                 deaths = 0
                 frame.removeCallbacks(watchdog)
+                if (showingApp) Hub.openedFine()
                 applyTheme(m)
                 reportFullyDrawn()
+                deliverCompose()
             }
             "theme" -> applyTheme(m)
             "back" -> wantsBack(m.optBoolean("on"))
@@ -551,6 +610,25 @@ class MainActivity : Activity() {
                 LinkService.refresh()
             }
             "retry" -> Hub.reconnectNow()
+        }
+    }
+
+    // From <lab-ask>, which alone holds this WebView's key. Anything else is
+    // dropped without a reply. The reply never carries the key.
+    private fun asked(m: JSONObject, reply: JavaScriptReplyProxy) {
+        val key = m.opt("key") as? String ?: return
+        if (askKey.isEmpty() || !MessageDigest.isEqual(key.toByteArray(), askKey.toByteArray())) return
+        val nonce = m.opt("nonce") as? String ?: return
+        val ref = (m.opt("ref") as? String)?.let { plainName(it) }?.takeIf { it.length <= 200 } ?: return
+        val op = m.optString("op")
+        val out = JSONObject().put("op", op).put("nonce", nonce)
+        if (op == "askInfo") Hub.askInfo(ref) { code, text ->
+            val ask = if (code == 200) text?.let { runCatching { JSONObject(it) }.getOrNull() } else null
+            post(reply, out.put("status", code).put("ask", ask ?: JSONObject.NULL).toString())
+        } else {
+            val allow = m.opt("allow") as? Boolean ?: return
+            val always = m.opt("always") as? Boolean ?: return
+            Hub.answer(ref, allow, always) { code -> post(reply, out.put("status", code.coerceAtLeast(0)).toString()) }
         }
     }
 
@@ -591,9 +669,9 @@ class MainActivity : Activity() {
         // The window background is left as it started. The page covers all of
         // it once drawn, and swapping it here would drop the header band in
         // the moment before the first paint.
-        if (runCatching { Color.parseColor(m.optString("bg")) }.isFailure) return
-        bars(m)
-        getSharedPreferences("lab", MODE_PRIVATE).edit { putString(if (night) "look-dark" else "look-light", m.toString()) }
+        val t = cleanTheme(m) ?: return
+        bars(t)
+        getSharedPreferences("lab", MODE_PRIVATE).edit { putString(if (night) "look-dark" else "look-light", t.toString()) }
     }
 
     private fun bars(m: JSONObject) {
@@ -607,23 +685,32 @@ class MainActivity : Activity() {
     // Until the page draws, the window shows last time's background and
     // header band, so a restyled design doesn't open on the stock colours.
     // A first run has only the theme's windowBackground.
+    // This runs before the safe screen exists, so a saved look that can't be
+    // drawn is thrown away rather than stopping every launch.
     private fun paintStart() {
-        val raw = getSharedPreferences("lab", MODE_PRIVATE).getString(if (night) "look-dark" else "look-light", null) ?: return
-        val m = runCatching { JSONObject(raw) }.getOrNull() ?: return
-        val bg = runCatching { Color.parseColor(m.optString("bg")) }.getOrNull() ?: return
-        val head = runCatching { Color.parseColor(m.optString("head")) }.getOrNull()
-        val d = resources.displayMetrics.density
-        val height = (m.optDouble("headHeight", 0.0) * d).roundToInt()
-        val layers = if (head != null && head != bg && height > 0) {
-            val r = m.optDouble("headRadius", 0.0).toFloat() * d
-            val band = GradientDrawable().apply { setColor(head); cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r) }
-            LayerDrawable(arrayOf(bg.toDrawable(), band)).apply {
-                setLayerGravity(1, Gravity.TOP or Gravity.FILL_HORIZONTAL)
-                setLayerHeight(1, height)
-            }
-        } else bg.toDrawable()
-        window.setBackgroundDrawable(layers)
-        bars(m)
+        val prefs = getSharedPreferences("lab", MODE_PRIVATE)
+        val key = if (night) "look-dark" else "look-light"
+        val raw = prefs.getString(key, null) ?: return
+        try {
+            val m = cleanTheme(JSONObject(raw)) ?: throw IllegalArgumentException("unusable look")
+            val bg = m.getString("bg").toColorInt()
+            val head = m.optString("head").ifEmpty { null }?.toColorInt()
+            val d = resources.displayMetrics.density
+            val height = (m.optDouble("headHeight", 0.0) * d).roundToInt()
+            val layers = if (head != null && head != bg && height > 0) {
+                val r = m.optDouble("headRadius", 0.0).toFloat() * d
+                val band = GradientDrawable().apply { setColor(head); cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r) }
+                LayerDrawable(arrayOf(bg.toDrawable(), band)).apply {
+                    setLayerGravity(1, Gravity.TOP or Gravity.FILL_HORIZONTAL)
+                    setLayerHeight(1, height)
+                }
+            } else bg.toDrawable()
+            window.setBackgroundDrawable(layers)
+            bars(m)
+        } catch (e: Exception) {
+            Log.w("Lab", "dropped a saved look that couldn't be drawn", e)
+            prefs.edit { remove(key) }
+        }
     }
 
     private fun wantsBack(on: Boolean) {
@@ -678,17 +765,17 @@ class MainActivity : Activity() {
             if (id != null) answer(id, JSONArray())
             return
         }
-        Hub.later {
-            val out = JSONArray()
-            val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't attach that." }
-            Hub.onMain {
-                when {
-                    id != null -> if (error != null) answer(id, null, error) else answer(id, out)
-                    // The page that asked was rebuilt, so the files go to the message box like a share.
-                    else -> {
-                        if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
-                        toCompose(JSONObject().put("kind", "compose").put("text", "").put("files", out))
-                    }
+        uploadAll(uris, "Couldn't attach that.") { out, error ->
+            when {
+                id != null && out.length() == 0 && error != null -> answer(id, null, error)
+                id != null -> {
+                    answer(id, out)
+                    if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                }
+                // The page that asked was rebuilt, so the files go to the message box like a share.
+                else -> {
+                    if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                    toCompose(JSONObject().put("kind", "compose").put("text", "").put("files", out))
                 }
             }
         }
@@ -738,5 +825,67 @@ class MainActivity : Activity() {
         const val SAFE = "com.somethingobvious.thelab.SAFE"
         const val COMPOSE = "com.somethingobvious.thelab.COMPOSE"
         const val PICK = 7
+        // As many files as one message can carry.
+        const val MAX_FILES = 20
     }
+}
+
+private val COLOR = Regex("^#[0-9a-fA-F]{6}$")
+
+// Only what paintStart and bars read, each one checked, since the page is
+// the agent's design and a bad number would crash every launch. Null when
+// the background itself isn't a colour.
+internal fun cleanTheme(m: JSONObject): JSONObject? {
+    val bg = (m.opt("bg") as? String)?.takeIf { COLOR.matches(it) } ?: return null
+    val out = JSONObject().put("bg", bg)
+    for (k in listOf("dark", "topDark", "bottomDark")) (m.opt(k) as? Boolean)?.let { out.put(k, it) }
+    val head = (m.opt("head") as? String)?.takeIf { COLOR.matches(it) }
+    val height = (m.opt("headHeight") as? Number)?.toDouble()?.takeIf { it.isFinite() && it in 0.0..1000.0 }
+    val radius = ((m.opt("headRadius") ?: 0) as? Number)?.toDouble()?.takeIf { it.isFinite() && it in 0.0..500.0 }
+    if (head != null && height != null && radius != null) out.put("head", head).put("headHeight", height).put("headRadius", radius)
+    return out
+}
+
+// Answering questions and pairing are for the shell alone, never the page's
+// own calls with the token. The page is the agent's design, so any spelling
+// the server could read as one of those routes is turned down too.
+internal fun closedToPage(path: String): Boolean {
+    if (path.any { it == '\\' || it == '#' } || path.count { it == '?' } > 1) return true
+    var p = path.substringBefore('?')
+    // Escapes can be stacked, %2561 for a, so they're undone until none are left.
+    var rounds = 0
+    while ('%' in p) {
+        if (++rounds > 4) return true
+        p = unescape(p) ?: return true
+    }
+    if (p.any { it < ' ' || it == '\\' || it == '?' || it == '#' }) return true
+    val parts = ArrayList<String>()
+    for (seg in p.split('/')) when (seg) {
+        "", "." -> {}
+        ".." -> parts.removeLastOrNull()
+        else -> parts.add(seg.lowercase())
+    }
+    val route = "/" + parts.joinToString("/")
+    return route == "/answer" || route == "/asks" || route.startsWith("/asks/") ||
+        route == "/pair" || route.startsWith("/pair/") || route == "/pair-phone"
+}
+
+// Percent escapes as UTF-8, or null for a stray % that isn't one.
+private fun unescape(s: String): String? {
+    val out = java.io.ByteArrayOutputStream()
+    var i = 0
+    while (i < s.length) {
+        if (s[i] != '%') {
+            out.write(s[i].toString().toByteArray())
+            i++
+            continue
+        }
+        if (i + 2 >= s.length) return null
+        val hi = Character.digit(s[i + 1], 16)
+        val lo = Character.digit(s[i + 2], 16)
+        if (hi < 0 || lo < 0) return null
+        out.write(hi * 16 + lo)
+        i += 3
+    }
+    return String(out.toByteArray(), Charsets.UTF_8)
 }

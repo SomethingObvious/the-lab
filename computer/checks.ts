@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import process, { env } from "node:process";
 import { codexBin } from "./codex.ts";
+import { batch } from "./update.ts";
 
 const MAC = process.platform === "darwin";
 const WIN = process.platform === "win32";
@@ -21,12 +22,13 @@ export const run = (
 		timeout?: number;
 	} = {},
 ) => {
-	const r = spawnSync(cmd, a, {
+	const b = batch(cmd, a);
+	const r = spawnSync(b.file, b.args, {
 		encoding: "utf8",
 		input: opts.input,
 		env: opts.env ?? env,
 		cwd: opts.cwd,
-		shell: WIN && /\.(bat|cmd)$/i.test(cmd),
+		windowsVerbatimArguments: b.windowsVerbatimArguments,
 		...(opts.timeout === 0 ? {} : { timeout: opts.timeout ?? 60_000 }),
 	});
 	return {
@@ -84,7 +86,13 @@ export function tailscaleState() {
 	if (!bin) return { installed: false } as const;
 	const r = run(bin, ["status", "--json"]);
 	if (!r.ok) return { installed: true, running: false, detail: r.out } as const;
-	const s = JSON.parse(r.out.slice(r.out.indexOf("{")));
+	// A warning can come before or after the JSON.
+	let s: { Self?: { DNSName?: string }; BackendState?: string };
+	try {
+		s = JSON.parse(r.out.slice(r.out.indexOf("{"), r.out.lastIndexOf("}") + 1));
+	} catch {
+		return { installed: true, running: false, detail: r.out } as const;
+	}
 	const dns = String(s.Self?.DNSName ?? "").replace(/\.$/, "");
 	return {
 		installed: true,

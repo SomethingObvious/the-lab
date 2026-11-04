@@ -37,6 +37,7 @@ const DefaultSettings = {
 	effort: null,
 	replies: "normal",
 	autoUpdate: true,
+	statusCard: "tasks",
 };
 let settings = { ...DefaultSettings };
 
@@ -243,7 +244,8 @@ function refocus(within, change, fallback) {
 	const a = document.activeElement;
 	if (!a || a === document.body || !within.contains(a)) return change();
 	const keys = [keyOf(a)];
-	if (a.dataset.answer) keys.push(`[data-answered="${CSS.escape(a.dataset.answer)}"]`);
+	if (a.matches("lab-ask"))
+		keys.push(`[data-answered="${CSS.escape(a.getAttribute("ref") || "")}"]`);
 	const out = change();
 	if (a.isConnected) return out;
 	const scope = out instanceof Element ? out : within;
@@ -510,12 +512,6 @@ function take(e) {
 			return;
 		case "openFailed":
 			toast("Nothing on this phone can open that file.", true);
-			return;
-		case "answerFailed":
-			toast(
-				"Couldn't reach the computer, so that answer didn't go through. Try again once it's back.",
-				true,
-			);
 			return;
 		case "stopFailed":
 			toast("Couldn't reach the computer to stop it. Try again once it's back.", true);
@@ -856,15 +852,12 @@ function askEl(t, a) {
 		return `<div class="answered" data-answered="${esc(a.ref)}">${mark(given.allow ? "ok" : "stopped")}<span>${given.always ? "Always allowed" : given.allow ? "Allowed" : "Denied"}: ${what}</span></div>`;
 	if (t.done)
 		return `<div class="answered">${mark("stopped")}<span>Not answered: ${what}</span></div>`;
-	const raw = t.raw.has(a.ref);
+	// The question and its buttons are drawn by the shell's own <lab-ask>,
+	// which this page can place and frame but not press. Where there's no
+	// shell, as in a browser tab, its contents show instead.
 	return `<div class="ask" data-ask="${esc(a.ref)}" data-eid="${esc(a.id)}">
-      <div class="ask-top"><span class="ask-mark">${shape("burst")}${icon("shield")}</span><h2>${esc(a.title)}</h2></div>
-      ${a.from ? `<p class="ask-from">${esc(a.from)}</p>` : ""}
-      ${a.facts?.length ? `<ul class="ask-facts">${a.facts.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
-      ${a.why ? `<p class="ask-why"><span>The agent says</span>${esc(a.why)}</p>` : ""}
-      ${a.detail ? `<button type="button" class="link-btn ask-more" data-raw="${esc(a.ref)}" aria-expanded="${raw}">${icon("chev")}${raw ? "Hide the Details" : "Show the Details"}</button>${raw ? `<pre>${esc(a.detail)}</pre>` : ""}` : ""}
-      <div class="ask-row" role="group" aria-label="Needs your OK"><button type="button" class="deny" data-answer="${esc(a.ref)}" data-allow="0">Deny</button><button type="button" class="allow" data-answer="${esc(a.ref)}" data-allow="1">Allow</button></div>
-      ${a.always ? `<button type="button" class="link-btn ask-always" data-answer="${esc(a.ref)}" data-allow="1" data-always="1">Always Allow This Exact Command</button>` : ""}
+      <div class="ask-top"><span class="ask-mark">${shape("burst")}${icon("shield")}</span><h2>Needs Your OK</h2></div>
+      <lab-ask ref="${esc(a.ref)}"><p class="ask-from">${esc(a.title)}</p><p class="ask-from">Answer this on your phone or in The Lab window.</p></lab-ask>
     </div>`;
 }
 
@@ -2377,9 +2370,10 @@ function hits(q) {
 	for (const t of items) {
 		if (t.type !== "turn") continue;
 		if (t.you?.text && has(t.you, youText, needle))
-			out.push({ who: "You", e: t.you, text: t.you.text });
+			out.push({ who: t.you.auto ? "The Lab" : "You", e: t.you, text: t.you.text });
 		for (const f of t.you?.files || [])
-			if (has(f, fileName, needle)) out.push({ who: "You", e: t.you, text: f.name });
+			if (has(f, fileName, needle))
+				out.push({ who: t.you.auto ? "The Lab" : "You", e: t.you, text: f.name });
 		for (const o of t.out)
 			if (has(o, outText, needle))
 				out.push({ who: mac?.name || "Computer", e: o, text: outText(o) });
@@ -2423,7 +2417,7 @@ function drawResults() {
 						.slice(0, MaxHits)
 						.map(
 							(h) =>
-								`<li><button type="button" class="hit" data-jump="${esc(h.e.id)}"><span class="hit-top"><b>${h.who}</b><span>${shortDay(h.e.at)}</span></span><span class="hit-text">${snippet(h.text, q.trim())}</span></button></li>`,
+								`<li><button type="button" class="hit" data-jump="${esc(h.e.id)}"><span class="hit-top"><b>${esc(h.who)}</b><span>${shortDay(h.e.at)}</span></span><span class="hit-text">${snippet(h.text, q.trim())}</span></button></li>`,
 						)
 						.join("")}</ol>`,
 	);
@@ -2968,9 +2962,12 @@ function startDesk() {
 	});
 }
 // A picture pasted into the message box is attached, where the bridge can upload.
+// Excel and Word put a picture of the cells next to the text, and he meant the
+// text. A browser's Copy Image comes with HTML but no plain text, so it attaches.
 text.addEventListener("paste", (ev) => {
 	const files = [...(ev.clipboardData?.files || [])];
-	if (!(lab.upload && files.length > 0)) return;
+	const words = ev.clipboardData?.getData("text/plain").trim();
+	if (!(lab.upload && files.length > 0) || words) return;
 	ev.preventDefault();
 	attachFrom(() => lab.upload(files));
 });
@@ -2982,10 +2979,6 @@ text.addEventListener("paste", (ev) => {
 function clickTurn(d) {
 	if (d.open) {
 		lab.open(d.open);
-		return true;
-	}
-	if (d.answer) {
-		lab.answer(d.answer, d.allow === "1", d.always === "1");
 		return true;
 	}
 	if (d.askagain) {
@@ -3479,6 +3472,9 @@ $("scrim").addEventListener("click", closeSheet);
 // half-covered shortcut chip under it can't send a message by accident.
 let swallowUntil = 0;
 document.addEventListener("pointerdown", (ev) => {
+	// A press that ends in a scroll or a right-click never clicks, so each
+	// new press clears what the last one armed.
+	swallowUntil = 0;
 	if ($("attach-menu").hidden || ev.target.closest(".attach-wrap")) return;
 	menu(false);
 	swallowUntil = ev.timeStamp + 800;
@@ -3579,14 +3575,17 @@ try {
 }
 thread.append(log);
 log.append(older, digestEl, queue);
-const away = lastSeen();
+// Every reconnect sends loaded again. Only the first is coming back to the
+// app, and the others would bring back a digest he already closed.
+let away = lastSeen();
 lab.subscribe((e) =>
 	guard(`a ${e.kind} event`, () => {
 		take(e);
 		if (e.kind === "loaded") {
 			flushNow();
-			drawDigest(away);
-			markSeen();
+			if (away !== null) drawDigest(away);
+			away = null;
+			if (!document.hidden) markSeen();
 		}
 	}),
 );

@@ -51,7 +51,15 @@ import { config, home, labDir, setConfig, setting } from "./config.ts";
 import { verify } from "./report.ts";
 import { launchers } from "./trash.ts";
 import { keys, lanAddresses, specOf } from "./tunnel.ts";
-import { fitTemplate, fitted, treeHash } from "./update.ts";
+import {
+	batch,
+	fitTemplate,
+	fitted,
+	linkAgents,
+	TAR,
+	treeHash,
+	windowHash,
+} from "./update.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = dirname(HERE);
@@ -131,13 +139,8 @@ function engine(): "claude" | "codex" {
 	if (!want) return c.engine ?? "claude";
 	if (want !== "claude" && want !== "codex")
 		fail(`--engine has to be claude or codex, not ${want}.`);
-	if (c.engine !== want)
-		writeFileSync(
-			join(LAB, "config.json"),
-			JSON.stringify({ ...c, engine: want }, null, 2),
-			{ mode: 0o600 },
-		);
-	return want as "claude" | "codex";
+	if (c.engine !== want) setConfig({ engine: want });
+	return want;
 }
 
 function auth() {
@@ -250,15 +253,7 @@ function workspace() {
 	const base = join(LAB, "home-base");
 	if (existsSync(base)) rmSync(fresh, { recursive: true, force: true });
 	else renameSync(fresh, base);
-	// Codex reads AGENTS.md where Claude reads CLAUDE.md, so both see one file.
-	const agents = join(HOME, "AGENTS.md");
-	if (!existsSync(agents)) {
-		try {
-			symlinkSync("CLAUDE.md", agents);
-		} catch {
-			cpSync(join(HOME, "CLAUDE.md"), agents);
-		}
-	}
+	linkAgents(HOME);
 	config();
 }
 
@@ -608,11 +603,6 @@ async function download(url: string, to: string) {
 const sdkLine = (sdk: string) =>
 	`sdk.dir=${sdk.replace(/\\/g, "/").replace(/:/g, "\\:")}\n`;
 
-// Windows' own tar opens zips. The GNU tar that Git Bash puts first on PATH
-// reads C: in a path as a remote host instead.
-const TAR = WIN
-	? join(setting("WINDIR") ?? "C:\\Windows", "System32", "tar.exe")
-	: "tar";
 function extract(archive: string, into: string) {
 	mkdirSync(into, { recursive: true });
 	const r = run(TAR, ["-xf", archive, "-C", into], { timeout: 0 });
@@ -735,29 +725,45 @@ function keystore(javaHome: string) {
 	return { file, password: readFileSync(pwFile, "utf8").trim() };
 }
 
+// The phone to use from what `adb devices` printed, or what to tell him while
+// he gets it ready, or why setup has to stop. Another ready device (an
+// emulator, a second phone) is never used in place of a phone that isn't
+// allowed yet.
+export function pickDevice(
+	list: string,
+	wanted?: string,
+): { serial: string } | { wait: string } | { stop: string } {
+	// Each device is a serial and a state with a tab between, and adb's own
+	// lines have none.
+	const all = list
+		.split("\n")
+		.map((l) => /^(\S+)\t(\S+)/.exec(l.trim()))
+		.filter((m) => m !== null)
+		.map((m) => ({ serial: m[1] ?? "", state: m[2] ?? "" }));
+	const seen = wanted ? all.filter((d) => d.serial === wanted) : all;
+	const ready = seen.filter((d) => d.state === "device");
+	if (seen.length > 1 && ready.length > 0)
+		return {
+			stop: `More than one device is connected: ${seen.map((d) => `${d.serial} (${d.state === "device" ? "ready" : d.state})`).join(", ")}. Unplug or close the ones that aren't his phone, or pass --serial with his phone's name to pick it.`,
+		};
+	const serial = ready[0]?.serial;
+	if (serial) return { serial };
+	return {
+		wait: seen.some((d) => d.state === "unauthorized")
+			? 'The phone is plugged in but hasn\'t allowed this computer yet. He unlocks it and taps Allow on "Allow USB debugging?", with Always allow ticked.'
+			: "No phone yet. He plugs it in with a data cable, unlocks it, and checks Developer options > USB debugging is on. If nothing changes once it's in, the cable may only charge, so try another.",
+	};
+}
+
 // He may still be turning on USB debugging when this gets here, so it waits
 // for the phone and says what it's waiting on rather than failing.
 async function adbDevice(adb: string): Promise<string> {
-	const wanted = flag("serial");
 	let told = "";
 	for (const until = Date.now() + 600_000; ; ) {
-		const out = run(adb, ["devices"])
-			.out.split("\n")
-			.slice(1)
-			.map((l) => l.trim().split(/\s+/))
-			.filter((p) => p.length >= 2);
-		const ready = out.filter(
-			([s, state]) => state === "device" && (!wanted || s === wanted),
-		);
-		if (ready.length > 1)
-			fail(
-				`More than one device is connected (${ready.map((r) => r[0]).join(", ")}). Pass --serial to pick one.`,
-			);
-		const serial = ready[0]?.[0];
-		if (serial) return serial;
-		const now = out.some(([, state]) => state === "unauthorized")
-			? 'The phone is plugged in but hasn\'t allowed this computer yet. He unlocks it and taps Allow on "Allow USB debugging?", with Always allow ticked.'
-			: "No phone yet. He plugs it in with a data cable, unlocks it, and checks Developer options > USB debugging is on. If nothing changes once it's in, the cable may only charge, so try another.";
+		const pick = pickDevice(run(adb, ["devices"]).out, flag("serial"));
+		if ("serial" in pick) return pick.serial;
+		if ("stop" in pick) fail(pick.stop);
+		const now = pick.wait;
 		if (now !== told) {
 			told = now;
 			say(now);
@@ -767,6 +773,15 @@ async function adbDevice(adb: string): Promise<string> {
 		await sleep(2000);
 	}
 }
+
+// The phone's clock in the form logcat -T takes. adb hands the phone's shell
+// one line, so the format is quoted for that shell, and an answer that isn't
+// a time counts as none.
+const CLOCK = "date '+%m-%d %H:%M:%S.000'";
+export const phoneTime = (out: string) => {
+	const t = out.trim();
+	return /^\d\d-\d\d \d\d:\d\d:\d\d\.000$/.test(t) ? t : undefined;
+};
 
 async function phone() {
 	const url =
@@ -785,22 +800,19 @@ async function phone() {
 	say("Building the app");
 	const gradlew = join(project, WIN ? "gradlew.bat" : "gradlew");
 	if (!WIN) chmodSync(gradlew, 0o755);
-	const build = spawnSync(
-		gradlew,
-		[
-			"assembleRelease",
-			"--console=plain",
-			"-q",
-			`-Plab.keystore=${store.file}`,
-			`-Plab.keystorePassword=${store.password}`,
-		],
-		{
-			cwd: project,
-			env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk },
-			stdio: "inherit",
-			shell: WIN,
-		},
-	);
+	const g = batch(gradlew, [
+		"assembleRelease",
+		"--console=plain",
+		"-q",
+		`-Plab.keystore=${store.file}`,
+		`-Plab.keystorePassword=${store.password}`,
+	]);
+	const build = spawnSync(g.file, g.args, {
+		cwd: project,
+		env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk },
+		stdio: "inherit",
+		windowsVerbatimArguments: g.windowsVerbatimArguments,
+	});
 	if (build.status !== 0)
 		fail("The app build failed. The Gradle output above says why.");
 	const apk = join(
@@ -867,8 +879,13 @@ async function phone() {
 		token,
 	);
 	if (!/result=0/.test(paired.out)) fail(`Pairing didn't take: ${paired.out}`);
-	const opened = sh("date", "+%m-%d %H:%M:%S.000").out.trim();
+	const opened = phoneTime(sh(CLOCK).out);
 	sh("am", "start", "-n", `${PKG}/.MainActivity`);
+	// A phone already paired with another computer only switches once he says so.
+	if (paired.out.includes("confirm on the phone"))
+		say(
+			"The phone was paired with another computer, so it's asking first. Tap Switch on the phone to pair it with this one.",
+		);
 	await firewall(adb, serial, opened, port + 1);
 	say(
 		relayUrl
@@ -883,8 +900,13 @@ const ipNumber = (ip: string) => ip.split(".").reduce((n, x) => n * 256 + Number
 // should come straight in, so anything else there means a firewall on this
 // computer turned the tunnel's port down, usually a Cancel on the prompt in
 // step 3. Windows can be put right with one Yes, a Mac only from Settings.
-async function firewall(adb: string, serial: string, since: string, lanPort: number) {
-	const route = async (from: string) => {
+async function firewall(
+	adb: string,
+	serial: string,
+	since: string | undefined,
+	lanPort: number,
+) {
+	const route = async (from: string | undefined) => {
 		for (let i = 0; i < 20; i++) {
 			await sleep(1000);
 			const log = run(adb, [
@@ -892,8 +914,7 @@ async function firewall(adb: string, serial: string, since: string, lanPort: num
 				serial,
 				"logcat",
 				"-d",
-				"-T",
-				from,
+				...(from ? ["-T", from] : []),
 				"-s",
 				"Lab:I",
 			]).out;
@@ -944,13 +965,7 @@ async function firewall(adb: string, serial: string, since: string, lanPort: num
 		return;
 	}
 	run(adb, ["-s", serial, "shell", "am", "force-stop", PKG]);
-	const again = run(adb, [
-		"-s",
-		serial,
-		"shell",
-		"date",
-		"+%m-%d %H:%M:%S.000",
-	]).out.trim();
+	const again = phoneTime(run(adb, ["-s", serial, "shell", CLOCK]).out);
 	run(adb, ["-s", serial, "shell", "am", "start", "-n", `${PKG}/.MainActivity`]);
 	say(
 		(await route(again)) === "direct"
@@ -1015,7 +1030,12 @@ async function pair() {
 	const { port, token } = config();
 	if (!(await health()))
 		fail("The server is not running. Run `node setup.ts computer` first.");
-	const link = `http://127.0.0.1:${port}/pair?t=${encodeURIComponent(token)}&next=/pair-phone`;
+	// The link lands in the browser's history, so it carries a signature that
+	// works once for 2 minutes rather than the token itself.
+	const { createHmac } = await import("node:crypto");
+	const at = Date.now();
+	const sig = createHmac("sha256", token).update(`the-lab pair ${at}`).digest("hex");
+	const link = `http://127.0.0.1:${port}/pair?k=${at}.${sig}&next=/pair-phone`;
 	show(link);
 	say(
 		`The pairing code is open in the browser. On the phone, point the camera at the code and tap the link it finds. It works once and lasts 10 minutes.${config().relay ? "" : " With no relay set up, the phone has to be on the same Wi-Fi as this computer, now and later."}`,
@@ -1072,23 +1092,20 @@ async function bundle() {
 	writeFileSync(join(project, "local.properties"), sdkLine(sdk));
 	const gradlew = join(project, WIN ? "gradlew.bat" : "gradlew");
 	if (!WIN) chmodSync(gradlew, 0o755);
-	const build = spawnSync(
-		gradlew,
-		[
-			"bundleRelease",
-			"--console=plain",
-			"-q",
-			`-Plab.keystore=${store.file}`,
-			`-Plab.keystorePassword=${store.password}`,
-			`-Plab.versionCode=${Math.floor(Date.now() / 60_000)}`,
-		],
-		{
-			cwd: project,
-			env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk },
-			stdio: "inherit",
-			shell: WIN,
-		},
-	);
+	const g = batch(gradlew, [
+		"bundleRelease",
+		"--console=plain",
+		"-q",
+		`-Plab.keystore=${store.file}`,
+		`-Plab.keystorePassword=${store.password}`,
+		`-Plab.versionCode=${Math.floor(Date.now() / 60_000)}`,
+	]);
+	const build = spawnSync(g.file, g.args, {
+		cwd: project,
+		env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk },
+		stdio: "inherit",
+		windowsVerbatimArguments: g.windowsVerbatimArguments,
+	});
 	if (build.status !== 0)
 		fail("The bundle build failed. The Gradle output above says why.");
 	say(join(project, "app", "build", "outputs", "bundle", "release", "app-release.aab"));
@@ -1187,6 +1204,10 @@ async function windowsShell(out: string): Promise<string> {
 		...refs.map((f) => `-r:${join(out, f)}`),
 		"-r:System.Windows.Forms.dll",
 		"-r:System.Drawing.dll",
+		"-r:System.Net.Http.dll",
+		"-r:System.Web.Extensions.dll",
+		// Inside the exe, where the agent can't change what the Allow card runs.
+		`-resource:${join(REPO, "shared", "ask.js")},ask.js`,
 		join(REPO, "desktop", "windows", "TheLab.cs"),
 	]);
 	if (!built.ok) fail(`The window didn't build: ${built.out.slice(-2000)}`);
@@ -1213,17 +1234,21 @@ function macShell(out: string): string {
 	rmSync(next, { recursive: true, force: true });
 	mkdirSync(join(next, "Contents", "MacOS"), { recursive: true });
 	mkdirSync(join(next, "Contents", "Resources"), { recursive: true });
+	// The Allow card's script goes inside the binary, where the agent can't
+	// change it. A second source file would stop top-level code compiling, so
+	// it goes at the top of the one file.
+	const source = join(out, "TheLab.swift");
+	const ask = readFileSync(join(REPO, "shared", "ask.js")).toString("base64");
+	writeFileSync(
+		source,
+		`let askScript = "${ask}"\n${readFileSync(join(REPO, "desktop", "mac", "TheLab.swift"), "utf8")}`,
+	);
 	const built = run(
 		"xcrun",
-		[
-			"swiftc",
-			"-O",
-			"-o",
-			join(next, "Contents", "MacOS", "TheLab"),
-			join(REPO, "desktop", "mac", "TheLab.swift"),
-		],
+		["swiftc", "-O", "-o", join(next, "Contents", "MacOS", "TheLab"), source],
 		{ timeout: 300_000 },
 	);
+	rmSync(source, { force: true });
 	if (!built.ok) fail(`The window didn't build: ${built.out.slice(-2000)}`);
 	cpSync(join(HERE, "TheLab.icns"), join(next, "Contents", "Resources", "TheLab.icns"));
 	const pkg = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")) as {
@@ -1286,7 +1311,7 @@ async function desktop() {
 		fail(
 			`The window built but didn't open the app. ${found ? `It found: ${found.trim()}` : "It didn't answer within 90 seconds."} A picture of what it showed is at ${shot}.`,
 		);
-	writeFileSync(join(out, "built"), treeHash(join(REPO, "desktop")));
+	writeFileSync(join(out, "built"), windowHash(REPO));
 	if (args.includes("--quiet")) return;
 	if (WIN) shortcuts(bin);
 	if (WIN) run("explorer.exe", [bin]);
@@ -1316,7 +1341,13 @@ const steps: Record<string, () => Promise<void>> = {
 	bundle,
 	"phone-vpn": phoneVpn,
 };
-const step = steps[process.argv[2] ?? ""];
-if (!step) fail(`Usage: node setup.ts ${Object.keys(steps).join("|")}`);
-gate(process.argv[2] ?? "");
-await step();
+// Run as a step, and not when the tests load it.
+if (
+	process.argv[1] &&
+	realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+	const step = steps[process.argv[2] ?? ""];
+	if (!step) fail(`Usage: node setup.ts ${Object.keys(steps).join("|")}`);
+	gate(process.argv[2] ?? "");
+	await step();
+}

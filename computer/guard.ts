@@ -3,6 +3,7 @@
 // anything leaves the computer, and whether it is never allowed at all. Every Allow
 // card on the phone and every rule the server enforces is built from this, so
 // an agent talked round by a web page or an email can't explain its way past it.
+import { realpathSync } from "node:fs";
 import { basename, dirname, posix, win32 } from "node:path";
 
 export type Effect = "read" | "change" | "delete" | "send" | "system" | "run";
@@ -27,6 +28,8 @@ export interface Judgement {
 	source?: string;
 	// A path in it can't be known until it runs, like "$DIR/old".
 	unsure?: boolean;
+	// A shell command runs a program or code whose effect can't be read from the line.
+	runs?: boolean;
 }
 
 // `user` is the home folder, `home` the agent's Lab folder and `lab` the
@@ -36,6 +39,8 @@ export interface Where {
 	home: string;
 	lab: string;
 	cwd?: string | undefined;
+	// Shell variables set earlier on the same line, like D=~/.thelab.
+	vars?: Record<string, string> | undefined;
 }
 
 const READ = new Set([
@@ -257,23 +262,46 @@ const SEND = new Set([
 	"ftp",
 	"socat",
 ]);
-// Wrappers whose real command is the rest of the line.
-const WRAP = new Set([
-	"env",
-	"command",
-	"builtin",
-	"nohup",
-	"time",
-	"nice",
-	"exec",
-	"caffeinate",
-	"stdbuf",
-	"timeout",
-	"gtimeout",
-	"xcrun",
-	"sudo",
-	"doas",
-]);
+// Wrappers whose real command is the rest of the line, with the options of
+// each that take a value, so the word after one isn't mistaken for the command.
+const TIMEOUT = ["-k", "--kill-after", "-s", "--signal"];
+const WRAP: Record<string, string[]> = {
+	env: ["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+	command: [],
+	builtin: [],
+	nohup: [],
+	time: ["-f", "--format", "-o", "--output"],
+	nice: ["-n", "--adjustment"],
+	exec: ["-a"],
+	caffeinate: ["-t", "-w"],
+	stdbuf: ["-i", "-o", "-e", "--input", "--output", "--error"],
+	timeout: TIMEOUT,
+	gtimeout: TIMEOUT,
+	xcrun: ["--sdk", "--toolchain", "--log"],
+	sudo: [
+		"-u",
+		"-g",
+		"-h",
+		"-p",
+		"-C",
+		"-D",
+		"-r",
+		"-t",
+		"-T",
+		"-U",
+		"--user",
+		"--group",
+		"--host",
+		"--prompt",
+		"--close-from",
+		"--chdir",
+		"--role",
+		"--type",
+		"--command-timeout",
+		"--other-user",
+	],
+	doas: ["-u", "-C"],
+};
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh"]);
 // PowerShell and cmd names for things the lists above already cover, so a
 // Remove-Item is judged exactly like an rm.
@@ -393,7 +421,48 @@ const SYSTEM_DIRS = [
 	"C:/Users",
 ];
 const SECRET =
-	/(\/\.ssh\/(id_|.*key)|\/\.aws\/credentials|\/\.netrc|\/\.gnupg\/|\/Keychains\/|\/\.config\/gh\/hosts|\/\.docker\/config\.json|\/Cookies(\.binarycookies)?$|\/Login Data$|\/\.npmrc$|\/\.pypirc$|\.pem$|\.p12$|\/\.env(\.\w+)?$|\/Microsoft\/(Credentials|Protect|Vault)\/)/i;
+	/(\/\.ssh(\/|$)|\/\.aws(\/|$)|\/\.netrc$|\/\.gnupg(\/|$)|\/\.codex(\/|$)|\/\.git-credentials$|\/\.claude\/\.credentials\.json$|\/Keychains\/|\/\.config\/gh\/hosts|\/\.docker\/config\.json|\/Cookies(\.binarycookies)?$|\/Login Data$|\/(Google\/Chrome|Microsoft\/Edge|Microsoft Edge|BraveSoftware|Chromium)(\/.*)?\/(History|Web Data|Local State)$|\/(Firefox|Mozilla)\/.*\/(places\.sqlite|cookies\.sqlite|key4\.db|logins\.json)$|\/\.npmrc$|\/\.pypirc$|\.pem$|\.p12$|\/\.env(\.\w+)?$|\/Microsoft\/(Credentials|Protect|Vault)\/)/i;
+// Folders and files in the home folder that hold passwords, keys or browser
+// sign-ins, so a search or copy of anything above one reads them too.
+const HOLDERS = [
+	".ssh",
+	".aws",
+	".gnupg",
+	".codex",
+	".netrc",
+	".git-credentials",
+	".claude/.credentials.json",
+	".config/gh",
+	".docker/config.json",
+	".npmrc",
+	".pypirc",
+	"Library/Keychains",
+	"Library/Cookies",
+	"Library/Application Support/Google/Chrome",
+	"Library/Application Support/Microsoft Edge",
+	"Library/Application Support/BraveSoftware",
+	"Library/Application Support/Firefox",
+	"AppData/Local/Google/Chrome/User Data",
+	"AppData/Local/Microsoft/Edge/User Data",
+	"AppData/Local/BraveSoftware",
+	"AppData/Roaming/Mozilla/Firefox",
+	"AppData/Local/Microsoft/Credentials",
+	"AppData/Roaming/Microsoft/Credentials",
+	"AppData/Roaming/Microsoft/Protect",
+	"AppData/Local/Microsoft/Vault",
+];
+// What the agent is told it may read in The Lab's own folder. The rest of it
+// holds his chats, keys and settings.
+const OPEN = [
+	"source",
+	"files",
+	"bin",
+	"design-history",
+	"server.log",
+	"app-errors.log",
+	"preview-link",
+	"desktop/window.txt",
+];
 // Both NTFS and the computer's APFS ignore case, so every match here does too.
 // tunnel.json holds the keys that would let it pose as this computer to the
 // phone, which then hands over the token.
@@ -403,9 +472,26 @@ const TOKEN =
 interface Seg {
 	argv: string[];
 	out: string[];
+	// Files read through <.
+	inp: string[];
 	pipedIn: boolean;
 	ps: boolean;
 }
+
+// PowerShell takes the curly quotes as quotes too.
+const SINGLE = "'\u2018\u2019\u201a\u201b";
+const DOUBLE = '"\u201c\u201d\u201e';
+const ESCAPES: Record<string, string> = {
+	n: "\n",
+	t: "\t",
+	r: "\r",
+	a: "\x07",
+	b: "\b",
+	e: "\x1b",
+	E: "\x1b",
+	f: "\f",
+	v: "\v",
+};
 
 // Each step reads the character at i and returns the index of the last
 // character it used, so the loop carries on after it.
@@ -415,9 +501,15 @@ class Splitter {
 	readonly ps: boolean;
 	argv: string[] = [];
 	out: string[] = [];
+	inp: string[] = [];
 	word: string | null = null;
-	redirect = false;
+	// Where the next word goes after a redirect, or "drop" for a here-string.
+	into: "out" | "in" | "drop" | null = null;
 	piped = false;
+	// Commands inside $( ), backticks and <( ), which follow the one they're in.
+	later: Seg[] = [];
+	// Here-documents whose lines start after the next newline.
+	docs: { delim: string; raw: boolean; tabs: boolean }[] = [];
 
 	constructor(line: string, ps: boolean) {
 		this.line = line;
@@ -426,16 +518,17 @@ class Splitter {
 
 	// A lone brace opens or closes a group, but find's {} is just a word.
 	push(word: string) {
-		if (!this.redirect && (word === "{" || word === "}")) {
-			this.word = null;
-			this.end();
-			return;
-		}
-		if (this.redirect) {
-			if (word !== "/dev/null" && word.toLowerCase() !== "$null") this.out.push(word);
-			this.redirect = false;
-		} else this.argv.push(word);
+		const into = this.into;
+		this.into = null;
 		this.word = null;
+		if (into === "out") {
+			if (word !== "/dev/null" && word.toLowerCase() !== "$null") this.out.push(word);
+		} else if (into === "in") {
+			if (word !== "/dev/null") this.inp.push(word);
+		} else if (into === null) {
+			if (word === "{" || word === "}") this.end();
+			else this.argv.push(word);
+		}
 	}
 
 	flush() {
@@ -448,29 +541,57 @@ class Splitter {
 			this.segs.push({
 				argv: this.argv,
 				out: this.out,
+				inp: this.inp,
 				pipedIn: this.piped,
 				ps: this.ps,
 			});
+		this.segs.push(...this.later);
+		this.later = [];
 		this.argv = [];
 		this.out = [];
+		this.inp = [];
 		this.piped = pipe;
-		this.redirect = false;
+		this.into = null;
 	}
 
 	add(text: string) {
 		this.word = (this.word ?? "") + text;
 	}
 
-	// The text of a $( ) or backtick span, which runs as its own line.
-	inner(from: number, close: string) {
-		const { line } = this;
+	// Where a $( ) or backtick span ends, past any quotes inside it.
+	close(from: number, close: string): number {
+		const { line, ps } = this;
 		let depth = 1;
-		let j = from;
-		for (; j < line.length; j++) {
-			if (close === ")" && line[j] === "(") depth++;
-			else if (line[j] === close && --depth === 0) break;
+		for (let j = from; j < line.length; j++) {
+			const c = line.charAt(j);
+			if (c === (ps ? "`" : "\\")) j++;
+			else if (close === ")" && c === "'") {
+				const k = line.indexOf("'", j + 1);
+				if (k < 0) return line.length;
+				j = k;
+			} else if (close === ")" && c === '"') j = this.skipQuoted(j + 1);
+			else if (close === ")" && c === "(") depth++;
+			else if (c === close && --depth === 0) return j;
 		}
-		this.segs.push(...segments(line.slice(from, j), this.ps));
+		return line.length;
+	}
+
+	skipQuoted(from: number): number {
+		const { line, ps } = this;
+		let j = from;
+		for (; j < line.length && line[j] !== '"'; j++) {
+			if (line[j] === (ps ? "`" : "\\")) j++;
+			else if (line[j] === "$" && line[j + 1] === "(") j = this.close(j + 2, ")");
+		}
+		return j;
+	}
+
+	// A command substitution runs as its own line. The word keeps its text, so
+	// a path or address built from one is known to be unknown.
+	sub(start: number, from: number, close: string) {
+		const j = this.close(from, close);
+		this.later.push(...segments(this.line.slice(from, j), this.ps));
+		this.add(this.line.slice(start, j + 1));
 		return j;
 	}
 
@@ -492,21 +613,18 @@ class Splitter {
 			this.end();
 			return i;
 		}
-		if (c === "'") {
-			const j = line.indexOf("'", i + 1);
-			this.add(line.slice(i + 1, j < 0 ? undefined : j));
-			return j < 0 ? line.length : j;
+		const quoted = this.quote(i);
+		if (quoted !== undefined) return quoted;
+		if (c === "$") {
+			const end = this.dollar(i);
+			if (end !== undefined) return end;
 		}
-		if (c === '"') return this.quoted(i);
-		if (c === (ps ? "`" : "\\")) {
-			this.add(line[i + 1] ?? "");
-			return i + 1;
+		if (!ps && c === "`") return this.sub(i, i + 1, "`");
+		if (c === "\n" && this.docs.length > 0) {
+			this.cut(c);
+			return this.heredocs(i);
 		}
-		if (c === "$" && line[i + 1] === "(") {
-			this.end();
-			return i + 1;
-		}
-		if ("`;\n()".includes(c)) {
+		if (";\n()".includes(c)) {
 			this.cut(c);
 			return i;
 		}
@@ -515,6 +633,102 @@ class Splitter {
 		if (c === ">" || c === "<") return this.redirection(i, c);
 		if (/\s/.test(c)) this.flush();
 		else this.add(c);
+		return i;
+	}
+
+	// A quoted string or an escaped character, wherever it starts at i.
+	quote(i: number): number | undefined {
+		const { line, ps } = this;
+		const c = line.charAt(i);
+		if (c === "'" || (ps && SINGLE.includes(c))) {
+			let j = i + 1;
+			while (j < line.length && !(ps ? SINGLE : "'").includes(line.charAt(j))) j++;
+			this.add(line.slice(i + 1, j));
+			return j;
+		}
+		if (c === '"' || (ps && DOUBLE.includes(c))) return this.quoted(i);
+		if (c === (ps ? "`" : "\\")) {
+			this.add(line[i + 1] ?? "");
+			return i + 1;
+		}
+		return undefined;
+	}
+
+	// $'...', $"...", $(( )) and $( ) at i.
+	dollar(i: number): number | undefined {
+		const { line, ps } = this;
+		const next = line[i + 1];
+		if (!ps && next === "'") return this.ansi(i);
+		if (!ps && next === '"') return i;
+		// $(( )) is arithmetic, which only runs the substitutions inside it.
+		if (!ps && next === "(" && line[i + 2] === "(") {
+			const j = this.close(i + 2, ")");
+			this.subsIn(i + 3, j);
+			this.add(line.slice(i, j + 1));
+			return j;
+		}
+		if (next === "(") return this.sub(i, i + 2, ")");
+		return undefined;
+	}
+
+	// The commands inside $( ) and backticks between from and to, without the
+	// text around them, which is data.
+	subsIn(from: number, to: number) {
+		const { line } = this;
+		for (let k = from; k < to; k++) {
+			const c = line.charAt(k);
+			if (c === "\\") k++;
+			else if (c === "`" || (c === "$" && line[k + 1] === "(")) {
+				const start = c === "`" ? k + 1 : k + 2;
+				const j = this.close(start, c === "`" ? "`" : ")");
+				this.later.push(...segments(line.slice(start, j), this.ps));
+				k = j;
+			}
+		}
+	}
+
+	// A here-document's lines are its input, not commands, though bash still
+	// runs the substitutions in them unless the delimiter was quoted.
+	heredocs(i: number): number {
+		const { line } = this;
+		let at = i + 1;
+		for (const d of this.docs) {
+			for (let from = at; ; ) {
+				const nl = line.indexOf("\n", from);
+				const text = line.slice(from, nl < 0 ? undefined : nl);
+				if ((d.tabs ? text.replace(/^\t+/, "") : text) === d.delim || nl < 0) {
+					if (!d.raw) this.subsIn(at, from);
+					at = nl < 0 ? line.length : nl + 1;
+					break;
+				}
+				from = nl + 1;
+			}
+		}
+		this.docs = [];
+		return at - 1;
+	}
+
+	// bash's $'...' spells characters with backslash codes, so $'\x72m' is rm.
+	ansi(start: number) {
+		const { line } = this;
+		let s = "";
+		let i = start + 2;
+		for (; i < line.length && line[i] !== "'"; i++) {
+			if (line[i] !== "\\") {
+				s += line.charAt(i);
+				continue;
+			}
+			const e =
+				/^(x[0-9a-f]{1,2}|u[0-9a-f]{1,4}|U[0-9a-f]{1,8}|[0-7]{1,3}|c.|.)/is.exec(
+					line.slice(i + 1),
+				)?.[0] ?? "";
+			i += e.length;
+			if (/^[xuU]./.test(e)) s += String.fromCodePoint(Number.parseInt(e.slice(1), 16));
+			else if (/^[0-7]/.test(e)) s += String.fromCharCode(Number.parseInt(e, 8));
+			else if (/^c./s.test(e)) s += String.fromCharCode(e.charCodeAt(1) % 32);
+			else s += ESCAPES[e] ?? e;
+		}
+		this.add(s);
 		return i;
 	}
 
@@ -536,9 +750,10 @@ class Splitter {
 
 	quoted(start: number) {
 		const { line, ps } = this;
+		const quote = ps ? DOUBLE : '"';
 		let s = "";
 		let i = start + 1;
-		for (; i < line.length && line[i] !== '"'; i++) {
+		for (; i < line.length && !quote.includes(line.charAt(i)); i++) {
 			// Inside bash double quotes a backslash only escapes these, so C:\Windows keeps its own.
 			if (
 				ps
@@ -547,9 +762,11 @@ class Splitter {
 			) {
 				i++;
 				s += line.charAt(i);
-			} else if (!ps && line[i] === "`") i = this.inner(i + 1, "`");
-			else if (line[i] === "$" && line[i + 1] === "(") i = this.inner(i + 2, ")");
-			else s += line.charAt(i);
+			} else if ((!ps && line[i] === "`") || (line[i] === "$" && line[i + 1] === "(")) {
+				this.add(s);
+				s = "";
+				i = line[i] === "`" ? this.sub(i, i + 1, "`") : this.sub(i, i + 2, ")");
+			} else s += line.charAt(i);
 		}
 		this.add(s);
 		return i;
@@ -570,33 +787,61 @@ class Splitter {
 			this.end();
 			return i + 1;
 		}
-		if (line[i - 1] !== ">" && line[i + 1] !== ">") this.end();
+		if (line[i + 1] !== ">") this.end();
 		return i;
 	}
 
 	redirection(start: number, c: string) {
 		const { line } = this;
 		let i = start;
-		if (this.word !== null && /^\d$/.test(this.word)) this.word = null;
+		if (
+			this.word !== null &&
+			(/^\d+$/.test(this.word) || (this.ps && this.word === "*"))
+		)
+			this.word = null;
 		else this.flush();
-		if (line[i + 1] === ">") i++;
-		if (line[i + 1] === "&") {
+		// <( ) and >( ) run a command whose output or input stands in for a file.
+		if (!this.ps && line[i + 1] === "(") return this.sub(i, i + 2, ")");
+		if (c === "<" && line[i + 1] === "<") {
 			i++;
-			while (/\d|-/.test(line[i + 1] ?? "")) i++;
+			if (line[i + 1] === "<") {
+				this.into = "drop";
+				return i + 1;
+			}
+			// A here-document's delimiter is only a marker.
+			const tabs = line[i + 1] === "-";
+			if (tabs) i++;
+			while (line[i + 1] === " ") i++;
+			const from = i + 1;
+			while (i + 1 < line.length && !/[\s;|&<>()]/.test(line.charAt(i + 1))) i++;
+			const word = line.slice(from, i + 1);
+			if (!this.ps && word)
+				this.docs.push({
+					delim: word.replace(/['"\\]/g, ""),
+					raw: /['"\\]/.test(word),
+					tabs,
+				});
 			return i;
 		}
-		if (c === ">") this.redirect = true;
-		else {
-			while (line[i + 1] === " ") i++;
-			while (i + 1 < line.length && !/[\s;|&]/.test(line.charAt(i + 1))) i++;
+		let into: "out" | "in" = c === ">" ? "out" : "in";
+		if (c === "<" && line[i + 1] === ">") {
+			into = "out";
+			i++;
+		} else if (c === ">" && (line[i + 1] === ">" || line[i + 1] === "|")) i++;
+		if (line[i + 1] === "&") {
+			// N>&M and >&- copy or close a descriptor, while >&name writes to a file.
+			const dup = /^&(\d+|-)(?=$|[\s;|&)<>])/.exec(line.slice(i + 1));
+			if (dup) return i + dup[0].length;
+			i++;
 		}
+		this.into = into;
 		return i;
 	}
 }
 
-// Splits a shell line into simple commands. Quotes are honoured, and
-// $(...) and backticks count as command breaks, so a delete hidden inside
-// one is still seen.
+// Splits a shell line into simple commands. Quotes are honoured, and the
+// commands inside $(...), backticks and <(...) are split out after the one
+// they're in, so a delete hidden inside one is still seen.
 export function segments(line: string, ps = false): Seg[] {
 	const s = new Splitter(line, ps);
 	for (let i = 0; i < line.length; i++) i = s.step(i);
@@ -615,6 +860,13 @@ const args = (argv: string[]) =>
 					? []
 					: [a],
 		);
+// Values glued to a flag, like -o/tmp/x, -T~/a.pdf or --output=x, which args() leaves out.
+const glued = (argv: string[]) =>
+	argv.slice(1).flatMap((a) => {
+		const v =
+			/^--[\w-]+=(.+)$/s.exec(a)?.[1] ?? /^-[a-zA-Z]+([~/\\@].*)$/s.exec(a)?.[1];
+		return v ? [v.replace(/^@/, "")] : [];
+	});
 // Whether a word is a PowerShell parameter, which it binds by any unique prefix.
 const param = (a: string, name: string, min = 1) => {
 	const given = a.slice(1).split(":")[0] ?? "";
@@ -712,21 +964,136 @@ const opensPiped = (s: Seg) => {
 	);
 };
 
+const TOKEN_BLOCK = "The token that pairs your phone is never read by the agent.";
+const hasGlob = (p: string) => /[*?[{(]/.test(p);
+// Braces, zsh and extglob groups can match anything, slashes included.
+const groups = (p: string) => {
+	let s = fold(p);
+	for (let was = ""; was !== s; ) {
+		was = s;
+		s = s.replace(/[?*+@!]?[{(][^{}()]*[})]/g, "**");
+	}
+	return s;
+};
+// Whether a path, which may be a glob, can name something in dir or dir
+// itself (inside), or a folder that holds dir (above).
+function reach(p: string, dir: string): { inside: boolean; above: boolean } {
+	if (!hasGlob(p)) return { inside: within(p, dir), above: within(dir, p) };
+	const ps = groups(p)
+		.replace(/(.)\/+$/, "$1")
+		.split("/");
+	const ds = fold(dir)
+		.replace(/(.)\/+$/, "$1")
+		.split("/");
+	for (let i = 0; i < Math.min(ps.length, ds.length); i++) {
+		const part = ps[i] ?? "";
+		// A group can match slashes too, so what's before it decides.
+		if (part.includes("**")) {
+			const hit = globRe(`${part.slice(0, part.indexOf("**"))}**`).test(
+				ds.slice(i).join("/"),
+			);
+			return { inside: hit, above: hit };
+		}
+		if (!globRe(part).test(ds[i] ?? "")) return { inside: false, above: false };
+	}
+	return { inside: ps.length >= ds.length, above: ps.length <= ds.length };
+}
+const holders = (w: Where) => [...HOLDERS.map((h) => `${w.user}/${h}`), w.lab];
+// Whether reading a path reads The Lab's token, or another password, key or
+// private file. A glob counts if it could match one.
+function secretKind(p: string, w: Where): "token" | "secret" | undefined {
+	if (hasGlob(p)) {
+		if (globReaches(p, w)) return "token";
+		// The part before the first wildcard says which of The Lab's folders it stays in.
+		const lit = p.slice(0, p.search(/[*?[{(]/)).replace(/[^/]*$/, "");
+		const open = OPEN.some((o) => within(lit, `${w.lab}/${o}`));
+		if (!open && reach(p, w.lab).inside) return "secret";
+		if (HOLDERS.some((h) => reach(p, `${w.user}/${h}`).inside) || SECRET.test(p))
+			return "secret";
+		return undefined;
+	}
+	if (within(p, w.lab)) {
+		if (TOKEN.test(p) || same(p, w.lab)) return "token";
+		if (!OPEN.some((o) => within(p, `${w.lab}/${o}`))) return "secret";
+	}
+	return SECRET.test(p) ? "secret" : undefined;
+}
+// Whether a search or copy of everything under a path takes in a secret too.
+const holds = (p: string, w: Where) => holders(w).some((h) => reach(p, h).above);
+// Commands that read every file under the folders they're given. du only adds up sizes.
+const recursive = (cmd: string, argv: string[]) =>
+	searchesInside(cmd, argv) ||
+	["rg", "ag", "find", "tar", "bsdtar", "7z", "ditto", "robocopy"].includes(cmd) ||
+	["compress-archive", "robocopy"].includes(typed(argv[0] ?? "")) ||
+	(typed(argv[0] ?? "") === "xcopy" && argv.some((a) => /^\/[se]$/i.test(a))) ||
+	(["ls", "zip", "cp", "scp", "rsync"].includes(cmd) &&
+		(has(argv, "-R") ||
+			(cmd !== "ls" && has(argv, "-r")) ||
+			(["cp", "rsync"].includes(cmd) && has(argv, "-a")) ||
+			argv.some(
+				(a) => /^--(recursive|archive)$|^\/s$/i.test(a) || param(a, "recurse", 2),
+			)));
+
+// The same file however it's spelled: another user's ~, the Data volume on a
+// Mac, a variable set earlier, and on Windows the \?\ and FileSystem::
+// prefixes, an NTFS stream, trailing dots and spaces, and 8.3 short names.
 function expand(p: string, w: Where): { path: string; unsure: boolean } {
 	const win = /^[a-z]:\//i.test(w.user);
-	let s = p
-		.replace(/^~(?=$|[/\\])/, w.user)
-		.replace(/\$\{?HOME\}?|\$env:USERPROFILE|%USERPROFILE%/gi, w.user);
-	// Git Bash writes C:\Users as /c/Users.
-	if (win)
+	const cwd = w.cwd ?? w.home;
+	const known = (name: string) => {
+		const n = name.toLowerCase();
+		if (n === "home" || n === "userprofile") return w.user;
+		if (n === "user" || n === "username" || n === "logname") return basename(w.user);
+		if (n === "pwd") return cwd;
+		return w.vars?.[name] ?? w.vars?.[n];
+	};
+	let s = p.replace(
+		/\$\{env:(\w+)\}|\$env:(\w+)|\$\{(\w+)\}|\$(\w+)|%(\w+)%/gi,
+		(m, ...names: (string | undefined)[]) =>
+			known(names.slice(0, 5).find(Boolean) ?? "") ?? m,
+	);
+	s = s.replace(/^~\+(?=$|[/\\])/, cwd).replace(/^~(?!-)[^/\\]*/, w.user);
+	if (win) {
 		s = s
 			.replace(/\\/g, "/")
+			.replace(/^(microsoft\.powershell\.core\/)?filesystem::/i, "")
+			.replace(/^\/\/[?.]\/(unc\/)?/i, (_, unc) => (unc ? "//" : ""))
+			.replace(/^\/\/(localhost|127\.0\.0\.1)\/([a-z])\$(?=\/|$)/i, "$2:")
+			// Git Bash writes C:\Users as /c/Users.
 			.replace(/^\/([a-z])(?=\/|$)/i, (_, d) => `${d.toUpperCase()}:`);
-	const unsure = /\$|`|%\w+%/.test(s);
+		const drive = /^[a-z]:/i.exec(s)?.[0] ?? "";
+		s =
+			drive +
+			s
+				.slice(drive.length)
+				.replace(/:[^/]*$/, "")
+				.split("/")
+				.map((x) => (/^\.+$/.test(x) ? x : x.replace(/[. ]+$/, "")))
+				.join("/");
+	} else s = s.replace(/^\/System\/Volumes\/Data(?=\/)/i, "");
+	const unsure = /\$[\w{(]|`|%\w+%|^~|^[<>]\(/.test(s);
 	const path = win ? win32 : posix;
 	// resolve() also folds a .. in an absolute path, which the disk opens the same way.
-	if (!unsure) s = path.resolve(w.cwd ?? w.home, s).replace(/\\/g, "/");
+	if (!unsure) s = path.resolve(cwd, s).replace(/\\/g, "/");
+	if (win && !unsure && /~\d/.test(s)) s = long(s);
 	return { path: s.replace(/(.)\/+$/, "$1"), unsure };
+}
+
+// Windows' own long name for a path with an 8.3 part like THELAB~1, from the
+// deepest folder of it that exists.
+function long(p: string): string {
+	let head = p;
+	let tail = "";
+	for (;;) {
+		try {
+			return `${realpathSync.native(head)}${tail}`.replace(/\\/g, "/");
+		} catch {
+			const up = win32.dirname(head);
+			if (up === head) return p;
+			tail = `/${win32.basename(head)}${tail}`;
+			head = up;
+		}
+	}
 }
 
 // The folder a path is in, in the words he'd use: "Downloads", or "your home folder".
@@ -740,7 +1107,7 @@ export function place(p: string, w: Where): string {
 }
 
 function protectedPath(p: string, w: Where): string | null {
-	if (within(p, w.lab))
+	if (reach(p, w.lab).inside)
 		return "The Lab keeps its own code, token and history there, and the agent may never change them.";
 	const configs = [
 		`${w.user}/.claude`,
@@ -848,24 +1215,14 @@ function deletion(
 	w: Where,
 ): Judgement {
 	if (cmd === "trash" && argv.includes("--restore")) return restore(rest, w);
-	// cmd.exe parses trash.cmd's arguments again, and PowerShell hands a name
-	// without spaces over unquoted, so a & in it would start a second command.
-	if (
-		cmd === "trash" &&
-		/\.(cmd|bat)$/i.test(argv[0] ?? "") &&
-		rest.some((a) => /[&|^<>%!]/.test(a))
-	)
-		return {
-			...blank(),
-			effect: "delete",
-			plain: "Move something to the Trash",
-			block:
-				"trash.cmd would misread a name with & | ^ < > % or ! in it. Rename it without that character first, then move it to the Trash.",
-		};
+	// A find that also deletes for good takes the files before trash sees them.
 	const trashing =
 		cmd === "trash" ||
 		cmd === "mv" ||
-		(cmd === "find" && /-exec(dir)?\s+(\S*\/)?trash\s/.test(argv.join(" ")));
+		(cmd === "find" &&
+			/-(exec|execdir|ok|okdir)\s+(\S*[\\/])?trash(\.cmd)?\s/i.test(argv.join(" ")) &&
+			!argv.includes("-delete") &&
+			!FIND_RM.test(argv.join(" ")));
 	const ps = deleteTargets(cmd, rest).map((a) => expand(a, w));
 	const known = ps.filter((p) => !p.unsure);
 	const j: Judgement = {
@@ -930,19 +1287,49 @@ function unwrap(seg: Seg): { argv: string[]; sudo: boolean } {
 	if (seg.ps && /^\$[\w:]+$/.test(first) && argv[1] === "=") argv = argv.slice(2);
 	else if (seg.ps && /^\$[\w:]+=./.test(first))
 		argv = [first.replace(/^\$[\w:]+=/, ""), ...argv.slice(1)];
-	for (
-		let head = argv[0];
-		head !== undefined && (WRAP.has(basename(head)) || /^\w+=/.test(head));
-		head = argv[0]
-	) {
-		if (head === "sudo" || head === "doas") sudo = true;
-		const timed = head.endsWith("timeout");
+	for (let head = argv[0]; head !== undefined; head = argv[0]) {
+		// The command after a keyword like do or then is the one that runs.
+		if (!seg.ps && /^(if|then|else|elif|do|while|until|!)$/.test(head)) {
+			argv = argv.slice(1);
+			continue;
+		}
+		// A loop or case header only names words, though a redirect on done still reads.
+		if (!seg.ps && /^(for|select|case|done|fi|esac)$/.test(head))
+			return { argv: ["true", ...argv.slice(1)], sudo };
+		const name = basename(head);
+		const takes = Object.hasOwn(WRAP, name) ? WRAP[name] : undefined;
+		if (takes === undefined && !/^\w+=/.test(head)) break;
+		if (name === "sudo" || name === "doas") sudo = true;
 		argv = argv.slice(1);
-		while (argv[0]?.startsWith("-"))
-			argv = argv.slice(argv[0] === "-u" || argv[0] === "-n" ? 2 : 1);
-		if (timed && /^\d/.test(argv[0] ?? "")) argv = argv.slice(1);
+		if (takes === undefined) continue;
+		// command -v only says where a command is.
+		if (name === "command" && /^-[vV]$/.test(argv[0] ?? ""))
+			return { argv: ["which", ...argv.slice(1)], sudo };
+		argv = options(name, takes, argv);
 	}
 	return { argv, sudo };
+}
+
+// What's left once a wrapper's own options, and their values, are skipped.
+function options(name: string, takes: string[], words: string[]): string[] {
+	let argv = words;
+	for (let a = argv[0]; a?.startsWith("-"); a = argv[0]) {
+		if (a === "--") {
+			argv = argv.slice(1);
+			break;
+		}
+		// env -S splits its value into the command line.
+		const split = name === "env" && /^(-S|--split-string)$/.test(a);
+		const value =
+			!a.includes("=") &&
+			(takes.includes(a) ||
+				(/^-[a-zA-Z]{2,}$/.test(a) && takes.includes(`-${a.at(-1)}`)));
+		if (split)
+			argv = [...(argv[1] ?? "").split(/\s+/).filter(Boolean), ...argv.slice(2)];
+		else argv = argv.slice(value ? 2 : 1);
+	}
+	if (name.endsWith("timeout") && /^\d/.test(argv[0] ?? "")) argv = argv.slice(1);
+	return argv;
 }
 
 const never = (
@@ -1026,28 +1413,46 @@ function launch({ cmd, argv, head, seg, w }: Call): Judgement | undefined {
 	return undefined;
 }
 
+// sh -c and its kind. The command is the first word after the options, so
+// -ce, -xc and -c -- all count.
+function shell({ argv, seg, w, j }: Call): Judgement | undefined {
+	const flag = argv.findIndex((a) => /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a));
+	if (flag > 0) {
+		let k = flag + 1;
+		for (let a = argv[k]; a !== undefined && /^[-+]/.test(a); a = argv[k]) {
+			k += /^[-+][oO]$/.test(a) ? 2 : 1;
+			if (a === "--") break;
+		}
+		return judgeShell(argv[k] ?? "", w);
+	}
+	if (seg.pipedIn || argv.slice(1).some((a) => /^[<>]\(|^\/dev\/fd\//.test(a)))
+		return { ...j, effect: "system", plain: "Run a script it just downloaded" };
+	return undefined;
+}
+
 // Commands that run another command line, judged by what that line does.
 function nested(c: Call): Judgement | undefined {
 	const { cmd, argv, seg, w, j } = c;
 	if (SHELLS.has(cmd)) {
-		const flag = argv.findIndex((a) => /^-\w*c$/.test(a));
-		if (flag > 0) return judgeShell(argv[flag + 1] ?? "", w);
-		if (seg.pipedIn)
-			return { ...j, effect: "system", plain: "Run a script it just downloaded" };
+		const inner = shell(c);
+		if (inner) return inner;
 	}
 	if (cmd === "powershell" || cmd === "pwsh") {
 		const inner = powershell(argv, w);
 		if (inner) return inner;
 	}
 	if (cmd === "cmd") {
-		const at = argv.findIndex((a) => /^\/[ckr]/i.test(a));
-		// A caret only escapes the next character, so r^d is rd.
-		// cmd has no backslash escapes, which PowerShell's rules match best.
+		// Git Bash turns cmd's /c into //c.
+		const at = argv.findIndex((a) => /^\/\/?[ckr]/i.test(a));
+		// A caret only escapes the next character, so r^d is rd. cmd has no
+		// backslash escapes, which PowerShell's rules match best, and only " quotes,
+		// so a ' or # is escaped to stay an ordinary character.
 		if (at > 0)
 			return judgeShell(
-				[(argv[at] ?? "").slice(2), ...argv.slice(at + 1)]
+				[(argv[at] ?? "").replace(/^\/\/?[ckr]/i, ""), ...argv.slice(at + 1)]
 					.join(" ")
-					.replace(/\^(.)/g, "$1"),
+					.replace(/\^(.)/g, "$1")
+					.replace(/[`'#\u2018\u2019\u201a\u201b\u201c\u201d\u201e]/g, "`$&"),
 				w,
 				true,
 			);
@@ -1074,6 +1479,7 @@ function nested(c: Call): Judgement | undefined {
 			{
 				argv: argv.slice(1).filter((a) => !a.startsWith("-")),
 				out: [],
+				inp: [],
 				pipedIn: false,
 				ps: seg.ps,
 			},
@@ -1084,12 +1490,17 @@ function nested(c: Call): Judgement | undefined {
 	return undefined;
 }
 
+const FIND_RM = /-(exec|execdir|ok|okdir)\s+(\S*[\\/])?(rm|unlink|shred)(\.exe)?\s/i;
+
 function removal({ cmd, sub, argv, rest, w }: Call): Judgement | undefined {
 	const deleting =
 		DELETE.has(cmd) ||
 		(cmd === "find" &&
 			(argv.includes("-delete") ||
-				/-exec(dir)?\s+(\S*\/)?(rm|unlink|shred|trash)\s/.test(argv.join(" ")))) ||
+				FIND_RM.test(argv.join(" ")) ||
+				/-(exec|execdir|ok|okdir)\s+(\S*[\\/])?trash(\.cmd)?\s/i.test(
+					argv.join(" "),
+				))) ||
 		(cmd === "git" &&
 			(sub === "clean" || (sub === "reset" && argv.includes("--hard")))) ||
 		(cmd === "rsync" && argv.some((a) => a.startsWith("--delete"))) ||
@@ -1250,11 +1661,14 @@ function forbiddenWindows({
 function touchesLab(c: Call, named: Target[]): Judgement | undefined {
 	const { cmd, argv, head, seg, w, j } = c;
 	const readOnly =
-		(READ.has(cmd) || (seg.ps && PS_READ.test(cmd))) &&
-		seg.out.length === 0 &&
-		!(cmd === "sed" && has(argv, "-i"));
+		(((READ.has(cmd) || cmd === "find") && readMode(cmd, argv, c.rest) === "read") ||
+			(seg.ps && PS_READ.test(cmd))) &&
+		seg.out.length === 0;
+	// awk and sed name the files they write inside their program.
+	const program =
+		cmd === "awk" || cmd === "sed" ? codePaths(argv.slice(1).join(" "), w) : [];
 	if (!readOnly)
-		for (const p of named) {
+		for (const p of [...named, ...program]) {
 			const why = protectedPath(p.path, w);
 			if (why !== null)
 				return {
@@ -1264,27 +1678,28 @@ function touchesLab(c: Call, named: Target[]): Judgement | undefined {
 		}
 	// Searching the whole folder reads the token as surely as naming it does,
 	// and so does a glob like ~/.the*/config.json.
-	if (
-		named.some(
-			(p) =>
-				(within(p.path, w.lab) && (TOKEN.test(p.path) || same(p.path, w.lab))) ||
-				globReaches(p.path, w),
-		)
-	)
-		return {
-			...never(
-				j,
-				"Read The Lab's token",
-				"The token that pairs your phone is never read by the agent.",
-				"read",
-			),
-			secret: true,
-		};
+	// A link to a folder that holds The Lab's lets anything read the token through it.
+	const links =
+		cmd === "ln" ||
+		typed(head) === "mklink" ||
+		(cmd === "touch" &&
+			argv.some((a) => /^(symboliclink|junction|hardlink)$/i.test(a)));
+	if (links && named.some((p) => above(p.path, w) || same(p.path, w.lab)))
+		return never(
+			j,
+			"Link to The Lab's folder",
+			"A link there would let anything reach The Lab's token through it. Link to a narrower folder instead.",
+			"change",
+		);
+	if (named.some((p) => secretKind(p.path, w) === "token"))
+		return { ...never(j, "Read The Lab's token", TOKEN_BLOCK, "read"), secret: true };
 	// findstr /s takes a file pattern and searches every folder under it.
 	if (
 		named.some(
 			(p) =>
-				above(p.path, w) || (typed(head) === "findstr" && above(dirname(p.path), w)),
+				above(p.path, w) ||
+				(hasGlob(p.path) && reach(p.path, w.lab).above) ||
+				(typed(head) === "findstr" && above(dirname(p.path), w)),
 		) &&
 		searchesInside(cmd, argv)
 	)
@@ -1294,6 +1709,235 @@ function touchesLab(c: Call, named: Target[]): Judgement | undefined {
 		};
 	return undefined;
 }
+
+// The program sed runs, read far enough to find its commands that write a
+// file (w, W, the s///w flag) or run one (e, the s///e flag, and r, which
+// reads a file it names).
+function sedMode(script: string): "read" | "change" | "run" {
+	let mode: "read" | "change" | "run" = "read";
+	const worse = (m: "change" | "run") => {
+		if (m === "run" || mode === "read") mode = m;
+	};
+	// The index of the delimiter that ends the part starting after i.
+	const part = (i: number) => {
+		const d = script.charAt(i);
+		let k = i + 1;
+		for (; k < script.length && script[k] !== d && script[k] !== "\n"; k++)
+			if (script[k] === "\\") k++;
+		return k;
+	};
+	const toEnd = (i: number, stop: string) => {
+		let k = i;
+		while (k < script.length && !stop.includes(script.charAt(k))) k++;
+		return k;
+	};
+	for (let i = 0; i < script.length; i++) {
+		const c = script.charAt(i);
+		if (c === "/") i = part(i);
+		else if (c === "\\") i = part(i + 1);
+		else if (c === "s" || c === "y") {
+			i = part(part(i + 1));
+			const flags = /^[gpiImMew\d]*/.exec(script.slice(i + 1))?.[0] ?? "";
+			if (c === "s" && flags.includes("e")) worse("run");
+			if (c === "s" && flags.includes("w")) {
+				worse("change");
+				i = toEnd(i, "\n");
+			} else i += flags.length;
+		} else if ("aic#".includes(c)) i = toEnd(i, "\n");
+		else if ("btT:".includes(c)) i = toEnd(i, ";\n");
+		else if (c === "w" || c === "W") {
+			worse("change");
+			i = toEnd(i, "\n");
+		} else if (c === "e" || c === "r" || c === "R") {
+			worse("run");
+			i = toEnd(i, "\n");
+		}
+	}
+	return mode;
+}
+
+type Mode = "read" | "change" | "run";
+const any = (flags: string[], re: RegExp) => flags.some((a) => re.test(a));
+const when = (yes: boolean, mode: Mode): Mode => (yes ? mode : "read");
+
+function awkMode(flags: string[]): Mode {
+	if (any(flags, /^(-f|--file|-i|--include|-E|--exec|-l|--load)/)) return "run";
+	let prog = "";
+	for (let i = 0; i < flags.length; i++) {
+		const a = flags[i] ?? "";
+		if (/^(-v|-F|--assign|--field-separator)$/.test(a)) i++;
+		else if (!a.startsWith("-")) {
+			prog = a;
+			break;
+		}
+	}
+	if (/system\s*\(|getline|\|&|\bprintf?\b[^;}]*\|/.test(prog)) return "run";
+	return when(/\bprintf?\b[^;}]*>/.test(prog), "change");
+}
+
+function sedFlags(flags: string[]): Mode {
+	if (has(flags, "-i") || any(flags, /^--in-place/)) return "change";
+	if (any(flags, /^(-f|--file)/)) return "run";
+	const scripts: string[] = [];
+	for (let i = 0; i < flags.length; i++) {
+		const a = flags[i] ?? "";
+		if (a === "-e" || a === "--expression" || /^-[a-zA-Z]+e$/.test(a))
+			scripts.push(flags[++i] ?? "");
+		else if (/^(-e|--expression=)./.test(a))
+			scripts.push(a.replace(/^(-e|--expression=)/, ""));
+	}
+	if (scripts.length === 0) scripts.push(flags.find((a) => !a.startsWith("-")) ?? "");
+	const modes = new Set(scripts.map(sedMode));
+	if (modes.has("run")) return "run";
+	return when(modes.has("change"), "change");
+}
+
+const outputs = (flags: string[]) =>
+	when(any(flags, /^(-o|--output|--output-file)/), "change");
+const only = (re: RegExp) => (flags: string[]) =>
+	when(!flags.filter((a) => a.startsWith("-")).every((a) => re.test(a)), "change");
+
+// How each command that normally only looks at things can still write a file
+// or run something, given the options it has. When in doubt it doesn't only read.
+const MODES: Record<string, (flags: string[], rest: string[]) => Mode> = {
+	source: () => "run",
+	".": () => "run",
+	awk: awkMode,
+	sed: sedFlags,
+	find: (f) =>
+		any(f, /^-(exec|execdir|ok|okdir)$/)
+			? "run"
+			: when(any(f, /^-(delete|fprint0?|fprintf|fls)$/), "change"),
+	sort: (f) =>
+		any(f, /^--compress-program/)
+			? "run"
+			: when(any(f, /^(-[a-zA-Z]*o|--output)/), "change"),
+	uniq: (_, rest) => when(rest.length >= 2, "change"),
+	xxd: (f) => when(has(f, "-r") || any(f, /^--?revert$/), "change"),
+	tree: (f) => when(any(f, /^(-o|--output)/), "change"),
+	rg: (f) => when(any(f, /^--pre(-glob)?(=|$)/), "run"),
+	plutil: only(/^-(p|lint|help|s)$/),
+	sips: only(/^(-g|--getProperty|-1|--oneLine|-h|--help)$/),
+	exiftool: (f) =>
+		when(
+			any(f, /[=<]|^-(o|w|overwrite_original.*|delete_original.*|tagsfromfile|@)$/i),
+			"change",
+		),
+	pdftotext: (_, rest) => when(rest.at(-1) !== "-", "change"),
+	say: outputs,
+	base64: outputs,
+	ffprobe: outputs,
+	sysctl: (f, rest) =>
+		when(any(f, /^-w$/) || rest.some((a) => a.includes("=")), "change"),
+	less: (f) => when(any(f, /^\+/), "run"),
+	more: (f) => when(any(f, /^\+/), "run"),
+};
+
+function readMode(cmd: string, argv: string[], rest: string[]): Mode {
+	const mode = Object.hasOwn(MODES, cmd) ? MODES[cmd] : undefined;
+	return mode ? mode(argv.slice(1), rest) : "read";
+}
+
+// curl's and wget's options that carry what they send, by what each carries.
+const CURL_SENDS: Record<string, string> = {
+	d: "data@",
+	data: "data@",
+	"data-binary": "data@",
+	"data-ascii": "data@",
+	json: "data@",
+	"data-raw": "data",
+	"form-string": "data",
+	"data-urlencode": "urlencode",
+	F: "form",
+	form: "form",
+	T: "file",
+	"upload-file": "file",
+	H: "header",
+	header: "header",
+	X: "method",
+	request: "method",
+	K: "config",
+	config: "config",
+};
+const WGET_SENDS: Record<string, string> = {
+	"post-file": "file",
+	"body-file": "file",
+	"post-data": "data",
+	"body-data": "data",
+	header: "header",
+	method: "method",
+	config: "config",
+	e: "wgetrc",
+	execute: "wgetrc",
+};
+
+interface Web {
+	data: string[];
+	files: string[];
+	headers: string[];
+	method: string;
+	config: boolean;
+}
+
+function webPut(r: Web, kind: string, v: string) {
+	const file = (m: string | undefined) => {
+		if (m) r.files.push(m);
+	};
+	if (kind === "header") r.headers.push(v);
+	else if (kind === "method") r.method = v;
+	else if (kind === "config") r.config = true;
+	else if (kind === "wgetrc") {
+		// wgetrc commands like post_file=x.
+		if (/^\s*(post|body)_(file|data)\s*=/i.test(v)) r.data.push(v);
+		file(/^\s*(post|body)_file\s*=\s*(.+)$/is.exec(v)?.[2]);
+	} else {
+		r.data.push(v);
+		if (kind === "data@" && v.startsWith("@")) file(v.slice(1));
+		if (kind === "urlencode") file(/^[^=@]*@(.+)$/s.exec(v)?.[1]);
+		if (kind === "form") file(/^[^=]*=[@<]([^;]*)/s.exec(v)?.[1]);
+		if (kind === "file") file(v);
+	}
+}
+
+// What a curl or wget call sends: data, headers, the files it uploads and the method.
+function webArgs(cmd: string, argv: string[]): Web {
+	const r: Web = { data: [], files: [], headers: [], method: "", config: false };
+	const sends = cmd === "curl" ? CURL_SENDS : WGET_SENDS;
+	const kind = (flag: string) => {
+		const f = flag.replace(/^--?/, "");
+		return Object.hasOwn(sends, f) ? sends[f] : undefined;
+	};
+	// The short flags that take a value, one letter each.
+	const short =
+		cmd === "curl"
+			? "A b c C d D e E F H K m o P Q r t T u U w x X y Y z"
+			: "O o a i P U e T t w Q l A R D I X B";
+	for (let i = 1; i < argv.length; i++) {
+		const a = argv[i] ?? "";
+		if (a === "--") break;
+		const opt = /^(--[\w-]+)(?:=(.*))?$/s.exec(a);
+		const k = opt ? kind(opt[1] ?? "") : undefined;
+		if (opt) {
+			if (k !== undefined) webPut(r, k, opt[2] ?? argv[++i] ?? "");
+			continue;
+		}
+		if (!/^-[^-]/.test(a)) continue;
+		// Short flags bundle, like -sSd, and the last one's value may be glued on, like -d@x.
+		const at =
+			a
+				.slice(1)
+				.split("")
+				.findIndex((ch) => ch !== " " && short.includes(ch)) + 1;
+		if (at === 0) continue;
+		const value = a.slice(at + 1) || (argv[++i] ?? "");
+		const sk = kind(`-${a.charAt(at)}`);
+		if (sk !== undefined) webPut(r, sk, value);
+	}
+	return r;
+}
+
+// Something worked out by a command as it runs, which can be any file's contents.
+const made = (s: string) => /\$\(|`/.test(s);
 
 function curl({ cmd, argv, rest, line, j }: Call): Judgement | undefined {
 	if (cmd !== "curl" && cmd !== "wget") return undefined;
@@ -1306,14 +1950,15 @@ function curl({ cmd, argv, rest, line, j }: Call): Judgement | undefined {
 		) ??
 		"";
 	const host = hostOf(url);
+	const web = webArgs(cmd, argv);
 	const upload =
-		argv.some((a) => /^(-d|--data.*|-F|--form.*|-T|--upload-file|--json)$/.test(a)) ||
-		/(-X|--request)\s*(POST|PUT|PATCH|DELETE)/.test(line) ||
+		web.data.length > 0 ||
+		web.config ||
+		/^(POST|PUT|PATCH|DELETE)$/i.test(web.method) ||
+		web.headers.some(made) ||
 		/-method\s+(post|put|patch|delete)|-(body|infile|form)\b/i.test(line);
 	if (upload) {
-		const file = argv.includes("-T")
-			? argv[argv.indexOf("-T") + 1]
-			: argv.map((a) => /(?:^|=)@([^;\s]+)/.exec(a)?.[1]).find(Boolean);
+		const [file] = web.files;
 		return {
 			...j,
 			effect: "send",
@@ -1330,10 +1975,11 @@ function curl({ cmd, argv, rest, line, j }: Call): Judgement | undefined {
 		effect: saves ? "change" : "read",
 		touches: [host],
 		source: `a web page on ${host}`,
-		leaves: smuggles(url),
-		plain: smuggles(url)
-			? `Open ${host} with data in the address`
-			: `Download from ${host}`,
+		leaves: smuggles(url) || rest.some(made),
+		plain:
+			smuggles(url) || rest.some(made)
+				? `Open ${host} with data in the address`
+				: `Download from ${host}`,
 	};
 }
 
@@ -1380,8 +2026,11 @@ function webRequest({ cmd, argv, line, j }: Call): Judgement | undefined {
 }
 
 // The Lab's own report command, which posts to its GitHub repository.
+// report.ts takes the word after --copy as a folder to copy its code into, and
+// only sends when that word is missing or empty.
 function reporting({ cmd, argv, j }: Call): Judgement | undefined {
-	if (cmd !== "report" || argv.includes("--copy")) return undefined;
+	const copy = argv.indexOf("--copy");
+	if (cmd !== "report" || (copy > 0 && argv[copy + 1])) return undefined;
 	return {
 		...j,
 		effect: "send",
@@ -1577,10 +2226,28 @@ function systemChange({ cmd, rest, line, sudo, j }: Call): Judgement | undefined
 	return { ...j, effect: "system", plain };
 }
 
+// find and the commands that only read, unless their options write or run something.
+// What find runs on each file is judged on its own.
+function looking(c: Call, named: Target[]): Judgement | undefined {
+	const { cmd, argv, rest, seg, w, j } = c;
+	if (cmd !== "find" && !READ.has(cmd)) return undefined;
+	const mode = readMode(cmd, argv, rest);
+	if (mode === "change" || (mode === "run" && cmd !== "find"))
+		return { ...j, effect: mode, touches: named.map((p) => p.path) };
+	if (cmd === "find")
+		return look(j, `Look through ${place(expand(rest[0] ?? ".", w).path, w)}`);
+	const o = seg.out.map((a) => expand(a, w).path);
+	const [first] = o;
+	if (first === undefined) return j;
+	return { ...j, effect: "change", touches: o, plain: `Write ${basename(first)}` };
+}
+
 // What is left reads, edits or runs something ordinary.
 function ordinary(c: Call, named: Target[]): Judgement {
 	const { cmd, sub, argv, rest, seg, w, j } = c;
-	const secret = named.find((p) => SECRET.test(p.path));
+	const secret = NAMES.has(cmd)
+		? undefined
+		: named.find((p) => secretKind(p.path, w) === "secret");
 	if (secret)
 		return {
 			...look(j, `Read ${basename(secret.path)}, which holds a password or key`),
@@ -1594,8 +2261,8 @@ function ordinary(c: Call, named: Target[]): Judgement {
 			touches: named.map((p) => p.path),
 			plain: `Edit ${basename(rest.at(-1) ?? "")}`,
 		};
-	if (cmd === "find")
-		return look(j, `Look through ${place(expand(rest[0] ?? ".", w).path, w)}`);
+	const looked = looking(c, named);
+	if (looked) return looked;
 	if (
 		cmd === "git" &&
 		/^(status|log|diff|show|branch|remote|rev-parse|ls-files|blame|config|fetch)$/.test(
@@ -1603,12 +2270,6 @@ function ordinary(c: Call, named: Target[]): Judgement {
 		)
 	)
 		return look(j, "Check git");
-	if (READ.has(cmd)) {
-		const o = seg.out.map((a) => expand(a, w).path);
-		const [first] = o;
-		if (first === undefined) return j;
-		return { ...j, effect: "change", touches: o, plain: `Write ${basename(first)}` };
-	}
 	if (cmd === "git")
 		return { ...j, effect: "change", undo: "yes", plain: `Run git ${sub}` };
 	if (CHANGE.has(cmd)) {
@@ -1647,6 +2308,186 @@ function ordinary(c: Call, named: Target[]): Judgement {
 	};
 }
 
+// The code an interpreter is handed on its command line, like node -e or python -c.
+function inlineCode(cmd: string, argv: string[]): string | undefined {
+	if (cmd === "deno" && argv[1] === "eval") return argv.slice(2).join(" ");
+	let flag: RegExp | undefined;
+	if (/^(node|bun)$/.test(cmd)) flag = /^(-e|-p|-pe|--eval|--print)$/;
+	else if (/^(python[\d.]*|py|pypy[\d.]*)$/.test(cmd)) flag = /^-[a-zA-Z]*c$/;
+	else if (cmd === "ruby" || cmd === "perl") flag = /^-[a-zA-Z]*[eE]$/;
+	else if (cmd === "php") flag = /^-r$/;
+	else if (cmd === "osascript") flag = /^-e$/;
+	if (flag === undefined) return undefined;
+	const re = flag;
+	const code = argv.flatMap((a, i) => (re.test(a) ? [argv[i + 1] ?? ""] : []));
+	return code.length > 0 ? code.join("\n") : undefined;
+}
+
+// The paths written out in a piece of code, like the file in awk's print > "x".
+const codePaths = (code: string, w: Where) =>
+	(
+		code.match(
+			/(?:~|\$HOME|\$env:USERPROFILE|%USERPROFILE%|[A-Za-z]:[\\/]|\/)[^\s'"`,;()<>]*/gi,
+		) ?? []
+	)
+		.map((p) => expand(p, w))
+		.filter((p) => !p.unsure);
+
+// What a piece of code can reach, from the paths and words in it: The Lab's
+// token, another secret, or the network.
+function codeReach(code: string, w: Where) {
+	const paths = codePaths(code, w);
+	const lab = basename(w.lab);
+	const token =
+		paths.some((p) => secretKind(p.path, w) === "token") ||
+		(fold(code).includes(fold(lab)) &&
+			/config\.json|tunnel\.json|\.jks|password/i.test(code));
+	const secret =
+		token ||
+		paths.some((p) => secretKind(p.path, w) !== undefined || within(p.path, w.lab)) ||
+		/\.ssh|\.aws|\.codex|\.netrc|\.git-credentials|credentials\.json|Login Data|Cookies|key4\.db|logins\.json|Keychains/i.test(
+			code,
+		);
+	const net =
+		/https?:\/\/|socket|fetch|http|upload|urlopen|requests|curl|wget|smtp|ftp|dgram|\bnet\b|WebClient|WebRequest|RestMethod/i.test(
+			code,
+		);
+	return { token, secret, net };
+}
+
+// Interpreters run whatever their inline code says, which carries something
+// off the computer when it talks to the network or names a secret.
+function interpreter(c: Call): Judgement | undefined {
+	const code = inlineCode(c.cmd, c.argv);
+	if (code === undefined) return undefined;
+	const k = codeReach(code, c.w);
+	if (k.token)
+		return { ...never(c.j, "Read The Lab's token", TOKEN_BLOCK, "read"), secret: true };
+	const base = (c.cmd === "osascript" ? appleScript(c) : undefined) ?? {
+		...c.j,
+		effect: "run" as const,
+		plain: `Run ${c.cmd} code`,
+	};
+	return {
+		...base,
+		leaves: base.leaves || k.net || k.secret,
+		...(k.secret ? { secret: true } : {}),
+	};
+}
+
+// The commands find runs on each file it finds.
+const execs = (argv: string[]) => {
+	const out: string[][] = [];
+	for (let i = 0; i < argv.length; i++)
+		if (/^-(exec|execdir|ok|okdir)$/.test(argv[i] ?? "")) {
+			const stop = argv.findIndex((a, k) => k > i && (a === ";" || a === "+"));
+			out.push(argv.slice(i + 1, stop < 0 ? undefined : stop));
+			if (stop < 0) break;
+			i = stop;
+		}
+	return out;
+};
+
+// Commands that never open a file their arguments name.
+const NOFILE = new Set([
+	"echo",
+	"printf",
+	"pwd",
+	"which",
+	"whereis",
+	"type",
+	"date",
+	"cal",
+	"uname",
+	"whoami",
+	"id",
+	"hostname",
+	"uptime",
+	"ps",
+	"pgrep",
+	"test",
+	"[",
+	"true",
+	"false",
+	"sleep",
+	"cd",
+	"exit",
+	"wait",
+	"bc",
+	"expr",
+	"seq",
+	"locale",
+	"sysctl",
+	"top",
+	"getconf",
+	"printenv",
+	"set",
+	"export",
+	"read",
+	"local",
+	"shift",
+	"return",
+	"say",
+	"basename",
+	"dirname",
+]);
+
+// Commands that only look at names, sizes and dates, never what's in a file.
+const NAMES = new Set([
+	"ls",
+	"du",
+	"df",
+	"stat",
+	"file",
+	"mdls",
+	"tree",
+	"realpath",
+	"readlink",
+]);
+
+// A command whose name only shows a value, or is worked out as it runs.
+function unknown({ seg, argv, head, cmd, j }: Call): Judgement | undefined {
+	// In PowerShell a variable or its property on its own just shows a value.
+	if (
+		seg.ps &&
+		argv.length === 1 &&
+		/^\$[\w:]+(\.\w+)*$/.test(head) &&
+		!/\.(delete|remove|move|copy|write|upload|send|kill|start|stop|invoke|create|set|save|open|run|exec|close|clear)\w*$/i.test(
+			head,
+		)
+	)
+		return j;
+	// A name worked out as it runs, like {rm,-rf,~} or $cmd, can't be judged.
+	if (!seg.ps && /[{$`]/.test(cmd))
+		return {
+			...j,
+			effect: "system",
+			unsure: true,
+			plain: "Run a command whose name isn't known until it runs",
+		};
+	return undefined;
+}
+
+// cmd reads a .cmd or .bat file's arguments again, bare trash included, so
+// one of these characters in a name would start a second command.
+function batch({ w, argv, head, cmd, j }: Call): Judgement | undefined {
+	const windows = /^[a-z]:\//i.test(w.user);
+	if (
+		!(
+			(/\.(cmd|bat)$/i.test(head) || (windows && cmd === "trash")) &&
+			argv.slice(1).some((a) => /[&|<>^%!"\n]/.test(a))
+		)
+	)
+		return undefined;
+	return {
+		...j,
+		effect: cmd === "trash" ? "delete" : "run",
+		plain: cmd === "trash" ? "Move something to the Trash" : `Run ${basename(head)}`,
+		block:
+			"cmd would read a & | < > ^ % ! or quote in that name as part of a command. Rename it without that character first.",
+	};
+}
+
 // Judges one simple command.
 function command(seg: Seg, w: Where): Judgement {
 	const { argv, sudo } = unwrap(seg);
@@ -1666,13 +2507,25 @@ function command(seg: Seg, w: Where): Judgement {
 		sudo,
 		j,
 	};
-	const early = nested(c) ?? removal(c) ?? forbiddenMac(c) ?? forbiddenWindows(c);
-	if (early) return early;
-	const named = [...c.rest, ...seg.out]
-		.map((a) => expand(a, w))
-		.filter((p) => !p.unsure);
-	return (
+	const odd = unknown(c) ?? batch(c);
+	if (odd) return odd;
+	const nest = nested(c);
+	if (nest) return nest;
+	const words = [
+		...c.rest,
+		...glued(argv),
+		...(cmd === "curl" || cmd === "wget" ? webArgs(cmd, argv).files : []),
+		...seg.out,
+		...seg.inp,
+	].filter((a) => !(/^[<>]\(/.test(a) || /^\$(null|true|false)$/i.test(a)));
+	const all = words.map((a) => expand(a, w));
+	const named = all.filter((p) => !p.unsure);
+	let r =
+		removal(c) ??
+		forbiddenMac(c) ??
+		forbiddenWindows(c) ??
 		touchesLab(c, named) ??
+		interpreter(c) ??
 		curl(c) ??
 		webRequest(c) ??
 		reporting(c) ??
@@ -1681,13 +2534,106 @@ function command(seg: Seg, w: Where): Judgement {
 		installing(c) ??
 		checking(c) ??
 		systemChange(c) ??
-		ordinary(c, named)
+		ordinary(c, named);
+	if (cmd === "find")
+		r = combine([
+			r,
+			...execs(argv).map((x) =>
+				Object.assign(
+					command({ argv: x, out: [], inp: [], pipedIn: false, ps: seg.ps }, w),
+					{
+						unsure: true,
+					},
+				),
+			),
+		]);
+	if (r.block || inlineCode(cmd, argv) !== undefined) return r;
+	// Reading or uploading a secret is the same whichever command does it, and
+	// so is reading everything under a folder that holds one. A path that can't
+	// be known until it runs might be one, though a word with spaces in it is an
+	// awk program or a pattern rather than a path.
+	const opens =
+		!(NOFILE.has(cmd) || NAMES.has(cmd)) &&
+		(READ.has(cmd) ||
+			CHANGE.has(cmd) ||
+			SEND.has(cmd) ||
+			["find", "curl", "wget"].includes(cmd));
+	const secret =
+		(!NAMES.has(cmd) && named.some((p) => secretKind(p.path, w) !== undefined)) ||
+		(recursive(cmd, argv) && named.some((p) => holds(p.path, w))) ||
+		(opens && words.some((a) => !/\s/.test(a) && expand(a, w).unsure));
+	const unsure = [...seg.out, ...seg.inp].some((a) => expand(a, w).unsure);
+	return {
+		...r,
+		...(secret ? { secret: true } : {}),
+		...(unsure ? { unsure: true } : {}),
+	};
+}
+
+// The worst part speaks for the whole, and a block anywhere blocks it.
+function combine(parts: Judgement[]): Judgement {
+	const worst = parts.reduce((a, b) =>
+		RANK.indexOf(b.effect) > RANK.indexOf(a.effect) ? b : a,
 	);
+	const out: Judgement = {
+		...worst,
+		touches: [...new Set(parts.flatMap((p) => p.touches))],
+	};
+	const block = parts.find((p) => p.block)?.block;
+	if (block !== undefined) out.block = block;
+	out.rm = parts.some((p) => p.rm);
+	out.secret = parts.some((p) => p.secret);
+	out.leaves = parts.some((p) => p.leaves);
+	out.unsure = parts.some((p) => p.unsure);
+	const source = parts.find((p) => p.source)?.source;
+	if (source !== undefined) out.source = source;
+	return out;
+}
+
+// NAME=value words, and PowerShell's $name = value, which later words on the line use.
+function assigns(s: Seg): [string, string][] {
+	const a = s.argv;
+	if (s.ps) {
+		const name = /^\$(?:env:)?(\w+)$/i.exec(a[0] ?? "")?.[1];
+		if (name && a[1] === "=" && a.length === 3) return [[name, a[2] ?? ""]];
+		const glue = /^\$(?:env:)?(\w+)=(.+)$/is.exec(a[0] ?? "");
+		return glue && a.length === 1 ? [[glue[1] ?? "", glue[2] ?? ""]] : [];
+	}
+	// for f in *.md gives f each name the one glob matches.
+	if (a[0] === "for" && a[2] === "in" && a.length === 4)
+		return [[a[1] ?? "", a[3] ?? ""]];
+	const words = /^(export|local|declare|readonly|typeset)$/.test(a[0] ?? "")
+		? a.slice(1)
+		: a;
+	return words.flatMap((x) => {
+		const m = /^(\w+)=(.*)$/s.exec(x);
+		return m ? [[m[1] ?? "", m[2] ?? ""] as [string, string]] : [];
+	});
 }
 
 // Fork bombs don't parse as anything useful, so they're matched as text.
 const BOMB = /(\w+|:)\s*\(\)\s*\{[^}]*\1\s*\|\s*\1\s*&/;
 const RANK: Effect[] = ["read", "run", "change", "system", "delete", "send"];
+
+// .NET calls in PowerShell read files and reach the network as code does.
+function dotnet(line: string, w: Where): Judgement[] {
+	if (!/\]::|new-object/i.test(line)) return [];
+	const k = codeReach(line, w);
+	if (k.token)
+		return [
+			{ ...never(blank(), "Read The Lab's token", TOKEN_BLOCK, "read"), secret: true },
+		];
+	if (!(k.net || k.secret)) return [];
+	return [
+		{
+			...blank(),
+			effect: /\.upload\w*\s*\(/i.test(line) ? "send" : "run",
+			leaves: true,
+			secret: k.secret,
+			plain: "Run .NET code that reaches the network or a secret",
+		},
+	];
+}
 
 export function judgeShell(line: string, w: Where, ps = false): Judgement {
 	if (BOMB.test(line))
@@ -1699,12 +2645,13 @@ export function judgeShell(line: string, w: Where, ps = false): Judgement {
 		};
 	// A cd carries to the commands after it, so relative paths land where they will.
 	let cwd = w.cwd;
+	const vars: Record<string, string> = { ...w.vars };
 	const stack: (string | undefined)[] = [];
 	const segs = segments(line, ps);
 	const deep: boolean[] = [];
 	const parts: Judgement[] = [];
 	for (const [i, s] of segs.entries()) {
-		const here: Where = { ...w, cwd };
+		const here: Where = { ...w, cwd, vars: { ...vars } };
 		const prev = segs[i - 1];
 		// A recursive listing of a folder above The Lab's, piped into a reader.
 		if (
@@ -1730,6 +2677,15 @@ export function judgeShell(line: string, w: Where, ps = false): Judgement {
 			);
 		}
 		parts.push(command(s, here));
+		Object.assign(
+			vars,
+			Object.fromEntries(
+				assigns(s).flatMap(([k, v]) => [
+					[k, v],
+					[k.toLowerCase(), v],
+				]),
+			),
+		);
 		const head = s.argv[0] ?? "";
 		const name = nameOf(head);
 		if (name === "cd") {
@@ -1739,23 +2695,10 @@ export function judgeShell(line: string, w: Where, ps = false): Judgement {
 			cwd = to ? expand(to, here).path : w.user;
 		} else if (name === "popd") cwd = stack.pop() ?? cwd;
 	}
+	if (ps) parts.push(...dotnet(line, w));
 	if (parts.length === 0) return blank();
-	// The worst part speaks for the whole line, and a block anywhere blocks it.
-	const worst = parts.reduce((a, b) =>
-		RANK.indexOf(b.effect) > RANK.indexOf(a.effect) ? b : a,
-	);
-	const out: Judgement = {
-		...worst,
-		touches: [...new Set(parts.flatMap((p) => p.touches))],
-	};
-	const block = parts.find((p) => p.block)?.block;
-	if (block !== undefined) out.block = block;
-	out.rm = parts.some((p) => p.rm);
-	out.secret = parts.some((p) => p.secret);
-	out.leaves = parts.some((p) => p.leaves);
-	out.unsure = parts.some((p) => p.unsure);
-	const source = parts.find((p) => p.source)?.source;
-	if (source !== undefined) out.source = source;
+	const out = combine(parts);
+	out.runs = parts.some((p) => p.effect === "run");
 	const fetched = parts.find((p) => p.source && p.touches[0]);
 	if (
 		fetched &&
@@ -1824,6 +2767,31 @@ const outsideSource = (server: string, app: string) => {
 	return /mail|inbox|outlook/i.test(server) ? "your email" : app;
 };
 
+// A file an MCP tool is handed is read as surely as by Read. Sending a secret
+// to the phone is refused outright, as the copy lands where the agent can read it.
+function mcpFiles(
+	tool: string,
+	input: Record<string, unknown>,
+	w: Where,
+): Judgement | undefined {
+	const files = ["path", "file_path", "filePath", "file", "paths", "files"]
+		.flatMap((k) => [input[k]].flat())
+		.filter((f): f is string => typeof f === "string" && f !== "");
+	for (const f of files) {
+		const r = reading("Read", expand(f, w).path, w);
+		if (r.block) return r;
+		if (r.secret && tool === "mcp__lab__send_to_phone")
+			return {
+				...r,
+				effect: "send",
+				plain: `Send ${basename(f)} to the phone`,
+				block: "A file that holds a password, key or token never goes to the phone.",
+			};
+		if (r.secret) return { ...mcp(tool, input), secret: true };
+	}
+	return undefined;
+}
+
 // MCP tools are judged by their names, which are verb first almost
 // everywhere (send_message, list_events, create_draft).
 function mcp(tool: string, input: Record<string, unknown>): Judgement {
@@ -1890,8 +2858,18 @@ function mcp(tool: string, input: Record<string, unknown>): Judgement {
 }
 
 // Reading tools only matter when they reach a secret or The Lab's token.
+// Glob only lists names, so it asks rather than being refused.
 function reading(tool: string, p: string, w: Where): Judgement {
-	if (tool === "Grep" && p && above(p, w))
+	const deep = tool === "Grep" || tool === "Glob";
+	const kind = p ? secretKind(p, w) : undefined;
+	if (tool === "Glob" && (kind !== undefined || holds(p, w)))
+		return {
+			...blank(),
+			secret: true,
+			touches: [p],
+			plain: "List files that hold a password or key",
+		};
+	if (tool === "Grep" && p && (above(p, w) || (hasGlob(p) && reach(p, w.lab).above)))
 		return {
 			...blank(),
 			secret: true,
@@ -1899,15 +2877,15 @@ function reading(tool: string, p: string, w: Where): Judgement {
 			plain: "Search The Lab's folder",
 			block: SEARCH_BLOCK,
 		};
-	if (p && within(p, w.lab) && (TOKEN.test(p) || (tool === "Grep" && same(p, w.lab))))
+	if (kind === "token")
 		return {
 			...blank(),
 			secret: true,
 			touches: [p],
 			plain: "Read The Lab's token",
-			block: "The token that pairs your phone is never read by the agent.",
+			block: TOKEN_BLOCK,
 		};
-	if (p && SECRET.test(p))
+	if (kind === "secret" || (deep && p && holds(p, w)))
 		return {
 			...blank(),
 			secret: true,
@@ -1925,9 +2903,16 @@ export function judge(
 ): Judgement {
 	if (tool === "Bash" || tool === "PowerShell")
 		return judgeShell(String(input["command"] ?? ""), w, tool === "PowerShell");
-	if (tool.startsWith("mcp__")) return mcp(tool, input);
+	if (tool.startsWith("mcp__")) return mcpFiles(tool, input, w) ?? mcp(tool, input);
 	const file = input["file_path"] ?? input["notebook_path"] ?? input["path"];
-	const p = file ? expand(String(file), w).path : "";
+	let p = file ? expand(String(file), w).path : "";
+	// Glob's pattern says how far below its folder it looks.
+	const pattern = input["pattern"];
+	if (tool === "Glob" && typeof pattern === "string")
+		p = expand(
+			/^([a-z]:)?[\\/]|^~/i.test(pattern) ? pattern : `${p || "."}/${pattern}`,
+			w,
+		).path;
 	if (["Write", "Edit", "MultiEdit", "NotebookEdit"].includes(tool)) {
 		const block = protectedPath(p, w);
 		return {
@@ -1970,7 +2955,7 @@ export function needsOk(j: Judgement, w: Where, tainted: boolean): boolean {
 			j.touches.length === 0 ||
 			(j.undo !== "trash" && j.touches.some((p) => !within(p, w.home)))
 		);
-	// After an email or a web page has been read, an address carrying data
-	// out asks first.
-	return tainted && j.leaves;
+	// After an email or a web page has been read, anything carrying data out,
+	// and any program or code the guard can't see into, asks first.
+	return tainted && (j.leaves || j.runs === true);
 }

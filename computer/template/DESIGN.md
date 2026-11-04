@@ -201,18 +201,6 @@ components:
     typography: "{typography.title-large}"
     rounded: "{rounded.approval}"
     padding: "18px"
-  button-allow:
-    backgroundColor: "{colors.primary}"
-    textColor: "{colors.on-primary}"
-    typography: "{typography.title-medium}"
-    rounded: "10px 30px 30px 10px"
-    height: "60px"
-  button-deny:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.ink}"
-    typography: "{typography.title-medium}"
-    rounded: "30px 10px 10px 30px"
-    height: "60px"
   toolbar:
     backgroundColor: "{colors.toolbar}"
     textColor: "{colors.on-toolbar}"
@@ -479,7 +467,7 @@ Depth is tonal. Cards are flat fills one or two steps off the page (`surface`, `
 Two kinds of shape. Rounded rectangles do the containing, and a small library of soft polar shapes does the signalling.
 
 ### Corners
-Everything is rounded, nothing is square. Pills take half their height (20 px at 40 high, 24 at 48, 26 at 52, 28 at 56). Cards and bubbles use 28 px, the approval card and sheet 32 px, the header's bottom edge, the tray and the toolbar 36 px. Message bubbles keep one 8 px tail corner: bottom right for his, top left for the computer's replies and photos. Grouped lists (search results, the file list, the shortcut editor) round only the group's outer corners to 24 or 28 px and keep 8 px between items. Connected button pairs (Deny and Allow, Review and Stop, the split button) round their outer ends fully and their inner ends to 6 or 10 px.
+Everything is rounded, nothing is square. Pills take half their height (20 px at 40 high, 24 at 48, 26 at 52, 28 at 56). Cards and bubbles use 28 px, the approval card and sheet 32 px, the header's bottom edge, the tray and the toolbar 36 px. Message bubbles keep one 8 px tail corner: bottom right for his, top left for the computer's replies and photos. Grouped lists (search results, the file list, the shortcut editor) round only the group's outer corners to 24 or 28 px and keep 8 px between items. Connected button pairs (Review and Stop, the split button) round their outer ends fully and their inner ends to 6 or 10 px.
 
 ### State Shapes
 Each shape is the same 96 point outline (`--sh-circle`, `--sh-cookie` and so on, generated at the top of `app.js`), so any one can morph into any other with a transition on `d`. Each shape means a state, wherever it appears.
@@ -554,9 +542,9 @@ A widget without a tap of its own opens a `head-deep` details panel with every r
 The steps of one request. Closed it's a 48 px `surface-1` pill hugging its summary with a state mark. Open or live it stretches full width with 28 px corners and holds a `surface` list of steps, each with a small shape dot, a plain title and an elapsed time. Live it turns `work-c`, and waiting on him it turns `ask-c`. Tapping a step shows the raw command in mono with a Copy button.
 
 ### Approval Card
-`ask-c` card with a 56 px slowly turning burst and shield and the plain request as Title Large. Under it, in this order: `from` in a `surface` field when the request followed something read from outside, then `facts` as a list with small `wait-mark` dots, then `why` under a small "The agent says" label, since it's the agent's own words and not a fact. Show the Details is a text button that opens the raw detail in a `surface` mono block (capped at 180 px, 96 px when tight). Then a connected Deny and Allow row 60 px high, with Allow half again as wide as Deny. The pressed one grows and its corners close to 16 px. When the `ask` has `always`, a centred text button under the row says Always Allow This Exact Command. Once answered it collapses to a one-line answered row with a small mark. One that timed out says No answer in time and has an Ask Me Again text button that sends a message asking for it again.
+`ask-c` card with a 56 px slowly turning burst and shield and Needs Your OK as Title Large. Under it sits `<lab-ask>`, which the phone and the desktop window draw themselves in their own fixed white or dark panel: the plain request, `from`, the `facts`, `why` under "The agent says", Show the Details, then Deny and Allow and, when the `ask` has `always`, Always Allow This Exact Command. The page frames it and can't restyle or press it, so a design can never answer for him. In a browser tab, where there's no shell, the element shows its own contents instead, which say to answer on the phone or in The Lab window. Once answered the card collapses to a one-line answered row with a small mark. One that timed out says No answer in time and has an Ask Me Again text button that sends a message asking for it again.
 
-The facts and `from` lines are the server's, worked out from the command itself, and the card must never drop them or put the agent's words above them.
+Keep the whole card on screen, uncovered and at full opacity while it waits, with no transform, filter or overlay on it or its parents, since Allow only counts once `<lab-ask>` has been fully in view, uncovered, for a moment.
 
 ### Working Toolbar
 A 72 px `toolbar` pill with a 52 px loader, the current step and "Working for 0:07", and Stop on the right. While a request waits on him the whole bar turns `ask` amber, the loader becomes a still burst on a dark disc, the label says Needs Your OK, and Review appears joined to Stop. Review jumps to the approval card.

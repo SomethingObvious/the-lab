@@ -47,6 +47,10 @@ android {
         resValues = true
     }
 
+    // ask.js, the one script that can answer an Allow card, is shared with the
+    // desktop windows and packed in at build time, out of the agent's reach.
+    sourceSets.getByName("main").assets.directories.add("../../shared")
+
     // Tunnel logs through android.util.Log, which does nothing on the computer.
     testOptions.unitTests.isReturnDefaultValues = true
 

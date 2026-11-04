@@ -69,6 +69,7 @@ These rules keep the app working on the phone.
 - The page draws behind the status bar and the gesture bar. Pad with the CSS variables `--lab-inset-top`, `--lab-inset-bottom`, `--lab-inset-left` and `--lab-inset-right`. The keyboard counts as an inset too. While it's open `--lab-inset-bottom` is its height, updated every frame as it slides, and `html` has a `data-keyboard` attribute, so anything pinned to the bottom has to sit above `--lab-inset-bottom` and shouldn't add a transition of its own. When the phone is half open, `html` has `data-fold="book"` (hinge running up and down) or `data-fold="tabletop"` (hinge across), and `--lab-hinge-left`, `--lab-hinge-top`, `--lab-hinge-right` and `--lab-hinge-bottom` give the hinge's edges, so nothing important should cross it.
 - The phone is a Pixel Fold, so the page has to work at about 410 pixels wide folded and about 850 unfolded, and in both light and dark (`prefers-color-scheme`).
 - Some things must always stay visible and work, whatever the look: the message box, a Stop button while you're working, Allow and Deny on every request along with where it came from and what it does, the connection state when the computer can't be reached, messages still waiting to send, Put Things Back, and the More menu (Settings, Memory, Schedules, Always Allowed and Check My Setup).
+- Every `ask` is answered inside a `<lab-ask ref="...">` element with the ask's `ref`. The phone and the desktop window draw it themselves, with the request, its facts, Deny, Allow and Always Allow, and the page can't style its inside or press its buttons. So the page can't answer for him, as no design can, and he only has to trust what that card says. Place it in the approval card, keep it fully on screen with nothing over it or fading it (an Allow only counts once the whole card has been in view, uncovered, for a moment), and put a line inside it for where there's no shell, like a browser tab, saying to answer on the phone or in The Lab window.
 - Show every link's real address next to it. Link text can say anything, and the address is how he can tell where it goes.
 - Keep the page fast. It's a phone, so no frameworks or build step, and nothing animating on a loop except the working loaders and the mark that waits on him, as DESIGN.md says.
 
@@ -101,7 +102,6 @@ The page talks to the phone and the server only through `window.lab`, which is t
 | `lab.attach(kind)` | `kind` is `'photos'` or `'files'`. Opens the phone's picker, uploads what he picks to the computer and resolves to a list of `{ name, url, size, type }` (empty if he cancelled). Rejects with a readable message if the upload fails. |
 | `lab.saveShortcuts(items)` | Replaces the shortcut list with `items` (`{ id, label, text }`). Resolves to `true` or `false`. A fresh `shortcuts` event follows, so draw from that. |
 | `lab.stop()` | Stops what you're doing. |
-| `lab.answer(ref, allow, always)` | Answers an `ask` with `true` or `false`. With `always` set on an allow, that exact command in that folder runs without asking from then on. Only offer it when the `ask` has `always`. |
 | `lab.call(method, path, body)` | `GET` or `POST` to one of the server's routes below. Resolves to the parsed JSON, or rejects with a readable message. |
 | `lab.check()` | Runs Check My Setup. Resolves to `{ items }`, each `{ ok, title, detail, fix }`, with the computer's checks first and then the phone's. |
 | `lab.undoDesign()` | Restores the previous version of `app/`. |
@@ -172,7 +172,6 @@ Every saved event also has `id` and `at` (an ISO time). These events are live on
 | `backcancel` | He let go without going back, so put it back where it was. |
 | `undone` | `ok`. The answer to `undoDesign`. |
 | `openFailed` | `url`. Nothing on the phone could open it. |
-| `answerFailed` | `ref`. An Allow or Deny never reached the computer, so the question is still open. |
 | `stopFailed` | A Stop never reached the computer, so it is still working. |
 | `phone` | `online` (The Lab on a phone is connected now), `seen` (when one last was, ISO, or `null` if none ever has) and `relay` (`connected`, `off` or how it's failing). On connect and on every change. |
 | `window` | `maximized`, `active`. The Lab's window on the computer, whenever it's maximized, restored, focused or left. |

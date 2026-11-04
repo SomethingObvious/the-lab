@@ -25,7 +25,6 @@ import android.os.IBinder
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
-import java.time.Instant
 import java.util.UUID
 
 // Keeps the process, and so the stream from the computer, alive while the app is
@@ -35,10 +34,14 @@ class LinkService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Hub.init(this)
-        running = this
-        // Android 13 takes the type from the manifest, which is the same one.
-        if (Build.VERSION.SDK_INT >= 34) startForeground(Notifier.STATUS_ID, Notifier.status(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
-        else startForeground(Notifier.STATUS_ID, Notifier.status(this))
+        // Every later start finds it in the foreground already, and posting the
+        // card again would bring back one he swiped away.
+        if (running !== this) {
+            running = this
+            // Android 13 takes the type from the manifest, which is the same one.
+            if (Build.VERSION.SDK_INT >= 34) startForeground(Notifier.STATUS_ID, Notifier.status(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+            else startForeground(Notifier.STATUS_ID, Notifier.status(this))
+        }
         Hub.start()
         Retry.cancel(this)
         follow()
@@ -127,10 +130,12 @@ object Notifier {
     private const val STOP_ID = 4
     private const val QUEUED_ID = 5
     private const val UNSENT_ID = 6
+    private const val PAIR_ID = 8
     // The computer's own limit on how long a question waits.
     private const val ASK_MS = 5 * 60_000L
     // The last few messages each way, so a reply notification reads as a conversation.
-    private val recent = ArrayDeque<Triple<CharSequence, Long, Boolean>>()
+    // Each says who it's from: "me", "mac" or "lab".
+    private val recent = ArrayDeque<Triple<CharSequence, Long, String>>()
 
     fun channels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -182,6 +187,11 @@ object Notifier {
     // always, for each new task (the default), or never.
     fun showAgain(context: Context): Boolean {
         val gone = swiped ?: return true
+        // A card that's up after all has to stay current, or it keeps old Allow and Deny buttons.
+        if (context.getSystemService(NotificationManager::class.java).activeNotifications.any { it.id == STATUS_ID }) {
+            swiped = null
+            return true
+        }
         val mode = context.getSharedPreferences("lab", Context.MODE_PRIVATE).getString("statusCard", "tasks")
         val back = mode == "always" || (mode == "tasks" && about() != "idle" && about() != gone)
         if (back) swiped = null
@@ -190,7 +200,7 @@ object Notifier {
 
     // When the Done line should go back to idle, or null when it already has.
     fun doneUntil(): Long? {
-        val at = Hub.lastDone?.let { runCatching { Instant.parse(it.optString("at")).toEpochMilli() }.getOrNull() } ?: return null
+        val at = Hub.lastDone?.let { Hub.phoneTime(it.optString("at")) } ?: return null
         return (at + 10 * 60_000).takeIf { it > System.currentTimeMillis() && !Hub.status.optBoolean("working") }
     }
 
@@ -209,7 +219,7 @@ object Notifier {
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_STATUS)
             .setDeleteIntent(action(context, AnswerReceiver.SWIPED, "", 11))
-        val since = runCatching { Instant.parse(Hub.status.optString("since")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+        val since = Hub.phoneTime(Hub.status.optString("since")) ?: System.currentTimeMillis()
         if (waiting) {
             // A promoted card always sits first and expanded, so it carries the
             // buttons rather than sending him down to the ask itself.
@@ -237,7 +247,7 @@ object Notifier {
             val d = Hub.lastDone!!
             val title = if (d.optBoolean("stopped")) "Stopped" else if (d.optBoolean("ok")) "Done" else "Didn't finish"
             b.setContentTitle(task() ?: title).setContentText(if (task() == null) "Open The Lab to see what it did." else title)
-                .setWhen(runCatching { Instant.parse(d.optString("at")).toEpochMilli() }.getOrDefault(0)).setShowWhen(true)
+                .setWhen(Hub.phoneTime(d.optString("at")) ?: 0).setShowWhen(true)
         } else {
             val name = Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer"
             val (title, text) = when (link.optString("state")) {
@@ -287,14 +297,15 @@ object Notifier {
             // Asked from the shade rather than kept in memory, so it still works after the process restarts.
             for (n in nm.activeNotifications) if (n.notification.channelId == "asks") nm.cancel(n.id)
         }
-        val at = runCatching { Instant.parse(e.optString("at")).toEpochMilli() }.getOrDefault(0)
+        val at = Hub.phoneTime(e.optString("at")) ?: 0
         if (System.currentTimeMillis() - at > 120_000) return
         // A scheduled run with nothing to say stays quiet.
         if (e.optBoolean("silent")) return
         if (kind == "you" || kind == "reply" || kind == "file") {
             val label = e.optString("scheduled")
             val text = if (kind == "file") "Sent you ${e.optString("name")}" else if (label.isNotEmpty()) "$label: ${plain(e.optString("text"))}" else plain(e.optString("text"))
-            recent.addLast(Triple(text, at, kind == "you"))
+            // A turn the server started itself, like Self-Repair, wasn't his.
+            recent.addLast(Triple(text, at, if (kind != "you") "mac" else if (e.optBoolean("auto")) "lab" else "me"))
             while (recent.size > 6) recent.removeFirst()
         }
         // Someone at the computer with The Lab in front already sees it there.
@@ -303,9 +314,10 @@ object Notifier {
             "reply", "file" -> {
                 val mac = Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer").setKey("mac").build()
                 val me = Person.Builder().setName("You").setKey("me").build()
+                val lab = Person.Builder().setName("The Lab").setKey("lab").build()
                 conversation(context, mac)
                 val style = Notification.MessagingStyle(me)
-                for ((text, time, mine) in recent) style.addMessage(text, time, if (mine) null else mac)
+                for ((text, time, who) in recent) style.addMessage(text, time, when (who) { "me" -> null; "lab" -> lab; else -> mac })
                 val input = RemoteInput.Builder(AnswerReceiver.TEXT).setLabel("Message your computer").build()
                 val reply = PendingIntent.getBroadcast(
                     context, 20, Intent(context, AnswerReceiver::class.java).setAction(AnswerReceiver.REPLY),
@@ -331,7 +343,7 @@ object Notifier {
     private fun ask(context: Context, e: JSONObject) {
         val ref = e.optString("ref")
         val code = ref.hashCode()
-        val at = runCatching { Instant.parse(e.optString("at")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+        val at = Hub.phoneTime(e.optString("at")) ?: System.currentTimeMillis()
         // The computer gives up on a question after five minutes, and the card goes with it.
         val left = at + ASK_MS - System.currentTimeMillis()
         if (left <= 0) return
@@ -425,6 +437,17 @@ object Notifier {
             .build())
     }
 
+    fun confirmPair(context: Context) {
+        context.getSystemService(NotificationManager::class.java).notify(PAIR_ID, Notification.Builder(context, "notices")
+            .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
+            .setContentTitle("Switch to another computer?")
+            .setContentText("Tap to say yes or no. Nothing changes until you do.")
+            .setContentIntent(open(context)).setAutoCancel(true)
+            .build())
+    }
+
+    fun pairAnswered(context: Context) = context.getSystemService(NotificationManager::class.java).cancel(PAIR_ID)
+
     fun stopFailed(context: Context) {
         context.getSystemService(NotificationManager::class.java).notify(STOP_ID, Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
@@ -464,9 +487,14 @@ class AnswerReceiver : BroadcastReceiver() {
             SWIPED -> Notifier.swipedAway()
             STOP -> {
                 val pending = goAsync()
+                var finished = false
+                val finish = { if (!finished) { finished = true; pending.finish() } }
+                // A stop can outlast the 10 s a receiver gets, and the link
+                // service keeps the process alive for the answer.
+                Hub.onMain(9_000) { finish() }
                 Hub.stop { ok ->
                     if (!ok) Notifier.stopFailed(context)
-                    pending.finish()
+                    finish()
                 }
                 return
             }
@@ -510,9 +538,17 @@ class PairReceiver : BroadcastReceiver() {
             resultCode = 1
             return
         }
-        Hub.pair(url, tunnel, token)
         resultCode = 0
-        resultData = "paired"
+        // Anything holding WRITE_SECURE_SETTINGS can send this, so a switch to
+        // a different computer waits for his yes on the phone.
+        if (!Hub.paired || Hub.pairedWith(url, tunnel)) {
+            Hub.pair(url, tunnel, token)
+            resultData = "paired"
+        } else {
+            Hub.pendingPair = Hub.Pairing(url, tunnel, token)
+            Notifier.confirmPair(context)
+            resultData = "confirm on the phone"
+        }
     }
 }
 

@@ -11,7 +11,7 @@
     --bg: light-dark(#f5f1ff, #100c1e); --card: light-dark(#ffffff, #1a1530); --ink: light-dark(#1a1530, #f0ebff);
     --dim: light-dark(#4f4869, #bdb4da); --line: light-dark(#d9d0f5, #372d5a);
     --primary: light-dark(#5a2ee6, #6b45f0); --on-primary: #ffffff; --focus: light-dark(#5a2ee6, #c4b2ff);
-    --done: light-dark(#1d8a3c, #6fdd8b); --ask-ink: light-dark(#4a3000, #ffe4a3); --alert: light-dark(#c62828, #ff8a80); --on-alert: light-dark(#ffffff, #3a0000);
+    --done: light-dark(#1d8a3c, #6fdd8b); --alert: light-dark(#c62828, #ff8a80); --on-alert: light-dark(#ffffff, #3a0000);
     font: 16px/1.45 system-ui, -apple-system, Roboto, sans-serif;
   }
   * { box-sizing: border-box; }
@@ -36,11 +36,10 @@
   li { max-width: 65ch; overflow-wrap: anywhere; white-space: pre-wrap; }
   li.you { align-self: flex-end; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; }
   li.step, li.done { color: var(--dim); font-size: 14px; }
-  li.ask, li.failed, li.notice { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--card); }
+  li.failed, li.notice { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; background: var(--card); }
   li.failed strong { color: var(--alert); }
-  li.ask strong { color: var(--ask-ink); }
+  li.ask { white-space: normal; }
   textarea::placeholder { color: var(--dim); }
-  li .row { display: flex; gap: 8px; margin-top: 10px; }
   li.queued { opacity: .6; }
   form { display: flex; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--line); background: var(--bg); }
   textarea { flex: 1; font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; resize: none; min-height: 48px; max-height: 160px; }
@@ -127,29 +126,25 @@
       case 'file': add('step', `Sent you ${e.name}`); break;
       case 'done': add('done', e.stopped ? 'Stopped' : e.ok ? 'Done' : `Finished with a problem: ${e.error || ''}`); break;
       case 'ask': {
+        // Only the shell's own card can answer, so it fetches the question itself.
         const li = add('ask', '', (el) => {
-          el.innerHTML = '<strong></strong>\n<span></span><div class="row"><button type="button">Deny</button><button type="button" class="primary">Allow</button></div>';
-          el.querySelector('strong').textContent = e.title;
-          // His words first, as on the notification. The command is a last resort.
-          el.querySelector('span').textContent = [e.from, ...(e.facts || [])].filter(Boolean).join('\n') || e.plain || e.detail || '';
-          const [no, yes] = el.querySelectorAll('button');
-          yes.onclick = () => lab.answer(e.ref, true);
-          no.onclick = () => lab.answer(e.ref, false);
+          const card = document.createElement('lab-ask');
+          card.setAttribute('ref', e.ref);
+          el.append(card);
         });
-        asks.set(e.ref, li);
+        asks.set(e.ref, { li, title: e.title });
         break;
       }
       case 'answered': {
-        const li = asks.get(e.ref);
-        if (li) li.querySelector('.row')?.replaceChildren(document.createTextNode(e.allow ? 'Allowed' : 'Denied'));
+        const a = asks.get(e.ref);
+        if (a) {
+          a.li.className = 'notice';
+          a.li.textContent = `${a.title}\n${e.allow ? 'Allowed' : 'Denied'}`;
+        }
         break;
       }
       case 'undone':
         $('why').textContent = e.ok ? 'Undid the last design change.' : 'There is no earlier design to go back to.';
-        return;
-      case 'answerFailed':
-        $('why').textContent = "Couldn't reach the computer, so that answer didn't go through. Try again once it's back.";
-        $('sr').textContent = $('why').textContent;
         return;
       case 'stopFailed':
         $('why').textContent = "Couldn't reach the computer to stop it. Try again once it's back.";

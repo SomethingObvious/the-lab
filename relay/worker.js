@@ -24,6 +24,16 @@ const sha = async (s) => {
 		.replace(/[=]+$/, "");
 };
 
+// A socket that is closing already throws on send and close, which mustn't
+// stop the rest of a takeover.
+const quietly = (f) => {
+	try {
+		f();
+	} catch {
+		// It was going anyway.
+	}
+};
+
 const header = (peer, type) => {
 	const h = new Uint8Array(5);
 	new DataView(h.buffer).setUint32(0, peer);
@@ -59,13 +69,13 @@ export class Room extends DurableObject {
 			// start over with this one.
 			for (const old of this.ctx.getWebSockets("pc")) {
 				old.serializeAttachment({ replaced: true });
-				old.close(4001, "Another copy of the server took over.");
+				quietly(() => old.close(4001, "Another copy of the server took over."));
 			}
 			for (const p of this.ctx.getWebSockets("phone"))
-				p.close(4000, "The computer restarted.");
+				quietly(() => p.close(4000, "The computer restarted."));
 			for (const w of this.ctx.getWebSockets("waiting")) {
-				w.send("here");
-				w.close(1000, "The computer is back.");
+				quietly(() => w.send("here"));
+				quietly(() => w.close(1000, "The computer is back."));
 			}
 			this.ctx.acceptWebSocket(server, ["pc"]);
 			server.serializeAttachment({ at: Date.now() });
@@ -78,24 +88,30 @@ export class Room extends DurableObject {
 		// A phone that found the computer away holds this open, so it hears
 		// the moment the computer connects instead of checking back on a timer.
 		if (new URL(req.url).searchParams.has("wait")) {
-			if (this.ctx.getWebSockets("waiting").length >= PHONES)
-				return new Response("Too many phones in this room.", { status: 429 });
+			// Anyone who knows the room can wait, so the oldest makes way rather
+			// than a stranger keeping his phone out. That phone only loses the
+			// early word and checks back on its timer.
+			const waiting = this.staying("waiting");
+			if (waiting.length >= PHONES) this.evict(waiting, () => true);
 			this.ctx.acceptWebSocket(server, ["waiting"]);
-			server.serializeAttachment({ waiting: true });
+			server.serializeAttachment({ waiting: true, at: Date.now() });
 			if (this.pc()) {
 				server.send("here");
 				server.close(1000, "The computer is here.");
 			}
 			return new Response(null, { status: 101, webSocket: client });
 		}
-		const phones = this.ctx.getWebSockets("phone");
-		if (phones.length >= PHONES)
+		// The room is no secret, so a full one makes way for the newcomer by
+		// closing the oldest socket the computer hasn't answered past its
+		// handshake. Only a phone with the keys gets that far.
+		const phones = this.staying("phone");
+		if (phones.length >= PHONES && !this.evict(phones, (a) => !a.trusted))
 			return new Response("Too many phones in this room.", { status: 429 });
 		let peer;
 		do peer = crypto.getRandomValues(new Uint32Array(1))[0];
 		while (this.ctx.getWebSockets(`p${peer}`).length > 0);
 		this.ctx.acceptWebSocket(server, ["phone", `p${peer}`]);
-		server.serializeAttachment({ peer });
+		server.serializeAttachment({ peer, at: Date.now() });
 		if (!this.pc()) {
 			server.send("away");
 			server.close(4004, "The computer is not connected.");
@@ -113,8 +129,18 @@ export class Room extends DurableObject {
 			const to = new DataView(body.buffer, body.byteOffset).getUint32(0);
 			const phone = this.ctx.getWebSockets(`p${to}`)[0];
 			if (!phone) return;
-			if (body[4] === DATA) phone.send(body.subarray(5));
-			else if (body[4] === LEAVE) phone.close(4000, "The computer ended this session.");
+			if (body[4] === DATA) {
+				phone.send(body.subarray(5));
+				// The first frame back is the handshake, which any HELLO gets.
+				// A second one means the phone proved it has the keys.
+				const a = phone.deserializeAttachment() ?? {};
+				if (!a.trusted) {
+					a.heard = (a.heard ?? 0) + 1;
+					if (a.heard > 1) a.trusted = true;
+					phone.serializeAttachment(a);
+				}
+			} else if (body[4] === LEAVE)
+				phone.close(4000, "The computer ended this session.");
 			return;
 		}
 		const pc = this.pc();
@@ -127,6 +153,31 @@ export class Room extends DurableObject {
 		out.set(header(peer, DATA));
 		out.set(body, 5);
 		pc.send(out);
+	}
+
+	// The sockets with this tag, less any already told to make way, which stay
+	// listed until their close goes through.
+	staying(tag) {
+		return this.ctx
+			.getWebSockets(tag)
+			.filter((s) => !s.deserializeAttachment()?.evicted);
+	}
+
+	// Closes the oldest of the sockets that may go, and says whether there was one.
+	evict(sockets, may) {
+		let oldest = null;
+		let at = Number.POSITIVE_INFINITY;
+		for (const s of sockets) {
+			const a = s.deserializeAttachment() ?? {};
+			if (may(a) && (a.at ?? 0) < at) {
+				oldest = s;
+				at = a.at ?? 0;
+			}
+		}
+		if (!oldest) return false;
+		oldest.serializeAttachment({ ...oldest.deserializeAttachment(), evicted: true });
+		quietly(() => oldest.close(4005, "Another phone took this place in the room."));
+		return true;
 	}
 
 	// The computer's socket, leaving out one that's closing after a takeover

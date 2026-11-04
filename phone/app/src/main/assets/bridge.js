@@ -59,6 +59,8 @@
 	let nextId = 1;
 	labNative.addEventListener("message", (m) => {
 		const data = JSON.parse(m.data);
+		// Replies meant for <lab-ask>, which listens on the same channel.
+		if (data.op === "askInfo" || data.op === "askAnswer") return;
 		if (data.reply) {
 			const p = waiting.get(data.reply);
 			waiting.delete(data.reply);
@@ -191,8 +193,6 @@
 		attach: (kind) => ask("attach", { kind }),
 		saveShortcuts: (items) => ask("saveShortcuts", { items }),
 		stop: () => call("stop"),
-		answer: (ref, allow, always) =>
-			call("answer", { ref, allow: Boolean(allow), always: Boolean(always) }),
 		// Memory, schedules and always-allowed commands on the computer. Resolves with
 		// the JSON the computer sent, or rejects with its error in plain words.
 		call: (method, path, body) =>

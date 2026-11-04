@@ -2,7 +2,27 @@
 // gets the same API from the Android shell, so a design works in both.
 (() => {
 	const listeners = new Set();
-	const outbox = [];
+	// Kept in storage, so a reload or Try Again while the server is down
+	// doesn't throw away what he sent.
+	const outboxKey = "lab-outbox";
+	const outbox = (() => {
+		try {
+			const saved = JSON.parse(localStorage.getItem(outboxKey) || "[]");
+			return Array.isArray(saved)
+				? saved.filter((m) => typeof m?.cid === "string" && typeof m.text === "string")
+				: [];
+		} catch {
+			return [];
+		}
+	})();
+	const outboxChanged = () => {
+		try {
+			localStorage.setItem(outboxKey, JSON.stringify(outbox));
+		} catch {
+			// Without storage the outbox only lasts as long as the page.
+		}
+		emit({ kind: "outbox", items: [...outbox] });
+	};
 	let link = { kind: "link", state: "connecting" };
 	let status = null;
 	// The newest event of each kind that has no id, given to a page as it subscribes.
@@ -77,8 +97,15 @@
 	const webview = globalThis.chrome?.webview;
 	const webkit = globalThis.webkit?.messageHandlers?.lab;
 	const host = (m) => (webview ?? webkit)?.postMessage(m);
-	webview?.addEventListener("message", (e) => emit(e.data));
-	globalThis.labHost = (e) => emit(e);
+	// Replies to <lab-ask> are its own, and never page events.
+	const fromHost = (e) => {
+		if (e?.op === "askInfo" || e?.op === "askAnswer") return;
+		emit(e);
+	};
+	webview?.addEventListener("message", (e) => {
+		if (typeof e.data !== "string") fromHost(e.data);
+	});
+	globalThis.labHost = fromHost;
 
 	const connect = () => {
 		const es = new EventSource(lastId === null ? "/events" : `/events?after=${lastId}`);
@@ -127,17 +154,48 @@
 		});
 	};
 
+	// The server drops a body over 256 KB without answering, which would look
+	// like it being down, so a message that big is turned back here.
+	const MaxBody = 256 * 1024;
+	let flushing = false;
+	let again = null;
 	const flush = async () => {
-		while (outbox.length > 0) {
-			const m = outbox[0];
-			try {
-				const r = await post("/send", { text: m.text, cid: m.cid, files: m.files });
-				if (!r.ok && r.status !== 400) throw new Error(String(r.status));
-			} catch {
-				return setTimeout(flush, 3000);
+		if (flushing) return;
+		flushing = true;
+		clearTimeout(again);
+		try {
+			while (outbox.length > 0) {
+				const m = outbox[0];
+				const body = JSON.stringify({ text: m.text, cid: m.cid, files: m.files });
+				let error = null;
+				if (new Blob([body]).size > MaxBody)
+					error = "That message is too big to send. Try sending it in parts.";
+				else {
+					let r;
+					try {
+						r = await fetch("/send", {
+							method: "POST",
+							headers: { "content-type": "application/json" },
+							body,
+						});
+					} catch {
+						r = null;
+					}
+					if (r?.status === 400)
+						error =
+							(await r.json().catch(() => ({}))).error ||
+							"The computer couldn't take that message.";
+					else if (!r?.ok) {
+						again = setTimeout(flush, 3000);
+						return;
+					}
+				}
+				outbox.shift();
+				outboxChanged();
+				if (error) emit({ kind: "sendFailed", cid: m.cid, text: m.text, error });
 			}
-			outbox.shift();
-			emit({ kind: "outbox", items: [...outbox] });
+		} finally {
+			flushing = false;
 		}
 	};
 
@@ -181,7 +239,7 @@
 				at: new Date().toISOString(),
 				...(files?.length ? { files } : {}),
 			});
-			emit({ kind: "outbox", items: [...outbox] });
+			outboxChanged();
 			flush();
 			return cid;
 		},
@@ -191,14 +249,6 @@
 				() => false,
 			);
 			if (!ok) emit({ kind: "stopFailed" });
-		},
-		// A 404 means the question was already answered, which isn't a failure.
-		async answer(ref, allow, always) {
-			const ok = await post("/answer", { ref, allow, always: Boolean(always) }).then(
-				(r) => r.ok || r.status === 404,
-				() => false,
-			);
-			if (!ok) emit({ kind: "answerFailed", ref });
 		},
 		// Memory, schedules, always-allowed commands and the setup check.
 		async call(method, path, body) {

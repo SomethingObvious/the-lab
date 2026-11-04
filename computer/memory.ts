@@ -37,7 +37,7 @@ export function render(m: Memory): string {
 const HIDDEN: [number, number][] = [
 	[0x20_0b, 0x20_0f],
 	[0x20_2a, 0x20_2e],
-	[0x20_60, 0x20_64],
+	[0x20_60, 0x20_69],
 	[0xfe_ff, 0xfe_ff],
 	[0xad, 0xad],
 	[0xe_00_00, 0xe_00_7f],
@@ -56,7 +56,7 @@ const OVERRIDE =
 const HUSH =
 	/\b(do not|don't|never)\s+(tell|mention|show|ask|notify|let)\b.{0,20}\b(him|the owner|the user|anyone)\b/i;
 const KEYS =
-	/\b(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[po]_[A-Za-z0-9]{30,}|xox[abp]-[\w-]+|-----BEGIN [A-Z ]*PRIVATE KEY)/;
+	/\b(sk-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|gh[po]_[A-Za-z0-9]{30,}|xox[abp]-[\w-]+)|-----BEGIN [A-Z ]*PRIVATE KEY/;
 
 // Why a line looks planted, or null if it reads like an ordinary note.
 export function suspect(line: string): string | null {

@@ -4,17 +4,27 @@
 // csc.exe from .NET Framework builds it, which only knows C# 5.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
-using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Microsoft.Win32;
+
+// Without it .NET runs in its 4.0 mode, where Uri turns an escaped / in a
+// path back into a real one.
+[assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.6.2")]
 
 static class Program
 {
@@ -75,12 +85,19 @@ class Shell : Form
 	}
 
 	public static bool Again;
+	static readonly HttpClient http = new HttpClient(new HttpClientHandler { UseProxy = false });
+	static readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 	readonly WebView2 web = new WebView2();
 	readonly string lab;
 	readonly string place;
 	readonly System.Windows.Forms.Timer retry = new System.Windows.Forms.Timer();
+	// Only the script injected into this window knows it, so a message that
+	// carries it came from <lab-ask> and not from the design.
+	readonly string key = Key();
 	string origin = "";
-	bool offline;
+	string token = "";
+	// The stand-in page showing while the app can't, or null.
+	string page;
 
 	readonly string check;
 	readonly int strip;
@@ -179,20 +196,36 @@ class Shell : Form
 		core.Settings.IsNonClientRegionSupportEnabled = true;
 		await core.AddScriptToExecuteOnDocumentCreatedAsync(
 			"globalThis.labShell = 'desktop'; globalThis.labOs = 'windows';");
+		// Built into the exe, so the agent can't swap it, and kept off the
+		// stand-in pages, which aren't on the computer's address.
+		string ask;
+		using (var r = new StreamReader(typeof(Shell).Assembly.GetManifestResourceStream("ask.js")))
+			ask = r.ReadToEnd();
+		await core.AddScriptToExecuteOnDocumentCreatedAsync(
+			"if (location.hostname === '127.0.0.1') {\n" + ask.Replace("__LAB_ASK_KEY__", key) + "\n}");
+		// Only the top document's messages arrive here, never a frame's.
 		core.WebMessageReceived += (s, e) =>
 		{
 			if (Ours(e.Source))
-				Heard(e.WebMessageAsJson);
+			{
+				string text = null;
+				try
+				{
+					text = e.TryGetWebMessageAsString();
+				}
+				catch (ArgumentException)
+				{
+					// The title bar's messages are objects. Only <lab-ask> sends strings.
+				}
+				if (text != null)
+					Ask(text);
+				else
+					Heard(e.WebMessageAsJson, true);
+			}
+			else if (page != null && !e.Source.StartsWith("http"))
+				Heard(e.WebMessageAsJson, false);
 		};
-		// Its own pages (a photo, the pairing code) open in a WebView2 window
-		// that shares the sign-in. Anything else goes to the browser.
-		core.NewWindowRequested += (s, e) =>
-		{
-			if (Ours(e.Uri))
-				return;
-			e.Handled = true;
-			Open(e.Uri);
-		};
+		core.NewWindowRequested += NewWindow;
 		core.NavigationStarting += (s, e) =>
 		{
 			if (Ours(e.Uri) || e.Uri.StartsWith("data:") || e.Uri.StartsWith("about:"))
@@ -202,9 +235,13 @@ class Shell : Form
 		};
 		core.NavigationCompleted += (s, e) =>
 		{
-			if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+			// The server answers 404 for / when the design's index.html is gone,
+			// which waiting won't fix.
+			if (e.HttpStatusCode == 404 && core.Source == origin + "/")
+				Missing(false);
+			else if (!e.IsSuccess && e.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
 				Down();
-			else if (check != null && Ours(core.Source) && !core.Source.Contains("/pair"))
+			else if (check != null && Ours(core.Source))
 				Report();
 			Tell();
 		};
@@ -228,6 +265,7 @@ class Shell : Form
 		await System.Threading.Tasks.Task.Delay(4000);
 		var core = web.CoreWebView2;
 		var platform = await core.ExecuteScriptAsync("globalThis.lab && lab.platform");
+		var asks = await core.ExecuteScriptAsync("customElements.get('lab-ask') ? 'yes' : 'no'");
 		long bytes = Process.GetCurrentProcess().PrivateMemorySize64;
 		var count = 1;
 		foreach (var info in core.Environment.GetProcessInfos())
@@ -244,7 +282,7 @@ class Shell : Form
 			await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, f);
 		File.WriteAllText(
 			check + ".txt",
-			"platform " + platform + "\nprocesses " + count + "\nprivate MB " + (bytes >> 20) + "\n");
+			"platform " + platform + "\nask " + asks + "\nprocesses " + count + "\nprivate MB " + (bytes >> 20) + "\n");
 		Close();
 	}
 
@@ -253,66 +291,265 @@ class Shell : Form
 		return origin.Length > 0 && uri.StartsWith(origin + "/");
 	}
 
-	void Go()
+	static string Key()
+	{
+		var b = new byte[16];
+		using (var r = RandomNumberGenerator.Create())
+			r.GetBytes(b);
+		return BitConverter.ToString(b).Replace("-", "").ToLowerInvariant();
+	}
+
+	// Signs in with the same cookie pairing would set, so the token never
+	// goes in a URL.
+	async void Go()
 	{
 		var config = Path.Combine(lab, "config.json");
 		var text = File.Exists(config) ? File.ReadAllText(config) : "";
-		var token = Regex.Match(text, "\"token\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
+		var t = Regex.Match(text, "\"token\"\\s*:\\s*\"([^\"]+)\"").Groups[1].Value;
 		var port = Regex.Match(text, "\"port\"\\s*:\\s*(\\d+)").Groups[1].Value;
-		if (token.Length == 0 || port.Length == 0)
+		if (t.Length == 0 || port.Length == 0)
 		{
 			Down();
 			return;
 		}
 		origin = "http://127.0.0.1:" + port;
-		offline = false;
+		token = t;
+		page = null;
 		retry.Stop();
-		web.CoreWebView2.Navigate(origin + "/pair?t=" + Uri.EscapeDataString(token));
+		var cookies = web.CoreWebView2.CookieManager;
+		var c = cookies.CreateCookie("lab", Uri.EscapeDataString(token), "127.0.0.1", "/");
+		c.IsHttpOnly = true;
+		c.SameSite = CoreWebView2CookieSameSiteKind.Strict;
+		c.Expires = DateTime.Now.AddYears(1);
+		cookies.AddOrUpdateCookie(c);
+		// Adding returns before the cookie is in, and reading it back waits for that.
+		await cookies.GetCookiesAsync(origin + "/");
+		web.CoreWebView2.Navigate(origin + "/");
 	}
 
 	// The server restarts after an update and isn't running before sign-in
 	// finishes, so the window waits for it rather than showing an error page.
 	void Down()
 	{
-		if (offline)
+		Show("down", "<p>The Lab isn't answering on this computer yet.<br>This window connects by itself once it's back.</p>");
+	}
+
+	void Missing(bool tried)
+	{
+		Show(
+			tried ? "missing again" : "missing",
+			"<p>The app's design is missing on this computer, so there's nothing to show.</p>"
+			+ (tried
+				? "<p>There's no earlier design to go back to. Open the safe screen on the phone and ask the agent to put the app back.</p>"
+				: "<p>Undo the last design change to put the one before it back, or tap Undo Last Design Change on the phone's safe screen.</p>"
+					+ "<p><button class=pill data-undo>Undo Last Design Change</button></p>")
+			+ "<p>This window opens the app by itself once it's back.</p>");
+	}
+
+	// A stand-in page with the same window buttons as the app, since the
+	// window has no system title bar to move or close it by.
+	void Show(string which, string body)
+	{
+		if (page == which || web.CoreWebView2 == null)
 			return;
-		offline = true;
+		page = which;
+		var bg = "#" + BackColor.ToArgb().ToString("x8").Substring(2);
+		Func<string, string, string, string> button = (w, label, path) =>
+			"<button data-window=" + w + " aria-label=" + label + " title=" + label + (w == "close" ? " class=x" : "")
+			+ "><svg viewBox=\"0 0 24 24\" aria-hidden=true>" + path + "</svg></button>";
 		web.CoreWebView2.NavigateToString(
-			"<!doctype html><meta charset=utf-8><body style=\"font:16px system-ui;color:#888;"
-			+ "background:#" + BackColor.ToArgb().ToString("x8").Substring(2)
-			+ ";display:grid;place-items:center;height:90vh;margin:0;text-align:center\">"
-			+ "<p>The Lab isn't answering on this computer yet.<br>"
-			+ "This window connects by itself once it's back.</p>");
+			"<!doctype html><meta charset=utf-8><style>"
+			+ "body{margin:0;height:100vh;display:grid;grid-template-rows:32px 1fr;font:16px system-ui;color:#888;background:" + bg + "}"
+			+ ".bar{app-region:drag;display:flex;justify-content:flex-end}"
+			+ ".bar button{app-region:no-drag;width:46px;border:0;background:none;color:inherit;display:grid;place-items:center}"
+			+ ".bar button:hover{background:#8883}.bar .x:hover{background:#c42b1c;color:#fff}"
+			+ "svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.4}"
+			+ "main{display:grid;place-items:center;text-align:center;padding:0 24px 32px}main div{max-width:34em}"
+			+ ".pill{font:inherit;font-weight:600;color:inherit;background:#8882;border:1px solid #8886;border-radius:20px;padding:10px 18px}"
+			+ ".pill:hover{background:#8884}</style>"
+			+ "<div class=bar>"
+			+ button("minimize", "Minimize", "<path d=\"M6.5 12h11\"/>")
+			+ button("maximize", "Maximize", "<rect x=\"6.5\" y=\"6.5\" width=\"11\" height=\"11\" rx=\"1.5\"/>")
+			+ button("close", "Close", "<path d=\"m7 7 10 10M17 7 7 17\"/>")
+			+ "</div><main><div>" + body + "</div></main><script>"
+			+ "document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;"
+			+ "if(b.dataset.window)chrome.webview.postMessage({window:b.dataset.window});"
+			+ "else{b.disabled=true;chrome.webview.postMessage({undo:true})}})</script>");
 		retry.Start();
 	}
 
-	void Probe()
+	// Asks for / itself, so a window showing the missing design opens the app
+	// once it's back, and one showing the server down learns which it is.
+	async void Probe()
 	{
-		var req = (HttpWebRequest)WebRequest.Create((origin.Length > 0 ? origin : "http://127.0.0.1:8417") + "/health");
-		req.Timeout = 2000;
-		req.Proxy = null;
-		ThreadPool.QueueUserWorkItem(_ =>
+		if (page == null)
 		{
-			try
+			retry.Stop();
+			return;
+		}
+		if (origin.Length == 0)
+		{
+			Go();
+			return;
+		}
+		var got = await Computer(HttpMethod.Get, "/", null, 2000);
+		if (page == null)
+			return;
+		if (got.Item1 == 200)
+			Go();
+		else if (got.Item1 == 404)
+			Missing(page == "missing again");
+		else
+			Down();
+	}
+
+	async void Undo()
+	{
+		var got = await Computer(HttpMethod.Post, "/design/undo", "{}", 15000);
+		if (got.Item1 == 200)
+			Go();
+		else
+			Missing(true);
+	}
+
+	// A request to the computer with the token, which the page never sees.
+	// The status is 0 when it didn't answer.
+	async Task<Tuple<int, string>> Computer(HttpMethod method, string path, string body, int ms)
+	{
+		try
+		{
+			using (var stop = new CancellationTokenSource(ms))
+			using (var req = new HttpRequestMessage(method, origin + path))
 			{
-				using (req.GetResponse())
-					BeginInvoke((Action)Go);
+				req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+				if (body != null)
+					req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+				using (var res = await http.SendAsync(req, stop.Token))
+					return Tuple.Create((int)res.StatusCode, await res.Content.ReadAsStringAsync());
 			}
-			catch (WebException)
+		}
+		catch (HttpRequestException)
+		{
+			// Not running, or it closed the connection.
+		}
+		catch (TaskCanceledException)
+		{
+			// It took too long.
+		}
+		return Tuple.Create(0, "");
+	}
+
+	static object Parse(string text)
+	{
+		try
+		{
+			return json.DeserializeObject(text);
+		}
+		catch (ArgumentException)
+		{
+			return null;
+		}
+		catch (InvalidOperationException)
+		{
+			return null;
+		}
+	}
+
+	// <lab-ask> asking for a question or passing on his answer. Anything
+	// without this window's key is dropped without a word.
+	async void Ask(string text)
+	{
+		var m = Parse(text) as Dictionary<string, object>;
+		object k, op, nonce, r, allow, always;
+		if (m == null || !m.TryGetValue("key", out k) || !(k is string) || (string)k != key
+			|| !m.TryGetValue("op", out op) || !m.TryGetValue("nonce", out nonce) || !(nonce is string)
+			|| !m.TryGetValue("ref", out r) || !(r is string) || ((string)r).Length == 0)
+			return;
+		var reply = new Dictionary<string, object> { { "op", op }, { "nonce", nonce } };
+		if ((op as string) == "askInfo")
+		{
+			var got = await Computer(HttpMethod.Get, "/asks/" + Uri.EscapeDataString((string)r), null, 15000);
+			reply["status"] = got.Item1;
+			reply["ask"] = got.Item1 == 200 ? Parse(got.Item2) : null;
+		}
+		else if ((op as string) == "askAnswer" && m.TryGetValue("allow", out allow) && allow is bool
+			&& m.TryGetValue("always", out always) && always is bool)
+		{
+			var body = json.Serialize(new Dictionary<string, object> { { "ref", r }, { "allow", allow }, { "always", always } });
+			reply["status"] = (await Computer(HttpMethod.Post, "/answer", body, 15000)).Item1;
+		}
+		else
+			return;
+		try
+		{
+			web.CoreWebView2.PostWebMessageAsString(json.Serialize(reply));
+		}
+		catch (InvalidOperationException)
+		{
+			// The window closed while the computer was answering.
+		}
+	}
+
+	// Its own pages (a photo, the pairing code) open in a plain window that
+	// shares the sign-in, only when he clicked something. Anything else goes
+	// to the browser. These windows get neither <lab-ask> nor the messages.
+	void NewWindow(object sender, CoreWebView2NewWindowRequestedEventArgs e)
+	{
+		e.Handled = true;
+		if (!e.IsUserInitiated)
+			return;
+		if (Ours(e.Uri))
+			Popup(e);
+		else
+			Open(e.Uri);
+	}
+
+	async void Popup(CoreWebView2NewWindowRequestedEventArgs e)
+	{
+		var later = e.GetDeferral();
+		try
+		{
+			var k = GetDpiForSystem() / 96f;
+			var form = new Form
 			{
-				// Still down. The next tick asks again.
-			}
-			catch (InvalidOperationException)
+				Text = "The Lab",
+				Icon = Icon,
+				BackColor = BackColor,
+				Size = new Size((int)(640 * k), (int)(720 * k)),
+				StartPosition = FormStartPosition.CenterParent,
+			};
+			var view = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = BackColor };
+			form.Controls.Add(view);
+			form.Show(this);
+			await view.EnsureCoreWebView2Async(web.CoreWebView2.Environment);
+			var core = view.CoreWebView2;
+			core.Settings.IsStatusBarEnabled = false;
+			core.Settings.IsPasswordAutosaveEnabled = false;
+			core.Settings.IsGeneralAutofillEnabled = false;
+			core.NewWindowRequested += NewWindow;
+			core.NavigationStarting += (s, n) =>
 			{
-				// The window closed while it was asking.
-			}
-		});
+				if (Ours(n.Uri) || n.Uri.StartsWith("about:"))
+					return;
+				n.Cancel = true;
+				if (n.IsUserInitiated)
+					Open(n.Uri);
+			};
+			core.DocumentTitleChanged += (s, n) => form.Text = core.DocumentTitle.Length > 0 ? core.DocumentTitle : "The Lab";
+			core.WindowCloseRequested += (s, n) => form.Close();
+			e.NewWindow = core;
+		}
+		finally
+		{
+			later.Complete();
+		}
 	}
 
 	// What the page's title bar asks for. The page is only ever The Lab's own,
 	// but the agent can change it, so a reveal only shows a file it sent or
-	// got, and never opens or runs anything.
-	void Heard(string json)
+	// got, and never opens or runs anything. A stand-in page only has the
+	// window buttons and Undo.
+	void Heard(string json, bool app)
 	{
 		var w = Regex.Match(json, @"""window""\s*:\s*""(\w+)""").Groups[1].Value;
 		if (w == "minimize")
@@ -321,6 +558,12 @@ class Shell : Form
 			WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
 		else if (w == "close")
 			Close();
+		if (!app)
+		{
+			if (Regex.IsMatch(json, @"""undo""\s*:\s*true") && page != null && page.StartsWith("missing"))
+				Undo();
+			return;
+		}
 		var bar = Regex.Match(json, @"""bar""\s*:\s*""(#[0-9a-fA-F]{6})""").Groups[1].Value;
 		if (bar.Length > 0)
 			BackColor = ColorTranslator.FromHtml(bar);

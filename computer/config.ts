@@ -1,13 +1,16 @@
 import { randomBytes } from "node:crypto";
 import {
+	closeSync,
 	existsSync,
+	fsyncSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	renameSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { env, platform } from "node:process";
 
 // Every environment variable the code reads comes through here. It is read
@@ -32,16 +35,21 @@ export interface Config {
 	relay?: string;
 }
 
-// Written to a temp file and renamed into place, so a power cut leaves the
-// old file or the new one and never half of it. On Windows an antivirus,
-// the search indexer or a backup holding the file open turns the rename
-// into EPERM for a moment, so it tries a few times. A save that still fails
-// is logged rather than thrown, as the next save writes the whole file again.
+// Written to a temp file, flushed to the disk and renamed into place, so a
+// power cut leaves the old file or the new one and never half of it. On
+// Windows an antivirus, the search indexer or a backup holding the file open
+// turns the rename into EPERM for a moment, so it tries a few times. A save
+// that still fails is logged rather than thrown, as the next save writes the
+// whole file again.
 export function saveFile(file: string, text: string, mode?: number): boolean {
 	for (let i = 1; ; i++) {
 		try {
-			writeFileSync(`${file}.tmp`, text, mode === undefined ? {} : { mode });
+			writeFileSync(`${file}.tmp`, text, {
+				flush: true,
+				...(mode === undefined ? {} : { mode }),
+			});
 			renameSync(`${file}.tmp`, file);
+			syncFolder(dirname(file));
 			return true;
 		} catch (e) {
 			const code = e instanceof Error && "code" in e ? e.code : "";
@@ -54,6 +62,22 @@ export function saveFile(file: string, text: string, mode?: number): boolean {
 			);
 			return false;
 		}
+	}
+}
+
+// The rename only lasts a power cut once the folder is flushed too. Windows
+// can't open a folder for that and NTFS logs the rename itself.
+function syncFolder(dir: string) {
+	if (WIN) return;
+	try {
+		const fd = openSync(dir, "r");
+		try {
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		// Some file systems can't flush a folder, and the file itself is saved.
 	}
 }
 
