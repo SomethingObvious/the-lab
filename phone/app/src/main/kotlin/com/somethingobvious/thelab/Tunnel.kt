@@ -93,7 +93,10 @@ object Tunnel {
     private val lock = java.lang.Object()
     private var server: ServerSocket? = null
     @Volatile private var session: Session? = null
-    private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).pingInterval(20, TimeUnit.SECONDS).build()
+    // No pings of its own. The event stream's ping crosses this socket every 25 s,
+    // and Hub drops the session once that goes quiet, so a second heartbeat only
+    // wakes the radio more often.
+    private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).build()
 
     fun base(): String = synchronized(lock) {
         // Android's getLoopbackAddress() is ::1, and the address OkHttp is given is 127.0.0.1.
@@ -101,7 +104,12 @@ object Tunnel {
             server = ss
             thread(name = "tunnel", isDaemon = true) {
                 while (!ss.isClosed) {
-                    val sock = try { ss.accept() } catch (e: IOException) { break }
+                    val sock = try { ss.accept() } catch (e: IOException) {
+                        // A port nobody accepts on would hang every request, so the next base() opens a new one.
+                        synchronized(lock) { if (server === ss) server = null }
+                        runCatching { ss.close() }
+                        break
+                    }
                     thread(name = "tunnel-stream", isDaemon = true) { carry(sock) }
                 }
             }

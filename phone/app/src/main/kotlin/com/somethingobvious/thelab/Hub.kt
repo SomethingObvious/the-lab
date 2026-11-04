@@ -46,6 +46,7 @@ import java.util.concurrent.TimeUnit
 object Hub {
     private const val TAG = "Lab"
     private const val KEEP = 2000
+    private const val PAIR_AGAIN = "Ask the agent on the computer to show the pairing code, then point this phone's camera at it."
     private val JSON_TYPE = "application/json".toMediaType()
 
     lateinit var app: Application
@@ -83,9 +84,14 @@ object Hub {
 
     private val listeners = LinkedHashSet<(JSONObject) -> Unit>()
     val designListeners = LinkedHashSet<() -> Unit>()
+    // The history was thrown away and fetched again, so the page has to start over.
+    val resetListeners = LinkedHashSet<() -> Unit>()
 
     private var source: EventSource? = null
     private var failures = 0
+    private var designFailures = 0
+    // Whether the default network has a VPN and is validated, the two changes worth redialing for.
+    private var shape: Pair<Boolean, Boolean>? = null
     private var retry: Runnable? = null
     private var flushing = false
     private var syncing = false
@@ -96,13 +102,14 @@ object Hub {
 
     // Through the tunnel once it's paired that way, or Tailscale's address
     // for a phone paired before the tunnel existed.
-    val url: String? get() = if (Tunnel.spec != null) Tunnel.base() else prefs.getString("url", null)
+    // Null for a moment if the phone can't open the tunnel's port, which callers treat as unreachable.
+    val url: String? get() = if (Tunnel.spec != null) runCatching { Tunnel.base() }.getOrNull() else prefs.getString("url", null)
     private val token get() = prefs.getString("token", null)
     val paired get() = (Tunnel.spec != null || prefs.getString("url", null) != null) && token != null
     private var network: Network? = null
-    private var lastId
-        get() = prefs.getLong("lastId", 0)
-        set(v) = prefs.edit { putLong("lastId", v) }
+    val hasNetwork get() = app.getSystemService(ConnectivityManager::class.java).activeNetwork != null
+    // Taken from events.jsonl on load, so the cursor never runs ahead of what's on disk.
+    private var lastId = 0L
     var designVersion
         get() = prefs.getString("design", null)
         private set(v) = prefs.edit { putString("design", v) }
@@ -134,24 +141,31 @@ object Hub {
             }
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                 // Tailscale coming up shows as a change to the default network.
-                main.post { if (link.optString("state") != "online") reconnectNow() }
+                // Signal strength changes come through here too and aren't worth a redial.
+                val now = caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                main.post {
+                    if (now == shape) return@post
+                    shape = now
+                    if (link.optString("state") != "online") reconnectNow()
+                }
             }
         })
-        if (!paired) setLink("unpaired", "This phone isn't paired with a computer yet. Plug it into the computer and let the agent run setup.")
+        if (!paired) setLink("unpaired", "This phone isn't paired with a computer yet. $PAIR_AGAIN")
     }
 
     // Reading and parsing 2,000 events takes long enough to drop frames, so
     // it happens off the main thread and anything that needs them waits.
     private fun loadEvents() {
         io.execute {
-            val read = ArrayList<JSONObject>()
+            var read = emptyList<JSONObject>()
             if (eventsFile.exists()) {
                 val lines = eventsFile.readLines()
-                for (line in lines.takeLast(KEEP)) runCatching { read.add(JSONObject(line)) }
+                read = readHistory(lines.takeLast(KEEP))
                 if (lines.size > KEEP * 2) eventsFile.writeText(read.joinToString("\n", postfix = "\n") { it.toString() })
             }
             main.post {
                 events.addAll(0, read)
+                lastId = newestId(read)
                 loaded = true
                 for (r in whenLoaded.toList()) r()
                 whenLoaded.clear()
@@ -191,10 +205,11 @@ object Hub {
             putString("token", newToken)
         }
         Tunnel.spec = tunnel
+        // An older reach could otherwise swap the new pairing's relay back for the old one.
+        live.remove("reach")
+        prefs.edit { remove("live:reach") }
         if (changed) {
-            events.clear()
-            disk.execute { eventsFile.delete() }
-            lastId = 0
+            forgetHistory()
             designVersion = null
             live.clear()
             prefs.edit { for (k in prefs.all.keys) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") remove(k) }
@@ -202,6 +217,12 @@ object Hub {
         }
         if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "paired with ${tunnel?.relay ?: tunnel?.lan?.firstOrNull() ?: newUrl}")
         reconnectNow()
+    }
+
+    private fun forgetHistory() {
+        events.clear()
+        disk.execute { eventsFile.delete() }
+        lastId = 0
     }
 
     private fun setLink(state: String, detail: String = "", fix: String? = null) {
@@ -216,7 +237,7 @@ object Hub {
     private fun connect() {
         if (!loaded) { connectWhenLoaded = true; return }
         source?.cancel()
-        val base = url ?: return
+        val base = url ?: return onLost(null, null)
         val req = Request.Builder().url("$base/events")
             .header("Authorization", "Bearer $token")
             .apply { if (lastId > 0) header("Last-Event-ID", lastId.toString()) }
@@ -241,12 +262,23 @@ object Hub {
         retry?.let { main.removeCallbacks(it) }
         retry = null
         failures = 0
+        // A session that went quiet while the app was frozen would only fail after the read timeout.
+        if (link.optString("state") != "online" && Tunnel.spec != null) Tunnel.drop()
         if (paired) connect()
     }
 
     private fun onEvent(type: String?, data: String) {
         val e = runCatching { JSONObject(data) }.getOrElse { return }
+        if (type == "loaded") return Notifier.onLoaded()
         if (type == "hello") {
+            // The computer's numbering went back, so every new event would
+            // look already seen. Its own copy of the history takes over.
+            if (e.has("last") && e.optLong("last") < lastId) {
+                forgetHistory()
+                for (l in resetListeners.toList()) l()
+                connect()
+                return
+            }
             failures = 0
             setLink("online", "Connected to the computer")
             e.optJSONObject("status")?.let { setStatus(it) }
@@ -265,8 +297,16 @@ object Hub {
     }
 
     private fun reached(e: JSONObject) {
-        val a = e.optJSONArray("lan") ?: return
-        Tunnel.lan = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+        e.optJSONArray("lan")?.let { a -> Tunnel.lan = (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() } }
+        // A relay set up after pairing, so the phone can reach the computer away from home without pairing again.
+        val relay = e.optString("relay").takeIf { it.isNotBlank() && it != "null" } ?: return
+        val sp = Tunnel.spec ?: return
+        if (relay == sp.relay) return
+        val next = Tunnel.Spec.parse(sp.json().put("relay", relay)) ?: return
+        val lan = Tunnel.lan
+        Tunnel.spec = next
+        Tunnel.lan = lan
+        prefs.edit { putString("tunnel", next.json().toString()) }
     }
 
     private fun setLive(e: JSONObject) {
@@ -302,13 +342,13 @@ object Hub {
         val cm = app.getSystemService(ConnectivityManager::class.java)
         val caps = cm.getNetworkCapabilities(cm.activeNetwork)
         when {
-            code == 401 -> setLink("unpaired", "The computer doesn't recognise this phone any more. Plug it into the computer and let the agent pair it again.")
+            code == 401 -> setLink("unpaired", "The computer doesn't recognise this phone any more. $PAIR_AGAIN")
             caps == null -> setLink("offline", "This phone is offline.")
             Tunnel.spec != null -> setLink("offline", when (Tunnel.why) {
                 "away" -> "The computer isn't connected right now. It may be asleep, switched off or offline."
-                "relay" -> "Can't reach the relay, so the computer is only reachable on the same Wi-Fi."
-                "key" -> "Something answered that isn't your computer, so The Lab didn't trust it. Pair this phone again if it keeps happening."
-                "none" -> "Can't find the computer on this network. Without a relay it's only reachable on the same Wi-Fi."
+                "relay" -> "Can't reach the computer from here right now. It still works when this phone is on the same Wi-Fi as the computer."
+                "key" -> "The Lab couldn't confirm it was talking to your computer, so it didn't connect. If this keeps happening, pair the phone again with a new code."
+                "none" -> "Can't find the computer on this network. For now it only works when this phone is on the same Wi-Fi as the computer."
                 else -> "Can't reach the computer. It may be asleep, switched off or offline."
             })
             !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> setLink("offline", "Tailscale is off on this phone, so it can't reach the computer.", "tailscale")
@@ -351,21 +391,37 @@ object Hub {
         post("/send", body) { code ->
             flushing = false
             // The server drops a repeat cid, so a retry after a lost response is safe.
-            if (code in 200..299 || code == 400) {
-                if (outbox.length() > 0 && outbox.getJSONObject(0).optString("cid") == m.optString("cid")) outbox.remove(0)
-                saveOutbox()
-                emit(outboxEvent())
-                flush()
-            } else {
+            val outcome = sendOutcome(code)
+            if (outcome == SendOutcome.RETRY) {
                 main.postDelayed({ flush() }, 3000)
+                return@post
             }
+            val head = outbox.length() > 0 && outbox.getJSONObject(0).optString("cid") == m.optString("cid")
+            if (head) outbox.remove(0)
+            saveOutbox()
+            emit(outboxEvent())
+            if (head && outcome == SendOutcome.REFUSED) refused(m)
+            if (outbox.length() == 0) Notifier.sent(app)
+            flush()
         }
     }
 
-    // done gets false only when the computer never heard it. A 404 means it was already answered.
+    // The words go back to him, in the message box if the page is open and in a notification if not.
+    private fun refused(m: JSONObject) {
+        emit(sendFailed(m.optString("cid"), m.optString("text"), "The computer couldn't take that message. It's back in the message box so you can try again."))
+        if (!foreground) Notifier.unsent(m.optString("text"))
+    }
+
+    fun sendFailed(cid: String, text: String, error: String): JSONObject =
+        JSONObject().put("kind", "sendFailed").put("cid", cid).put("text", text).put("error", error)
+
+    fun queued(cid: String) = (0 until outbox.length()).any { outbox.getJSONObject(it).optString("cid") == cid }
+
+    // done gets false only when the computer never heard it.
     fun stop(done: (Boolean) -> Unit = {}) = post("/stop", JSONObject(), quick) { done(it in 200..299) }
-    fun answer(ref: String, allow: Boolean, always: Boolean = false, done: (Boolean) -> Unit = {}) =
-        post("/answer", JSONObject().put("ref", ref).put("allow", allow).put("always", always), quick) { done(it in 200..299 || it == 404) }
+    // done gets the status, and a 404 means it was already answered or has expired.
+    fun answer(ref: String, allow: Boolean, always: Boolean = false, done: (Int) -> Unit = {}) =
+        post("/answer", JSONObject().put("ref", ref).put("allow", allow).put("always", always), quick, done)
 
     // Any JSON route on the computer, for the page's memory, schedules and setup
     // sheets. done gets the body, or null and an error in plain words.
@@ -381,7 +437,7 @@ object Hub {
                 val text = response.use { it.body.string() }
                 main.post {
                     if (code in 200..299) done(text, null)
-                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer answered $code."))
+                    else done(null, runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer couldn't do that just now. Try again in a minute."))
                 }
             }
         })
@@ -453,7 +509,7 @@ object Hub {
             } catch (e: IOException) {
                 throw IOException("Couldn't reach the computer, so $name wasn't attached.", e)
             }
-            if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer didn't take $name (HTTP $code)."))
+            if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer didn't take $name. Try again in a minute."))
             val j = JSONObject(text)
             tmp.renameTo(File(dir, Uri.decode(j.getString("url").removePrefix("/files/"))))
             return j
@@ -509,8 +565,13 @@ object Hub {
             main.post {
                 syncing = false
                 if (version != null) {
+                    designFailures = 0
                     designVersion = version
                     for (l in designListeners.toList()) l()
+                } else if (link.optString("state") == "online") {
+                    // Otherwise a failed download waits for the next reconnect, with the safe screen up meanwhile.
+                    val wait = minOf(30_000L shl minOf(designFailures++, 5), 600_000L)
+                    main.postDelayed({ if (link.optString("state") == "online") syncDesign() }, wait)
                 }
             }
         }
@@ -572,5 +633,20 @@ object Hub {
     // A tap on a file shouldn't wait behind an upload or a design sync.
     private val opens = Executors.newSingleThreadExecutor()
     fun soon(r: Runnable) = opens.execute(r)
-    fun onMain(r: Runnable) = main.post(r)
+    fun onMain(delay: Long = 0, r: Runnable) = main.postDelayed(r, delay)
 }
+
+enum class SendOutcome { SENT, REFUSED, RETRY }
+
+// A 4xx other than these is the computer turning the message down, which
+// sending it again won't change. Anything else is worth another try.
+internal fun sendOutcome(code: Int): SendOutcome = when {
+    code in 200..299 -> SendOutcome.SENT
+    code in 400..499 && code != 401 && code != 408 && code != 429 -> SendOutcome.REFUSED
+    else -> SendOutcome.RETRY
+}
+
+// A torn last line from a process killed mid-write is skipped.
+internal fun readHistory(lines: List<String>): List<JSONObject> = lines.mapNotNull { runCatching { JSONObject(it) }.getOrNull() }
+
+internal fun newestId(events: List<JSONObject>): Long = events.maxOfOrNull { it.optLong("id") } ?: 0

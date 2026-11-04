@@ -6,17 +6,18 @@ import {
 	fdatasyncSync,
 	mkdirSync,
 	openSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
 	statSync,
 	watch,
-	writeFileSync,
 	writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, join, resolve, sep } from "node:path";
 import process, { env } from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
 	createSdkMcpServer,
 	tool as defineTool,
@@ -34,12 +35,14 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { Codex } from "./codex.ts";
-import { setting, WIN, words } from "./config.ts";
+import { saveFile, setting, WIN, words } from "./config.ts";
 import { checkApp } from "./design.ts";
 import { type Judgement, judge, needsOk, type Where } from "./guard.ts";
 import { awake, type Mac, snapshot } from "./mac.ts";
 import { CAP, diff, type Memory, parse, render, suspect } from "./memory.ts";
+import { scheduleProblem } from "./schedule.ts";
 import { clip, detail, title } from "./steps.ts";
+import { trash as moveToTrash } from "./trash.ts";
 
 export interface Ev {
 	id: number;
@@ -105,16 +108,20 @@ export class Store {
 			// served on start, which keeps it under a couple of MB.
 			if (lines.length > KEEP * 2) {
 				this.events = this.events.slice(-KEEP);
-				writeFileSync(
-					`${file}.tmp`,
-					`${this.events.map((e) => JSON.stringify(e)).join("\n")}\n`,
-				);
-				renameSync(`${file}.tmp`, file);
+				saveFile(file, `${this.events.map((e) => JSON.stringify(e)).join("\n")}\n`);
 			}
 			this.events = this.events.slice(-KEEP);
-			this.next = (this.events.at(-1)?.id ?? 0) + 1;
+			// Most events aren't flushed one by one, so a power cut can lose a few
+			// the phone already has. Skipping ahead keeps a new event from reusing
+			// one of their ids, which the phone would take as already seen.
+			this.next = (this.events.at(-1)?.id ?? 0) + 1001;
 		}
 		this.fd = openSync(file, "a");
+	}
+
+	// The newest id, which a phone whose cursor is ahead moves back to.
+	get last(): number {
+		return this.events.at(-1)?.id ?? 0;
 	}
 
 	add(raw: { kind: string; [k: string]: unknown }, durable = false): Ev {
@@ -129,18 +136,32 @@ export class Store {
 		if (durable) fdatasyncSync(this.fd);
 		this.events.push(ev);
 		if (this.events.length > KEEP * 1.2) this.events = this.events.slice(-KEEP);
-		for (const l of this.listeners) l(ev);
+		this.tell(ev);
 		return ev;
 	}
 
 	live(e: Live) {
-		for (const l of this.listeners) l(e);
+		this.tell(e);
+	}
+
+	// A listener that throws would otherwise keep the event from the ones
+	// after it, the phone's streams among them.
+	private tell(e: Ev | Live) {
+		for (const l of this.listeners) {
+			try {
+				l(e);
+			} catch (error) {
+				console.error(`listener on ${e.kind}:`, error);
+			}
+		}
 	}
 
 	// With no cursor the phone gets the last 300 events, which covers a fresh
 	// install without shipping months of history over the first connection.
+	// A cursor past every id handed out is from before a reset events file,
+	// and gets the same.
 	since(after: number | null): Ev[] {
-		if (after === null) return this.events.slice(-300);
+		if (after === null || after >= this.next) return this.events.slice(-300);
 		return this.events.filter((e) => e.id > after);
 	}
 
@@ -198,11 +219,35 @@ const NOTICE: Partial<Record<SDKAssistantMessageError, string>> = {
 	account_on_hold: "The Claude account on the computer is on hold.",
 	verification_required:
 		"The Claude account on the computer needs to be verified. Open Claude on the computer to finish it.",
+	oauth_org_not_allowed:
+		"The account on the computer isn't allowed to use this. Sign The Lab in with another account on the computer.",
+	overloaded:
+		"The agent's service is overloaded right now. Send your message again in a few minutes.",
+	server_error:
+		"The agent's service had a problem on its side. Send your message again in a few minutes.",
+	model_not_found:
+		"The model picked in Settings isn't available. Pick another one under Model, then send your message again.",
+	invalid_request:
+		"The agent couldn't take that message. If it had a big file attached, try a smaller one.",
+	max_output_tokens:
+		"The reply got too long and was cut off. Ask for it in shorter parts.",
 };
+const API_TROUBLE =
+	"The agent ran into a problem with its service. Send your message again in a minute.";
+
+// What a turn that ended badly says on the phone. The engine's own words
+// go to the log, as they're written for a developer.
+export const UNFINISHED =
+	"It stopped partway through because of a problem on the computer. Send it again, or ask it to carry on.";
 
 // How long an Allow card waits. Long enough to find the phone, short enough
 // that an Allow still means he remembers what it was for.
 export const ASK_MS = 5 * 60_000;
+// What the engine says when the conversation it was told to reopen is gone.
+const GONE = /No conversation found with session ID/;
+
+// How long a Stop waits for the engine before ending the turn itself.
+export const STOP_MS = 15_000;
 
 // Who or what answered an Allow card.
 type By = "phone" | "timeout" | "stop";
@@ -303,6 +348,14 @@ const decide = (d: "allow" | "deny", reason?: string): HookJSONOutput => ({
 	},
 });
 
+const decode = (s: string) => {
+	try {
+		return decodeURIComponent(s);
+	} catch {
+		return s;
+	}
+};
+
 const toolError = (text: string) => ({
 	content: [{ type: "text" as const, text }],
 	isError: true,
@@ -324,7 +377,8 @@ export class Lab {
 	private unanswered: SDKUserMessage[] = [];
 	private readonly seen = new Set<string>();
 	private stopping = false;
-	private initSeen = false;
+	// Set when the engine says the saved conversation doesn't exist.
+	private gone = false;
 	// Steps whose refusal is already shown some other way, so the failed
 	// result isn't drawn again.
 	readonly hushed = new Set<string>();
@@ -366,9 +420,22 @@ export class Lab {
 		// PowerShell would open a file with no extension instead of running it.
 		this.trashCmd = join(opts.dir, "bin", WIN ? "trash.cmd" : "trash");
 		this.memoryFile = join(opts.home, "memory.md");
-		this.state = existsSync(this.stateFile)
-			? JSON.parse(readFileSync(this.stateFile, "utf8"))
-			: {};
+		this.state = {};
+		if (existsSync(this.stateFile)) {
+			const raw = readFileSync(this.stateFile, "utf8");
+			// A power cut can leave it empty, and starting without the saved
+			// conversation beats not starting at all.
+			try {
+				const s: unknown = JSON.parse(raw);
+				if (isRecord(s)) this.state = s;
+				else throw new Error(`it holds ${JSON.stringify(s)}`);
+			} catch (e) {
+				console.error(
+					`state.json couldn't be read (${(e as Error).message}), so it starts fresh`,
+				);
+				saveFile(`${this.stateFile}.bad`, raw);
+			}
+		}
 		try {
 			this.rules = JSON.parse(readFileSync(this.rulesFile, "utf8"));
 		} catch {
@@ -379,6 +446,7 @@ export class Lab {
 		for (const e of this.store.events)
 			if (e.kind === "you") this.seen.add(String(e["cid"]));
 		if (fresh) this.store.add(WELCOME);
+		this.prune();
 
 		if (this.state.open) {
 			// Without a done the cut-off turn's approvals would stay live.
@@ -398,8 +466,27 @@ export class Lab {
 	}
 
 	save() {
-		writeFileSync(`${this.stateFile}.tmp`, JSON.stringify(this.state));
-		renameSync(`${this.stateFile}.tmp`, this.stateFile);
+		saveFile(this.stateFile, JSON.stringify(this.state));
+	}
+
+	// Files to and from his phone would otherwise pile up for good, and the
+	// agent can't clear them. One goes once no kept event shows it and it's
+	// two months old.
+	private prune() {
+		const used = new Set<string>();
+		for (const [, name = ""] of JSON.stringify(this.store.events).matchAll(
+			/\/files\/([^"\\]+)/g,
+		))
+			used.add(decode(name));
+		const old = Date.now() - 60 * 86_400_000;
+		for (const name of readdirSync(this.filesDir)) {
+			const p = join(this.filesDir, name);
+			try {
+				if (!used.has(name) && statSync(p).mtimeMs < old) rmSync(p, { force: true });
+			} catch (e) {
+				console.error("files:", e);
+			}
+		}
 	}
 
 	setStatus(working: boolean, label = "") {
@@ -496,12 +583,22 @@ export class Lab {
 			for (const finish of this.asks.values()) finish(false, "stop");
 			return this.codex.stop();
 		}
-		if (!(this.q && this.status.working)) return;
+		const q = this.q;
+		if (!(q && this.status.working)) return;
 		this.stopping = true;
 		for (const finish of this.asks.values()) finish(false, "stop");
-		await this.q.interrupt().catch(() => {
-			// An interrupt that fails means the turn already ended.
-		});
+		// An engine that stopped responding never answers the interrupt or sends
+		// the turn's result, so after 15 seconds the session is closed, which ends it.
+		const end = setTimeout(() => {
+			if (this.q === q && this.stopping) q.close();
+		}, STOP_MS);
+		end.unref();
+		await Promise.race([
+			q.interrupt().catch(() => {
+				// An interrupt that fails means the turn already ended.
+			}),
+			sleep(STOP_MS, undefined, { ref: false }),
+		]);
 	}
 
 	close() {
@@ -537,8 +634,7 @@ export class Lab {
 	}
 
 	saveRules() {
-		writeFileSync(`${this.rulesFile}.tmp`, JSON.stringify(this.rules, null, 2));
-		renameSync(`${this.rulesFile}.tmp`, this.rulesFile);
+		saveFile(this.rulesFile, JSON.stringify(this.rules, null, 2));
 	}
 
 	allowedBefore(command: string, cwd: string) {
@@ -713,6 +809,20 @@ export class Lab {
 		const file = String(
 			(isRecord(input.tool_input) ? input.tool_input["file_path"] : undefined) ?? "",
 		);
+		if (
+			["Write", "Edit", "MultiEdit"].includes(input.tool_name) &&
+			file &&
+			resolve(file) === resolve(this.opts.home, "schedules.json")
+		) {
+			const problem = scheduleProblem(file);
+			if (problem)
+				return {
+					hookSpecificOutput: {
+						hookEventName: "PostToolUse",
+						additionalContext: problem,
+					},
+				};
+		}
 		const app = join(this.opts.home, "app");
 		if (
 			["Write", "Edit", "MultiEdit"].includes(input.tool_name) &&
@@ -853,8 +963,7 @@ export class Lab {
 
 	private writeMemory(text: string) {
 		this.memoryText = text;
-		writeFileSync(`${this.memoryFile}.tmp`, text);
-		renameSync(`${this.memoryFile}.tmp`, this.memoryFile);
+		saveFile(this.memoryFile, text);
 	}
 
 	// Every change the agent makes to memory.md shows on the phone as a line in
@@ -931,7 +1040,7 @@ export class Lab {
 				if (name !== "memory.md") return;
 				clearTimeout(settle);
 				settle = setTimeout(() => this.memoryChanged(), 300);
-			});
+			}).on("error", (e) => console.error("memory watch:", e));
 		} catch {
 			/* no folder yet, as in tests */
 		}
@@ -947,7 +1056,7 @@ export class Lab {
 		}
 		const channel = new Channel();
 		this.input = channel;
-		this.initSeen = false;
+		this.gone = false;
 		const lab = createSdkMcpServer({
 			name: "lab",
 			version: "1.0.0",
@@ -1010,7 +1119,10 @@ export class Lab {
 						},
 					],
 				},
-				stderr: (d) => process.stderr.write(d),
+				stderr: (d) => {
+					if (GONE.test(d)) this.gone = true;
+					process.stderr.write(d);
+				},
 			},
 		});
 		this.q = q;
@@ -1031,12 +1143,12 @@ export class Lab {
 		this.input?.close();
 		this.input = null;
 		for (const finish of this.asks.values()) finish(false, "stop");
+		if (GONE.test(failure)) this.gone = true;
 
-		// A resume that never got as far as init means the saved conversation
-		// is gone (deleted, or from another machine), so start a fresh one with
-		// whatever was waiting. With nothing sent (only the model list was asked
-		// for) init never comes anyway, so that says nothing about the session.
-		if (!this.initSeen && this.state.sessionId && this.unanswered.length > 0) {
+		// The saved conversation is gone (deleted, or from another machine), so
+		// a fresh one starts with whatever was waiting. Any other failure keeps
+		// it, as the conversation itself is still there to reopen.
+		if (this.gone && this.state.sessionId && this.unanswered.length > 0) {
 			this.state.sessionId = undefined;
 			this.save();
 			this.store.add({
@@ -1054,11 +1166,19 @@ export class Lab {
 				return;
 			}
 		}
+		// Messages it never answered went with the session, so nothing waits on them.
+		this.youIds.clear();
+		this.unanswered = [];
 		if (this.status.working) {
-			this.store.add({
-				kind: "notice",
-				text: `The agent stopped partway through${failure ? ` (${clip(failure, 160)})` : ""}. Send your message again, or ask it to carry on.`,
-			});
+			const stopped = this.stopping;
+			this.stopping = false;
+			// Without a done the turn's approvals would stay live on the phone.
+			this.store.add({ kind: "done", ok: false, stopped, ms: 0 });
+			if (!stopped)
+				this.store.add({
+					kind: "notice",
+					text: "The agent stopped partway through. Send your message again, or ask it to carry on.",
+				});
 			this.state.open = null;
 			this.save();
 		}
@@ -1128,7 +1248,6 @@ export class Lab {
 		switch (m.type) {
 			case "system":
 				if (m.subtype === "init") {
-					this.initSeen = true;
 					this.state.sessionId = m.session_id;
 					this.save();
 					this.status.mode = m.permissionMode;
@@ -1160,10 +1279,18 @@ export class Lab {
 
 	private assistant(m: SDKAssistantMessage) {
 		const sub = m.parent_tool_use_id !== null;
-		const notice = m.error && NOTICE[m.error];
-		if (notice) {
-			this.store.add({ kind: "notice", text: notice });
-			return;
+		// The text of a failed call is the API's error, written for a developer,
+		// so it becomes a notice instead of a reply. A reply cut off for length
+		// is still worth reading.
+		if (m.error) {
+			console.error("assistant error:", m.error);
+			if (m.error !== "max_output_tokens") {
+				this.store.add({ kind: "notice", text: NOTICE[m.error] ?? API_TROUBLE });
+				return;
+			}
+			setImmediate(() =>
+				this.store.add({ kind: "notice", text: NOTICE.max_output_tokens }),
+			);
 		}
 		for (const b of m.message.content) {
 			if (b.type === "text" && !sub && b.text.trim()) {
@@ -1200,15 +1327,27 @@ export class Lab {
 	}
 
 	private result(m: SDKResultMessage) {
+		const errors = "errors" in m ? m.errors : [];
+		// The pump starts a fresh conversation with what was waiting, so this
+		// failure isn't his message's.
+		if (errors.some((e) => GONE.test(e))) {
+			this.gone = true;
+			return;
+		}
 		const stopped = this.stopping;
 		this.stopping = false;
 		this.unanswered = [];
 		const ok = m.subtype === "success" && !m.is_error;
+		if (!(ok || stopped)) console.error("turn failed:", m.subtype, errors.join("; "));
 		// The messages this result answered, so a message still waiting
 		// behind it doesn't get this done too.
 		const ids = (m.user_message_uuids ?? []).map((c) => this.youIds.get(c) ?? 0);
 		const upto = ids.length > 0 ? Math.max(...ids) : 0;
 		for (const c of m.user_message_uuids ?? []) this.youIds.delete(c);
+		// A message sent mid-task can run as its own turn after this one, and
+		// it stays open, so a restart still reports it, until its own result.
+		const waiting =
+			!stopped && m.user_message_uuids !== undefined && this.youIds.size > 0;
 		this.store.add({
 			kind: "done",
 			ok,
@@ -1218,14 +1357,19 @@ export class Lab {
 			...(ok || stopped
 				? {}
 				: {
-						error: clip(("errors" in m ? m.errors : []).join("; ") || m.subtype, 300),
+						error:
+							m.subtype === "error_max_turns"
+								? "It stopped after the most steps one message can take. Ask it to carry on."
+								: UNFINISHED,
 					}),
 		});
-		this.state.open = null;
-		this.save();
+		if (!waiting) {
+			this.state.open = null;
+			this.save();
+		}
 		this.hushed.clear();
 		this.titles.clear();
-		this.setStatus(false);
+		this.setStatus(waiting, waiting ? "Reading your message" : "");
 	}
 
 	// What the agent's own permission checks hand over. The gate has already
@@ -1318,6 +1462,37 @@ export class Lab {
 		};
 	}
 
+	// A file the agent put in to-phone/, sent once it stops growing. An agent
+	// can mv the only copy in there, so one that can't be sent goes to the
+	// Trash rather than being deleted. False means it's still there.
+	async sendDropped(p: string): Promise<boolean> {
+		for (let size = -1; size !== statSync(p).size; ) {
+			size = statSync(p).size;
+			await sleep(800);
+		}
+		const r = this.sendFile(p);
+		if (!("isError" in r)) {
+			rmSync(p, { force: true });
+			return true;
+		}
+		const name = basename(p);
+		try {
+			moveToTrash([p], setting("LAB_TRASH_DIR"));
+		} catch (e) {
+			console.error("to-phone:", e);
+			this.store.add({
+				kind: "notice",
+				text: `Couldn't send ${name} to your phone. ${r.content[0]?.text ?? ""} It's still in the to-phone folder.`,
+			});
+			return false;
+		}
+		this.store.add({
+			kind: "notice",
+			text: `Couldn't send ${name} to your phone. ${r.content[0]?.text ?? ""} It's in the Trash now.`,
+		});
+		return true;
+	}
+
 	// A file from his phone, saved next to the ones the agent sends him so the
 	// phone can show both the same way.
 	async upload(
@@ -1363,7 +1538,7 @@ export class Lab {
 					: null;
 			if (!p)
 				throw new Error(
-					`${JSON.stringify(url)} isn't a file uploaded to this computer.`,
+					`${typeof file["name"] === "string" ? file["name"] : "A file"} didn't finish reaching the computer. Attach it again and send.`,
 				);
 			return {
 				name: clip(String(file["name"] ?? basename(p)), 120),

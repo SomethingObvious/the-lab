@@ -13,7 +13,13 @@ const WIN = process.platform === "win32";
 export const run = (
 	cmd: string,
 	a: string[],
-	opts: { input?: string; env?: NodeJS.ProcessEnv; cwd?: string } = {},
+	// A timeout of 0 means none, for downloads that take as long as the line is slow.
+	opts: {
+		input?: string;
+		env?: NodeJS.ProcessEnv;
+		cwd?: string;
+		timeout?: number;
+	} = {},
 ) => {
 	const r = spawnSync(cmd, a, {
 		encoding: "utf8",
@@ -21,7 +27,7 @@ export const run = (
 		env: opts.env ?? env,
 		cwd: opts.cwd,
 		shell: WIN && /\.(bat|cmd)$/i.test(cmd),
-		timeout: 60_000,
+		...(opts.timeout === 0 ? {} : { timeout: opts.timeout ?? 60_000 }),
 	});
 	return {
 		ok: r.status === 0,

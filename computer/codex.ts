@@ -4,12 +4,13 @@
 // same events the phone already draws.
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { setting } from "./config.ts";
 import { type Judgement, judge, needsOk } from "./guard.ts";
-import { type Card, cleanEnv, type Lab } from "./lab.ts";
+import { type Card, cleanEnv, type Lab, STOP_MS, UNFINISHED } from "./lab.ts";
+import { scheduleProblem } from "./schedule.ts";
 import { clip, title } from "./steps.ts";
 
 // The parts of the app-server protocol this file reads.
@@ -31,7 +32,7 @@ interface CommandItem {
 interface FileChangeItem {
 	type: "fileChange";
 	id: string;
-	changes: { path: string; diff: string }[];
+	changes?: { path: string; diff: string }[];
 	status?: string;
 }
 interface McpItem {
@@ -134,6 +135,8 @@ const NOTICE: Record<string, string> = {
 		"The ChatGPT plan hit its usage limit for now. It will carry on once the limit resets.",
 };
 
+const CALL_MS = 60_000;
+
 // The npm package's launcher picks the right native binary for this computer.
 export const codexBin = () =>
 	setting("LAB_CODEX_BIN") ??
@@ -198,6 +201,8 @@ export class Codex {
 		string,
 		{ tool: string; title: string; detail: string }
 	>();
+	// Every path each file change touches, as its approval names none.
+	private readonly changes = new Map<string, string[]>();
 
 	private readonly lab: Lab;
 	private readonly home: string;
@@ -258,10 +263,18 @@ export class Codex {
 		await this.starting?.catch(() => {
 			// A start that failed has already been reported where it was started.
 		});
-		if (this.turn && this.lab.state.threadId) {
+		const turn = this.turn;
+		if (turn && this.lab.state.threadId) {
+			// An app-server that stopped responding never ends the turn, so after
+			// 15 seconds it's ended here and a fresh one starts on the next message.
+			setTimeout(() => {
+				if (this.turn !== turn) return;
+				this.finish({ status: "interrupted" });
+				this.proc?.kill();
+			}, STOP_MS).unref();
 			await this.call("turn/interrupt", {
 				threadId: this.lab.state.threadId,
-				turnId: this.turn,
+				turnId: turn,
 			}).catch(() => {
 				// An interrupt that fails means the turn already ended.
 			});
@@ -439,10 +452,29 @@ export class Codex {
 		this.proc?.stdin.write(`${JSON.stringify(m)}\n`);
 	}
 
+	// Every call here gets its answer within seconds. One that doesn't means
+	// app-server stopped responding, so it's restarted rather than left to
+	// hold the turn, and Stop, forever.
 	private call(method: string, params: unknown): Promise<Reply> {
 		const id = this.next++;
 		return new Promise((ok, fail) => {
-			this.pending.set(id, { ok, fail });
+			const timer = setTimeout(() => {
+				if (!this.pending.delete(id)) return;
+				fail(new Error(`Codex didn't answer ${method} within a minute.`));
+				this.proc?.kill();
+			}, CALL_MS);
+			timer.unref();
+			const done = () => clearTimeout(timer);
+			this.pending.set(id, {
+				ok: (r) => {
+					done();
+					ok(r);
+				},
+				fail: (e) => {
+					done();
+					fail(e);
+				},
+			});
 			this.write({ id, method, params });
 		});
 	}
@@ -465,7 +497,6 @@ export class Codex {
 			ok: false,
 			stopped: false,
 			ms: 0,
-			error: clip(e.message, 300),
 		});
 		this.lab.state.open = null;
 		this.lab.save();
@@ -481,7 +512,15 @@ export class Codex {
 				else p?.ok(m.result ?? {});
 				return;
 			}
-			this.request(m.id, m.method, m.params ?? {});
+			const { id, method } = m;
+			// A throw while deciding would otherwise take the whole server down.
+			this.request(id, method, m.params ?? {}).catch((e) => {
+				console.error(`codex ${method}:`, e);
+				this.write({
+					id,
+					error: { code: -32_603, message: "The Lab couldn't decide this one." },
+				});
+			});
 			return;
 		}
 		const p = m.params ?? {};
@@ -524,7 +563,8 @@ export class Codex {
 					unwrap(item.command),
 				);
 			case "fileChange": {
-				const paths = item.changes.map((c) => c.path);
+				const paths = (item.changes ?? []).map((c) => c.path);
+				this.changes.set(item.id, paths);
 				const t =
 					paths.length === 1
 						? title("Edit", { file_path: paths[0] })
@@ -534,7 +574,10 @@ export class Codex {
 					"Edit",
 					{ file_path: paths[0] },
 					t,
-					clip(item.changes.map((c) => `${c.path}\n${c.diff}`).join("\n\n"), 4000),
+					clip(
+						(item.changes ?? []).map((c) => `${c.path}\n${c.diff}`).join("\n\n"),
+						4000,
+					),
 				);
 			}
 			case "mcpToolCall": {
@@ -586,10 +629,18 @@ export class Codex {
 						),
 					);
 				return;
-			case "fileChange":
+			case "fileChange": {
 				if (item.status === "failed")
 					this.lab.failed(item.id, "The change couldn't be applied.");
+				// There's no hook here to tell it in the same turn, so it hears with
+				// its next message.
+				const list = (item.changes ?? []).find(
+					(c) => basename(c.path) === "schedules.json",
+				);
+				const problem = list && scheduleProblem(list.path);
+				if (problem) this.lab.note(problem);
 				return;
+			}
 			case "mcpToolCall":
 				if (item.status === "failed")
 					this.lab.failed(
@@ -612,15 +663,14 @@ export class Codex {
 			stopped,
 			ms: turn.durationMs ?? Date.now() - this.started,
 			...(this.taken ? { upto: this.taken } : {}),
-			...(ok || stopped
-				? {}
-				: {
-						error: clip(turn.error?.message ?? "It stopped without saying why.", 300),
-					}),
+			...(ok || stopped ? {} : { error: UNFINISHED }),
 		});
+		if (!(ok || stopped)) console.error("codex turn failed:", turn.error?.message);
 		this.turn = null;
 		this.taken = 0;
 		this.seen.clear();
+		this.changes.clear();
+		this.lab.hushed.clear();
 		for (const finish of this.lab.asks.values()) finish(false, "stop");
 		this.lab.state.open = null;
 		this.lab.save();
@@ -707,10 +757,13 @@ export class Codex {
 	// Claude, unless they reach The Lab itself or the agent's settings.
 	private async fileChangeApproval(p: Params) {
 		const lab = this.lab;
-		const s = p.itemId === undefined ? undefined : this.seen.get(p.itemId);
-		const first = (s?.detail ?? "").split("\n")[0];
-		const j = judge("Edit", { file_path: first }, lab.where);
-		if (j.block) {
+		const paths = p.itemId === undefined ? undefined : this.changes.get(p.itemId);
+		// One whose paths aren't known can't be checked, so it doesn't go ahead.
+		if (!paths?.length) return { decision: "decline" };
+		const j = paths
+			.map((f) => judge("Edit", { file_path: f }, lab.where))
+			.find((x) => x.block);
+		if (j) {
 			lab.blocked(String(p.itemId), "Edit", j);
 			return { decision: "decline" };
 		}

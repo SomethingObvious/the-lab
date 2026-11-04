@@ -5,6 +5,8 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	rmSync,
+	truncateSync,
 	writeFileSync,
 } from "node:fs";
 import type { Socket } from "node:net";
@@ -20,7 +22,14 @@ import type { Ev, Live } from "./lab.ts";
 import { parseBattery } from "./mac.ts";
 import { CAP, parse, render, suspect } from "./memory.ts";
 import { qr } from "./qr.ts";
-import { cleanSchedules, due, missed, next } from "./schedule.ts";
+import {
+	cleanSchedules,
+	due,
+	firstSeen,
+	missed,
+	next,
+	scheduleProblem,
+} from "./schedule.ts";
 import { cleanSettings, DEFAULTS } from "./settings.ts";
 import { title } from "./steps.ts";
 import { trash } from "./trash.ts";
@@ -124,7 +133,7 @@ test("schedules run once, on their days, within the grace window", () => {
 				date: "2026-11-07",
 			},
 			{ label: "Bad", text: "x", time: "8am" },
-			{ label: "Bad days", text: "x", time: "08:00", days: ["weekdays"] },
+			{ label: "Bad days", text: "x", time: "08:00", days: ["someday"] },
 			{ label: "Bad date", text: "x", time: "17:00", date: "Friday" },
 		]),
 	);
@@ -488,8 +497,10 @@ rl.on('line', (line) => {
 });
 `;
 
-async function codexLab(script: string) {
-	const root = mkdtempSync(join(tmpdir(), "lab-codex-"));
+async function codexLab(
+	script: string,
+	root = mkdtempSync(join(tmpdir(), "lab-codex-")),
+) {
 	writeFileSync(join(root, "fake.cjs"), script);
 	env["LAB_CODEX_BIN"] = join(root, "fake.cjs");
 	const { Lab } = await import("./lab.ts");
@@ -919,4 +930,191 @@ test("a held-back change stays off the phone across a restart", async () => {
 		Buffer.from(present(again.bundle().files["app.js"]), "base64").toString(),
 		"const a = 1;",
 	);
+});
+
+test("a state.json cut short by a power cut still starts", async () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
+	const dir = join(root, ".thelab");
+	mkdirSync(dir);
+	writeFileSync(join(dir, "state.json"), "");
+	const { Lab } = await import("./lab.ts");
+	const lab = new Lab({ home: root, dir, snapshots: false });
+	assert.deepEqual(lab.state, {});
+	assert.equal(readFileSync(join(dir, "state.json.bad"), "utf8"), "");
+	lab.close();
+});
+
+test("the server starts with app/ gone and keeps the last version", () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
+	const app = join(root, "app");
+	mkdirSync(app);
+	writeFileSync(join(app, "index.html"), "ok");
+	const good = new Design(app, join(root, "history"), ignore).version;
+	rmSync(app, { recursive: true });
+	const again = new Design(app, join(root, "history"), ignore);
+	assert.equal(again.version, good);
+	assert.match(present(again.broken), /index\.html is missing/);
+	assert.equal(
+		Buffer.from(present(again.bundle().files["index.html"]), "base64").toString(),
+		"ok",
+	);
+});
+
+// Plays a file change that touches his Lab folder first and The Lab's own
+// folder second, then says what it was told.
+const PATCH = String.raw`
+const rl = require('readline').createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
+  if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-3' }, model: 'fake' } });
+  if (m.method === 'turn/start') {
+    out({ id: m.id, result: { turn: { id: 't1', status: 'inProgress' } } });
+    const changes = JSON.parse(process.env.FAKE_PATHS).map((path) => ({ path, diff: '+x' }));
+    out({ method: 'item/started', params: { item: { type: 'fileChange', id: 'f1', changes } } });
+    return out({ id: 901, method: 'item/fileChange/requestApproval', params: { itemId: 'f1' } });
+  }
+  if (m.id === 901) {
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a1', text: 'Decision was ' + m.result.decision } } });
+    return out({ method: 'turn/completed', params: { turn: { id: 't1', status: 'completed', durationMs: 5, error: null } } });
+  }
+});
+`;
+
+test("a codex file change is judged on every path it touches", async () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-codex-"));
+	env["FAKE_PATHS"] = JSON.stringify([
+		join(root, "notes.md"),
+		join(root, ".thelab", "bin", "trash.cmd"),
+	]);
+	const { lab, pick } = await codexLab(PATCH, root);
+	lab.send("Tidy up", crypto.randomUUID());
+	await until(() => pick("done").length > 0);
+	assert.deepEqual(
+		pick("reply").map((e) => field(e, "text")),
+		["Decision was decline"],
+	);
+	assert.equal(pick("blocked").length, 1);
+	lab.close();
+});
+
+test("schedules read the times and days the agent writes", () => {
+	const items = present(
+		cleanSchedules([
+			{ id: "a", label: "Bins", text: "Bins out", time: "9:00" },
+			{ id: "b", label: "Weekly", text: "Sum up", time: "17:00", days: "fri" },
+			{ id: "c", label: "Standup", text: "Notes", time: "08:30", days: ["weekdays"] },
+			{ id: "d", label: "Gym", text: "Go", time: "07:00", days: "sat, sun" },
+		]),
+	);
+	assert.deepEqual(
+		items.map((s) => [s.id, s.time, s.days]),
+		[
+			["a", "09:00", undefined],
+			["b", "17:00", ["fri"]],
+			["c", "08:30", ["mon", "tue", "wed", "thu", "fri"]],
+			["d", "07:00", ["sat", "sun"]],
+		],
+	);
+	// Seen at 09:03 for 09:05 runs once the turn that added it is over.
+	const call = present(
+		cleanSchedules([{ id: "r", label: "Call", text: "Call mum", time: "09:05" }]),
+	);
+	const first = firstSeen(call, {}, sat(9, 3));
+	assert.deepEqual(
+		due(call, sat(9, 6), new Set(), first).map((r) => r.key),
+		["r@2026-11-07T09:05"],
+	);
+	assert.deepEqual(
+		due(call, sat(9, 20), new Set(), firstSeen(call, {}, sat(9, 10))),
+		[],
+	);
+	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
+	const file = join(root, "schedules.json");
+	writeFileSync(file, JSON.stringify([{ label: "Bad", text: "x", time: "8am" }]));
+	assert.match(present(scheduleProblem(file)), /can't read this entry/);
+	writeFileSync(file, "[");
+	assert.match(present(scheduleProblem(file)), /isn't valid JSON/);
+	writeFileSync(file, JSON.stringify(items));
+	assert.equal(scheduleProblem(file), null);
+});
+
+test("a message waiting behind a turn keeps the task open", async () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-claude-"));
+	const { Lab } = await import("./lab.ts");
+	const lab = new Lab({ home: root, dir: join(root, ".thelab"), snapshots: false });
+	const youIds: unknown = Reflect.get(lab, "youIds");
+	assert.ok(youIds instanceof Map);
+	youIds.set("a", 1);
+	youIds.set("b", 2);
+	lab.state.open = { text: "And the Desktop", at: new Date().toISOString() };
+	const result = (uuids: string[]) =>
+		Reflect.apply(Reflect.get(lab, "result"), lab, [
+			{
+				type: "result",
+				subtype: "success",
+				is_error: false,
+				duration_ms: 5,
+				user_message_uuids: uuids,
+			},
+		]);
+	result(["a"]);
+	assert.equal(lab.status.working, true);
+	assert.equal(lab.state.open?.text, "And the Desktop");
+	result(["b"]);
+	assert.equal(lab.status.working, false);
+	assert.equal(lab.state.open, null);
+	lab.close();
+});
+
+test("a phone cursor past the newest event gets the recent ones", async () => {
+	const { Store } = await import("./lab.ts");
+	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
+	const file = join(root, "events.jsonl");
+	const a = new Store(file);
+	for (let i = 0; i < 3; i++) a.add({ kind: "reply", text: `r${i}` });
+	a.close();
+	// The last event never reached the disk, though the phone saw it.
+	const lines = readFileSync(file, "utf8").trim().split("\n");
+	writeFileSync(file, `${lines.slice(0, 2).join("\n")}\n`);
+	const b = new Store(file);
+	const ev = b.add({ kind: "reply", text: "after" });
+	assert.equal(b.last, ev.id);
+	assert.deepEqual(
+		b.since(3).map((e) => field(e, "text")),
+		["after"],
+	);
+	b.close();
+	// A reset events file, with the phone's cursor far ahead of it.
+	rmSync(file);
+	const c = new Store(file);
+	c.add({ kind: "reply", text: "fresh" });
+	assert.deepEqual(
+		c.since(500).map((e) => field(e, "text")),
+		["fresh"],
+	);
+	c.close();
+});
+
+test("a file in to-phone that can't be sent goes to the Trash", async () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
+	const bin = join(root, "bin");
+	env["LAB_TRASH_DIR"] = bin;
+	const { Lab } = await import("./lab.ts");
+	const lab = new Lab({ home: root, dir: join(root, ".thelab"), snapshots: false });
+	const seen: (Ev | Live)[] = [];
+	lab.store.listen((e) => seen.push(e));
+	const big = join(root, "video.mov");
+	writeFileSync(big, "");
+	truncateSync(big, 101 * 1024 * 1024);
+	assert.equal(await lab.sendDropped(big), true);
+	assert.equal(existsSync(big), false);
+	assert.deepEqual(readdirSync(bin), ["video.mov"]);
+	assert.match(
+		String(field(present(seen.find((e) => e.kind === "notice")), "text")),
+		/^Couldn't send video\.mov to your phone\. .* limit is 100 MB\. It's in the (Trash|Recycle Bin) now\.$/,
+	);
+	lab.close();
 });

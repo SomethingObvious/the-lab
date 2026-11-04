@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.app.NotificationManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import android.content.ActivityNotFoundException
@@ -75,18 +76,32 @@ class MainActivity : Activity() {
     private val onLayout = Consumer<WindowLayoutInfo> { onFold(it) }
     private val watchdog = Runnable {
         if (!ready && rescueReason == null) {
-            Hub.reportBroken(pageError ?: "The page didn't call lab.ready() within 8 seconds.")
-            autoRescue = true
-            rescue("The design didn't finish loading, so this is the safe screen. The computer is putting the version before it back.")
+            // A busy phone can be slow to start the page, so a quiet first miss
+            // gets one more go before the design is blamed and put back.
+            if (!slow && pageError == null) {
+                slow = true
+                load()
+                return@Runnable
+            }
+            broken(pageError ?: "The page didn't call lab.ready() within 8 seconds, twice.")
+            load()
         }
     }
+    private var slow = false
+    // Renderer deaths before the page was ready, so a design that keeps killing it reaches the safe screen.
+    private var deaths = 0
     private var autoRescue = false
     // The first error the page reported before it was ready, sent with the report.
     private var pageError: String? = null
     private val onDesign = {
+        slow = false
+        deaths = 0
         if (autoRescue) { autoRescue = false; rescueReason = null }
         if (rescueReason == null) { if (visible) load() else stale = true }
     }
+    private val onReset = { if (visible) load() else stale = true }
+    // A pick that was open when the screen was rebuilt, whose page is gone.
+    private var pickedBefore = false
     // A hidden WebView never runs requestAnimationFrame, so the page can't
     // call lab.ready() and the watchdog only counts while it's on screen.
     private var visible = false
@@ -145,11 +160,27 @@ class MainActivity : Activity() {
             }
         })
 
-        if (intent?.getBooleanExtra("rescue", false) == true || intent?.action == SAFE) rescueReason = "Safe mode, opened from the app shortcut."
+        // A rebuilt screen (a theme switch, say) carries on where it was
+        // rather than acting on the intent that first opened it again.
+        if (savedInstanceState != null) {
+            rescueReason = savedInstanceState.getString("rescue")
+            autoRescue = savedInstanceState.getBoolean("autoRescue")
+            pickedBefore = savedInstanceState.getBoolean("picking")
+        } else if (intent?.getBooleanExtra("rescue", false) == true || intent?.action == SAFE) {
+            rescueReason = "Safe mode, opened from the app shortcut."
+        }
         Hub.designListeners.add(onDesign)
+        Hub.resetListeners.add(onReset)
         if (Hub.paired) LinkService.start(this)
         build()
-        intent?.let { arrive(it) }
+        if (savedInstanceState == null) intent?.let { arrive(it) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("rescue", rescueReason)
+        outState.putBoolean("autoRescue", autoRescue)
+        outState.putBoolean("picking", picking != null || pickedBefore)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -225,12 +256,15 @@ class MainActivity : Activity() {
     private fun check(id: String) {
         Hub.request("GET", "/check", null) { text, err ->
             val items = text?.let { runCatching { JSONObject(it).getJSONArray("items") }.getOrNull() }
-                ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the computer").put("detail", err ?: "Check the computer is awake and Tailscale is on."))
-            val nm = getSystemService(NotificationManager::class.java)
-            val asks = nm.getNotificationChannel("asks")
-            if (!nm.areNotificationsEnabled() || asks?.importance == NotificationManager.IMPORTANCE_NONE)
+                ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the computer")
+                    .put("detail", err ?: if (Tunnel.spec != null) "Check the computer is awake and online." else "Check the computer is awake and Tailscale is on."))
+            if (!notificationsOn())
                 items.put(JSONObject().put("ok", false).put("title", "Notifications are off for The Lab").put("detail", "You won't hear when it needs your OK.").put("fix", "notifications"))
             else items.put(JSONObject().put("ok", true).put("title", "This phone shows The Lab's notifications"))
+            if (!getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName))
+                items.put(JSONObject().put("ok", false).put("title", "The phone puts The Lab to sleep to save battery")
+                    .put("detail", "It can miss the computer's questions while the screen is off. On the next screen, open battery and choose Unrestricted.").put("fix", "battery"))
+            else items.put(JSONObject().put("ok", true).put("title", "The Lab can stay connected in the background"))
             val cm = getSystemService(ConnectivityManager::class.java)
             val vpn = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
             if (Tunnel.spec != null) when (Tunnel.route) {
@@ -247,7 +281,8 @@ class MainActivity : Activity() {
         super.onStart()
         layout.addWindowLayoutInfoListener(this, mainExecutor, onLayout)
         visible = true
-        if (stale) { stale = false; load() }
+        if (web == null) { stale = false; build() }
+        else if (stale) { stale = false; load() }
         else if (showingApp && !ready) { frame.removeCallbacks(watchdog); frame.postDelayed(watchdog, 8000) }
     }
 
@@ -262,7 +297,43 @@ class MainActivity : Activity() {
         super.onResume()
         Hub.foreground = true
         Notifier.clearReplies(this)
-        if (Hub.paired) Hub.reconnectNow()
+        if (Hub.paired) {
+            Hub.reconnectNow()
+            nudge()
+        }
+    }
+
+    // Either one quietly stops his questions reaching him, so it's worth a
+    // word, though no more than once a day.
+    private fun nudge() {
+        val prefs = getSharedPreferences("lab", MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        if (now - prefs.getLong("nudgedAt", 0) < 24 * 60 * 60_000L) return
+        val (title, text, what) = when {
+            !notificationsOn() -> Triple("Turn On Notifications?",
+                "Notifications are off for The Lab, so you won't hear when the computer needs your OK.", "notifications")
+            !getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName) -> Triple("Let The Lab Stay Connected?",
+                "The phone is putting The Lab to sleep to save battery, so it can miss the computer's questions. On the next screen, open battery and choose Unrestricted.", "battery")
+            else -> return
+        }
+        prefs.edit { putLong("nudgedAt", now) }
+        AlertDialog.Builder(this).setTitle(title).setMessage(text)
+            .setNegativeButton("Not Now", null)
+            .setPositiveButton("Fix It") { _, _ -> fix(what) }
+            .show()
+    }
+
+    private fun notificationsOn(): Boolean {
+        val nm = getSystemService(NotificationManager::class.java)
+        return nm.areNotificationsEnabled() && nm.getNotificationChannel("asks")?.importance != NotificationManager.IMPORTANCE_NONE
+    }
+
+    private fun fix(what: String) {
+        when (what) {
+            "tailscale" -> openApp("com.tailscale.ipn")
+            "notifications" -> startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+            "battery" -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:$packageName".toUri()))
+        }
     }
 
     override fun onPause() {
@@ -272,16 +343,22 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         Hub.designListeners.remove(onDesign)
+        Hub.resetListeners.remove(onReset)
         unlisten?.invoke()
         web?.destroy()
         super.onDestroy()
     }
 
-    private fun build() {
+    private fun drop() {
         web?.let { frame.removeView(it); it.destroy() }
+        web = null
         unlisten?.invoke()
         unlisten = null
         port = null
+    }
+
+    private fun build() {
+        drop()
         val loader = WebViewAssetLoader.Builder()
             .addPathHandler("/app/", WebViewAssetLoader.InternalStoragePathHandler(this, Hub.designDir.apply { mkdirs() }))
             .addPathHandler("/shell/", WebViewAssetLoader.AssetsPathHandler(this))
@@ -294,6 +371,13 @@ class MainActivity : Activity() {
             }
             .build()
         val w = WebView(this)
+        // Entries cached for a year by an earlier build would still win over
+        // the no-cache header, so they go once.
+        val prefs = getSharedPreferences("lab", MODE_PRIVATE)
+        if (!prefs.getBoolean("cacheFresh", false)) {
+            w.clearCache(true)
+            prefs.edit { putBoolean("cacheFresh", true) }
+        }
         w.setBackgroundColor(Color.TRANSPARENT)
         w.settings.apply {
             javaScriptEnabled = true
@@ -306,8 +390,14 @@ class MainActivity : Activity() {
             textZoom = (TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 16f, dm) / (16f * dm.density) * 100).roundToInt()
         }
         w.webViewClient = object : WebViewClient() {
+            // The loader marks everything cacheable for a year, but the design and
+            // the shell change under the same names, so a new index.html would
+            // come up with the old app.css.
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-                loader.shouldInterceptRequest(request.url)
+                loader.shouldInterceptRequest(request.url)?.apply {
+                    responseHeaders = responseHeaders.orEmpty().filterKeys { !it.equals("Cache-Control", ignoreCase = true) } +
+                        ("Cache-Control" to "no-cache")
+                }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 if (request.url.host == HOST) return false
@@ -316,8 +406,11 @@ class MainActivity : Activity() {
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                // The page's renderer died (out of memory, or a crash), so start over with a fresh one.
-                build()
+                // Only on screen, since a hidden page never gets ready and Android reclaims hidden renderers.
+                if (visible && !ready && showingApp && ++deaths >= 2) broken("The page's renderer stopped twice before the page was ready.")
+                // The page's renderer died (out of memory, or a crash), so start
+                // over with a fresh one, or wait for the screen if it's hidden.
+                if (visible) build() else drop()
                 return true
             }
         }
@@ -354,6 +447,15 @@ class MainActivity : Activity() {
     private fun rescue(reason: String) {
         rescueReason = reason
         load()
+    }
+
+    // Leaves the loading to the caller, since a WebView whose renderer died can't load anything.
+    private fun broken(why: String) {
+        slow = false
+        deaths = 0
+        Hub.reportBroken(why)
+        autoRescue = true
+        rescueReason = "The design didn't finish loading, so this is the safe screen. The computer is putting the version before it back."
     }
 
     private fun send(e: JSONObject) {
@@ -395,7 +497,9 @@ class MainActivity : Activity() {
                 val text = m.optString("text").trim()
                 val cid = m.optString("cid")
                 val files = m.optJSONArray("files")?.takeIf { it.length() in 1..20 }
-                if ((text.isNotEmpty() || files != null) && text.length <= 50_000 && cid.length == 36) Hub.send(text, cid, files)
+                if (text.length > 50_000) send(Hub.sendFailed(cid, text, "That message is over 50,000 characters, so it didn't send. Try sending it in parts."))
+                else if ((text.isNotEmpty() || files != null) && cid.length == 36) Hub.send(text, cid, files)
+                else if (text.isNotEmpty()) send(Hub.sendFailed(cid, text, "That message didn't send. Try again."))
                 // Asked here, when replies and approvals start to matter, rather than on first launch.
                 val prefs = getSharedPreferences("lab", MODE_PRIVATE)
                 if (!prefs.getBoolean("askedNotify", false) && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -411,7 +515,7 @@ class MainActivity : Activity() {
             "stop" -> Hub.stop { ok -> if (!ok) send(JSONObject().put("kind", "stopFailed")) }
             "answer" -> {
                 val ref = m.optString("ref")
-                Hub.answer(ref, m.optBoolean("allow"), m.optBoolean("always")) { ok -> if (!ok) send(JSONObject().put("kind", "answerFailed").put("ref", ref)) }
+                Hub.answer(ref, m.optBoolean("allow"), m.optBoolean("always")) { code -> if (code !in 200..299 && code != 404) send(JSONObject().put("kind", "answerFailed").put("ref", ref)) }
             }
             "call" -> {
                 val id = m.optString("id")
@@ -423,7 +527,7 @@ class MainActivity : Activity() {
                 send(JSONObject().put("kind", "undone").put("ok", ok))
                 if (ok) { rescueReason = null }
             }
-            "leaveRescue" -> { rescueReason = null; autoRescue = false; load() }
+            "leaveRescue" -> { rescueReason = null; autoRescue = false; slow = false; load() }
             "pageError" -> {
                 val text = m.optString("message").take(500)
                 if (!ready && pageError == null) pageError = text
@@ -432,6 +536,8 @@ class MainActivity : Activity() {
             "rescue" -> rescue(m.optString("reason", "Opened the safe screen."))
             "ready" -> {
                 ready = true
+                slow = false
+                deaths = 0
                 frame.removeCallbacks(watchdog)
                 applyTheme(m)
                 reportFullyDrawn()
@@ -439,10 +545,7 @@ class MainActivity : Activity() {
             "theme" -> applyTheme(m)
             "back" -> wantsBack(m.optBoolean("on"))
             "open" -> open(m.optString("url"))
-            "fix" -> when (m.optString("fix")) {
-                "tailscale" -> openApp("com.tailscale.ipn")
-                "notifications" -> startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
-            }
+            "fix" -> fix(m.optString("fix"))
             "retry" -> Hub.reconnectNow()
         }
     }
@@ -558,18 +661,32 @@ class MainActivity : Activity() {
     @Deprecated("Activity has no other way to get a picker result without AndroidX Activity")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         if (requestCode != PICK) return super.onActivityResult(requestCode, resultCode, data)
-        val id = picking ?: return
+        val id = picking
+        if (id == null && !pickedBefore) return
         picking = null
+        pickedBefore = false
         val uris = ArrayList<Uri>()
         if (resultCode == RESULT_OK && data != null) {
             val clip = data.clipData
             if (clip != null) for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri) else data.data?.let { uris.add(it) }
         }
-        if (uris.isEmpty()) return answer(id, JSONArray())
+        if (uris.isEmpty()) {
+            if (id != null) answer(id, JSONArray())
+            return
+        }
         Hub.later {
             val out = JSONArray()
             val error = try { for (u in uris.take(20)) out.put(Hub.upload(u)); null } catch (e: IOException) { e.message ?: "Couldn't attach that." }
-            Hub.onMain { if (error != null) answer(id, null, error) else answer(id, out) }
+            Hub.onMain {
+                when {
+                    id != null -> if (error != null) answer(id, null, error) else answer(id, out)
+                    // The page that asked was rebuilt, so the files go to the message box like a share.
+                    else -> {
+                        if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                        toCompose(JSONObject().put("kind", "compose").put("text", "").put("files", out))
+                    }
+                }
+            }
         }
     }
 

@@ -80,6 +80,9 @@ export class Design {
 		this.onChange = onChange;
 		this.onBroken = onBroken;
 		mkdirSync(this.history, { recursive: true });
+		// The agent can move app/ to the Trash without asking, and a server that
+		// can't watch it would never start again.
+		mkdirSync(this.dir, { recursive: true });
 		// A change held back before a restart stays held back. Otherwise whatever
 		// changed while the server was off is the newest version.
 		const problem = checkApp(this.dir);
@@ -91,11 +94,23 @@ export class Design {
 			if (this.snapshots().length === 0 || this.hash(this.latest()) !== this.version)
 				this.snapshot();
 		}
-		watch(this.dir, { recursive: true, persistent: false }, () => {
+		this.watch();
+	}
+
+	private watch() {
+		const ino = statSync(this.dir).ino;
+		const w = watch(this.dir, { recursive: true, persistent: false }, () => {
+			// On Windows a watch on a deleted folder reports it again and again as
+			// fast as it can, so it moves to app/ as it is now, made afresh if need be.
+			if (statSync(this.dir, { throwIfNoEntry: false })?.ino !== ino) {
+				w.close();
+				mkdirSync(this.dir, { recursive: true });
+				this.watch();
+			}
 			if (this.timer) clearTimeout(this.timer);
 			// Editors write in bursts (temp file, rename, chmod), so wait for quiet.
 			this.timer = setTimeout(() => this.settle(), 600);
-		});
+		}).on("error", (e) => console.error("app watch:", e));
 	}
 
 	private hash(dir = this.dir): string {
@@ -133,13 +148,18 @@ export class Design {
 			rmSync(join(this.history, old), { recursive: true, force: true });
 	}
 
+	// A file that vanishes or is locked partway through throws, and the next
+	// change tries again rather than the throw taking the server down.
 	private settle() {
-		let v: string;
 		try {
-			v = this.hash();
-		} catch {
-			return;
-		} // a file vanished mid-walk, the next event retries
+			this.publish();
+		} catch (e) {
+			console.error("app change:", e);
+		}
+	}
+
+	private publish() {
+		const v = this.hash();
 		if (v === this.version) {
 			this.broken = null;
 			return;

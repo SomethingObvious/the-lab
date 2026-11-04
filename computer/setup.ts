@@ -11,7 +11,9 @@
 //   node setup.ts tailscale    HTTPS address for the phone through tailscale serve, if he has Tailscale
 //   node setup.ts phone        build the app, install it over USB and pair it
 //   node setup.ts pair         open a QR code on the computer that pairs the phone again
-//   node setup.ts bundle       build the app as an .aab for Play Console internal testing
+//   node setup.ts stop         stop the server, before an update replaces the source
+//   node setup.ts remove       stop the server and take it out of the sign-in items
+//   node setup.ts bundle      build the app as an .aab for Play Console internal testing
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -22,6 +24,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -29,7 +32,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import process from "node:process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -69,6 +72,14 @@ function fail(s: string): never {
 	console.error(s);
 	process.exit(1);
 }
+if (Number(process.versions.node.split(".")[0]) < 24)
+	fail(
+		`The Lab needs Node 24 or later, and this is ${process.version}. Step 1 of SETUP.md installs it.`,
+	);
+// npm and npx sit next to this node, and the shell running setup may not
+// have them on its PATH yet (winget doesn't update a shell that's already open).
+process.env["PATH"] =
+	`${dirname(process.execPath)}${delimiter}${process.env["PATH"] ?? ""}`;
 // The running server only reads its config and code when it starts.
 async function restart() {
 	const { port, token } = config();
@@ -151,16 +162,28 @@ function auth() {
 	say(`Signed in as ${s.email ?? "unknown"}.`);
 }
 
+// The data lines of a server-sent event stream, parsed as they arrive.
+async function* sse(body: ReadableStream<Uint8Array>) {
+	const dec = new TextDecoder();
+	let buf = "";
+	for await (const chunk of body) {
+		buf += dec.decode(chunk, { stream: true });
+		const lines = buf.split("\n");
+		buf = lines.pop() ?? "";
+		for (const line of lines)
+			if (line.startsWith("data: ")) yield JSON.parse(line.slice(6));
+	}
+}
+
 async function selftest() {
 	const { port, token } = config();
 	if (!(await health()))
 		fail("The server is not running. Run `node setup.ts computer` first.");
 	const cid = crypto.randomUUID();
 	const res = await fetch(`http://127.0.0.1:${port}/events`, {
-		headers: { authorization: `Bearer ${token}`, "last-event-id": "999999999" },
+		headers: { authorization: `Bearer ${token}` },
 	});
 	if (!res.body) fail("The server answered without a stream of events.");
-	const reader = res.body.getReader();
 	await fetch(`http://127.0.0.1:${port}/send`, {
 		method: "POST",
 		headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -170,26 +193,20 @@ async function selftest() {
 		}),
 	});
 	const until = Date.now() + 180_000;
-	let buf = "";
 	let reply = "";
-	const dec = new TextDecoder();
-	while (Date.now() < until) {
-		const { value, done } = await reader.read();
-		if (done) break;
-		buf += dec.decode(value, { stream: true });
-		const lines = buf.split("\n");
-		buf = lines.pop() ?? "";
-		for (const line of lines) {
-			if (!line.startsWith("data: ")) continue;
-			const e = JSON.parse(line.slice(6));
-			if (e.kind === "reply") reply = e.text;
-			if (e.kind === "notice") fail(`The agent couldn't run: ${e.text}`);
-			if (e.kind === "done") {
-				await reader.cancel();
-				if (!e.ok) fail(`The test message failed: ${e.error ?? "no reason given"}`);
-				say(`Round trip works. The agent replied: ${reply}`);
-				return;
-			}
+	// The stream starts with the whole history, so only what follows the test
+	// message counts.
+	let mine = false;
+	for await (const e of sse(res.body)) {
+		if (Date.now() > until) break;
+		if (e.kind === "you" && e.cid === cid) mine = true;
+		if (!mine) continue;
+		if (e.kind === "reply") reply = e.text;
+		if (e.kind === "notice") fail(`The agent couldn't run: ${e.text}`);
+		if (e.kind === "done") {
+			if (!e.ok) fail(`The test message failed: ${e.error ?? "no reason given"}`);
+			say(`Round trip works. The agent replied: ${reply}`);
+			return;
 		}
 	}
 	fail(`No reply within 3 minutes. Check the server log at ${join(LAB, "server.log")}`);
@@ -248,20 +265,36 @@ function fitToSystem(file: string) {
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
+const isThisNode = (p: string) => {
+	try {
+		return realpathSync(p) === realpathSync(process.execPath);
+	} catch {
+		return false;
+	}
+};
+
 async function computer() {
 	workspace();
 	// The server writes these on every start too.
 	launchers(join(LAB, "bin"));
 	say(`Messages go to ${engine() === "codex" ? "Codex" : "Claude"}.`);
 	if (MAC) {
-		const nodeDir = dirname(process.execPath);
+		// Homebrew's node resolves into a versioned Cellar folder that the next
+		// upgrade deletes, so the login item uses a stable link to it if there is one.
+		const nodeBin =
+			[
+				"/opt/homebrew/bin/node",
+				"/usr/local/bin/node",
+				join(TOOLS, "node", "bin", "node"),
+			].find(isThisNode) ?? process.execPath;
+		const nodeDir = dirname(nodeBin);
 		const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
-  <array><string>${esc(process.execPath)}</string><string>${esc(join(HERE, "server.ts"))}</string></array>
+  <array><string>${esc(nodeBin)}</string><string>${esc(join(HERE, "server.ts"))}</string></array>
   <key>WorkingDirectory</key><string>${esc(HERE)}</string>
   <key>EnvironmentVariables</key>
   <dict>
@@ -280,7 +313,13 @@ async function computer() {
 		writeFileSync(PLIST, plist);
 		const uid = process.getuid?.() ?? fail("Couldn't tell which user is signed in.");
 		run("launchctl", ["bootout", `gui/${uid}/${LABEL}`]);
-		const boot = run("launchctl", ["bootstrap", `gui/${uid}`, PLIST]);
+		// bootout returns before launchd has let go of the old job, and bootstrap
+		// fails with error 5 until it has.
+		let boot = run("launchctl", ["bootstrap", `gui/${uid}`, PLIST]);
+		for (let i = 0; i < 10 && !(boot.ok || /already/i.test(boot.out)); i++) {
+			run("sleep", ["1"]);
+			boot = run("launchctl", ["bootstrap", `gui/${uid}`, PLIST]);
+		}
 		if (!(boot.ok || /already/i.test(boot.out)))
 			fail(`launchctl bootstrap failed: ${boot.out}`);
 		run("launchctl", ["kickstart", "-k", `gui/${uid}/${LABEL}`]);
@@ -288,10 +327,13 @@ async function computer() {
 		// A Run entry starts it at sign-in with no admin rights. conhost --headless
 		// keeps the console window from ever showing. cmd reads a batch file in
 		// the console's code page, so chcp comes first for a profile like José.
+		// The redirect holds the log open for as long as the server runs, so the
+		// server can't trim it and it's moved aside here once it passes 5 MB.
 		const start = join(LAB, "start.cmd");
+		const log = join(LAB, "server.log");
 		writeFileSync(
 			start,
-			`@chcp 65001 >nul\r\n@echo off\r\nset "LAB_HOME=${HOME}"\r\ncd /d "${HERE}"\r\n"${process.execPath}" "${join(HERE, "server.ts")}" >> "${join(LAB, "server.log")}" 2>&1\r\n`,
+			`@chcp 65001 >nul\r\n@echo off\r\nset "LAB_HOME=${HOME}"\r\nif exist "${log}" for %%A in ("${log}") do if %%~zA GTR 5000000 move /y "${log}" "${log}.old" >nul\r\ncd /d "${HERE}"\r\n"${process.execPath}" "${join(HERE, "server.ts")}" >> "${log}" 2>&1\r\n`,
 		);
 		const line = `conhost.exe --headless cmd.exe /c "${start}"`;
 		const reg = run("reg", [
@@ -344,16 +386,26 @@ async function relay() {
 			shell: WIN,
 		});
 		if (ci.status !== 0) fail("npm ci failed in relay/. The output above says why.");
-		say(
-			"Putting up the relay. If a Cloudflare page opens, he signs in (or makes a free account) and clicks Allow.",
-		);
-		const r = spawnSync("npx", ["wrangler", "deploy"], {
-			cwd: dir,
-			encoding: "utf8",
-			shell: WIN,
-			env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
-			stdio: ["inherit", "pipe", "pipe"],
-		});
+		const wrangler = (a: string[], inherit = false) =>
+			spawnSync("npx", ["wrangler", ...a], {
+				cwd: dir,
+				encoding: "utf8",
+				shell: WIN,
+				env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+				stdio: inherit ? "inherit" : ["inherit", "pipe", "pipe"],
+			});
+		// deploy won't open the sign-in page when its output is piped, so
+		// signing in is its own step with the browser.
+		const who = wrangler(["whoami"]);
+		if (/not authenticated/i.test(`${who.stdout ?? ""}${who.stderr ?? ""}`)) {
+			say(
+				"A Cloudflare page opens in the browser. He signs in (or makes a free account) and clicks Allow.",
+			);
+			if (wrangler(["login"], true).status !== 0)
+				fail("Cloudflare sign-in didn't finish. Run this step again to retry.");
+		}
+		say("Putting up the relay");
+		const r = wrangler(["deploy"]);
 		const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
 		console.log(out);
 		url = /https:\/\/[\w.-]+\.workers\.dev/.exec(out)?.[0] ?? "";
@@ -420,7 +472,7 @@ const sdkLine = (sdk: string) =>
 
 function extract(archive: string, into: string) {
 	mkdirSync(into, { recursive: true });
-	const r = run("tar", ["-xf", archive, "-C", into]);
+	const r = run("tar", ["-xf", archive, "-C", into], { timeout: 0 });
 	if (!r.ok) fail(`Couldn't unpack ${archive}: ${r.out}`);
 	rmSync(archive, { force: true });
 }
@@ -448,7 +500,13 @@ async function jdk(): Promise<string> {
 		`https://api.adoptium.net/v3/binary/latest/21/ga/${os}/${arch}/jdk/hotspot/normal/eclipse`,
 		archive,
 	);
-	extract(archive, dir);
+	// Unpacked beside it and moved into place, so an unpack that was cut off
+	// can't pass for a finished one next time.
+	const tmp = `${dir}-tmp`;
+	rmSync(tmp, { recursive: true, force: true });
+	extract(archive, tmp);
+	rmSync(dir, { recursive: true, force: true });
+	renameSync(tmp, dir);
 	return find() ?? fail("The Java download unpacked into an unexpected layout.");
 }
 
@@ -498,6 +556,7 @@ async function androidSdk(javaHome: string): Promise<string> {
 	const r = run(bin("sdkmanager"), [`--sdk_root=${sdk}`, `--package_file=${list}`], {
 		input: "y\n".repeat(30),
 		env,
+		timeout: 0,
 	});
 	if (!r.ok) fail(`sdkmanager failed: ${r.out.slice(-2000)}`);
 	return sdk;
@@ -712,22 +771,58 @@ async function check() {
 	say(JSON.stringify(status, null, 2));
 }
 
-// Opens a page on the computer with a QR code. Scanned with the phone's camera
-// while Tailscale is on, it pairs The Lab again without the cable.
+// Opens a page on the computer with a QR code. Scanned with the phone's camera,
+// it pairs The Lab again without the cable.
 async function pair() {
 	const { port, token } = config();
 	if (!(await health()))
 		fail("The server is not running. Run `node setup.ts computer` first.");
-	if (!(config().relay || existsSync(join(LAB, "url"))))
-		fail("Run `node setup.ts relay` first, so the code can point at this computer.");
 	const link = `http://127.0.0.1:${port}/pair?t=${encodeURIComponent(token)}&next=/pair-phone`;
 	if (MAC) run("open", [link]);
 	else if (WIN) run("explorer.exe", [link]);
 	else say(`Open this on the computer: ${link}`);
 	say(
-		config().relay
-			? "The pairing code is open in the browser. On the phone, point the camera at the code, and tap the link it finds. It works once and lasts 10 minutes."
-			: "The pairing code is open in the browser. On the phone, turn Tailscale on, then point the camera at the code and tap the link. It works once and lasts 10 minutes.",
+		`The pairing code is open in the browser. On the phone, point the camera at the code and tap the link it finds. It works once and lasts 10 minutes.${config().relay ? "" : " With no relay set up, the phone has to be on the same Wi-Fi as this computer, now and later."}`,
+	);
+}
+
+// ---------- stop and remove ----------
+
+function stopServer() {
+	if (MAC) {
+		const uid = process.getuid?.() ?? fail("Couldn't tell which user is signed in.");
+		run("launchctl", ["bootout", `gui/${uid}/${LABEL}`]);
+	} else if (WIN) {
+		// Both the supervisor and the server it runs have server.ts on their command line.
+		const script = join(HERE, "server.ts").replace(/'/g, "''");
+		run("powershell.exe", [
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			`Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -like '*${script}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+		]);
+	}
+}
+
+// Before an update swaps the source folder, since Windows won't delete files
+// a running server holds open. `computer` starts it again.
+async function stop() {
+	stopServer();
+	say(
+		(await health())
+			? "The server is still answering. Its log is in ~/.thelab/server.log."
+			: "The server is stopped. node setup.ts computer starts it again.",
+	);
+}
+
+// Undoes `computer`: the server stops and no longer starts at sign-in. His
+// files and conversation stay, so running `computer` again brings it all back.
+function remove() {
+	stopServer();
+	if (MAC) rmSync(PLIST, { force: true });
+	else if (WIN) run("reg", ["delete", RUN_KEY, "/v", "TheLab", "/f"]);
+	say(
+		`The Lab no longer runs on this computer. Still here, for him to keep or delete: his workspace (${HOME}), his conversation and the downloaded tools (${LAB}, about 1 GB with the phone tools) and the app on the phone.`,
 	);
 }
 
@@ -773,6 +868,8 @@ const steps: Record<string, () => Promise<void>> = {
 	tailscale: async () => tailscale(),
 	phone,
 	pair,
+	stop,
+	remove: async () => remove(),
 	bundle,
 	"phone-vpn": phoneVpn,
 };

@@ -2,7 +2,9 @@
 
 These are instructions for the agent on the owner's computer. Read the whole file first, then work through it top to bottom. Do every step yourself. The owner only needs to act where a step says so, and when that happens tell him exactly what to tap or click, one thing at a time, and wait for him to say it's done.
 
-On a Windows PC the steps are the same with three differences. Install Node 24 or later with `winget install OpenJS.NodeJS` instead of the download below (he clicks Yes when Windows asks), use `curl.exe` and `tar` (both come with Windows 10 and 11) to fetch the source into `%USERPROFILE%\.thelab\source`, and read `~` as `%USERPROFILE%` throughout. Git Bash is optional. Setup and the server use PowerShell and cmd where they need a shell, and the agent's commands run in whichever shell it already has.
+On a Windows PC the steps are the same with three differences. Node comes from the Windows download below instead of the Mac one, `curl.exe` and `tar` (both come with Windows 10 and 11) fetch the source into `%USERPROFILE%\.thelab\source`, and `~` means `%USERPROFILE%` throughout. Git Bash is optional. Setup and the server use PowerShell and cmd where they need a shell, and the agent's commands run in whichever shell it already has.
+
+Each command may run in a fresh shell, so call Node by its full path (or set `PATH` in the same command) rather than relying on an earlier `export`. Two steps take long: `auth` waits while he signs in, and `phone` can take 15 minutes the first time. Run those in the background or with the longest timeout you have, and check back on them.
 
 Every command in `computer/setup.ts` can be run again safely, so if something fails, fix the cause and rerun that step. `node setup.ts check` prints what is done and what is left at any point.
 
@@ -15,11 +17,11 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 - A relay on Cloudflare's free plan, unless he was given the address of one that's already up.
 - The Lab on the phone, built on this computer and installed over a USB cable.
 
-Nothing is exposed to the internet. The server listens only on the computer itself, and the phone reaches it through an encrypted tunnel, straight over the Wi-Fi when they share one and through the relay otherwise. The keys come from pairing and never leave the two devices, so the relay can't read or change anything it passes.
+Nothing is exposed to the internet. The server itself listens only on the computer, and the phone reaches it through an encrypted tunnel. The tunnel listens on the home Wi-Fi so the phone can come straight in when they share one, and goes through the relay otherwise. The keys come from pairing and never leave the two devices, so neither the Wi-Fi nor the relay can read or change anything that passes.
 
 ## 1. Node and the Source
 
-Check for Node 24 or later with `node --version`. If it's missing or older, install it into the workspace so no admin password is needed:
+Check for Node 24 or later with `node --version`. If it's missing or older, install it into `~/.thelab/tools` so no admin password is needed. On a Mac:
 
 ```sh
 mkdir -p ~/.thelab/tools && cd ~/.thelab/tools
@@ -30,7 +32,16 @@ ln -sfn "$PWD/${FILE%.tar.gz}" node
 export PATH="$HOME/.thelab/tools/node/bin:$PATH"
 ```
 
-Use that `PATH` for every command below. Then fetch the source at the release tag and install its packages:
+On Windows, in PowerShell:
+
+```powershell
+$dir = "$env:USERPROFILE\.thelab\tools"; New-Item -ItemType Directory -Force $dir | Out-Null; cd $dir
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+$file = ((curl.exe -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt) -match "win-$arch.zip").Split(' ')[-1]
+curl.exe -fsSLO "https://nodejs.org/dist/latest-v24.x/$file"; tar -xf $file; Remove-Item $file
+```
+
+Node is then `node.exe` in the `node-v24...` folder it unpacked. Use that Node for every command below. Then fetch the source at the release tag and install its packages:
 
 ```sh
 cd ~/.thelab && curl -fsSL https://github.com/SomethingObvious/the-lab/archive/refs/tags/v1.0.0.tar.gz | tar -xz
@@ -56,7 +67,12 @@ node setup.ts computer
 node setup.ts selftest
 ```
 
-The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the computer awake while it's plugged in (it uses `caffeinate -s` on a Mac and `SetThreadExecutionState` on Windows, so on battery it sleeps as usual, except while a task is running). The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
+The first sets up `~/TheLab`, installs the login item and starts the server, which also keeps the computer awake while it's plugged in (it uses `caffeinate -s` on a Mac and `SetThreadExecutionState` on Windows, so on battery it sleeps as usual, except while a task is running). Tell him that, since it's a change he'd otherwise notice. The second sends a real message through the server and waits for the agent's reply. Don't continue until it prints "Round trip works".
+
+The computer asks for permission once or twice as the server starts, so he should be at the screen for it.
+
+- On Windows, a Windows Security window asks whether Node.js may communicate on private networks. **He clicks Allow.** That's the encrypted tunnel that lets the phone come straight in over the Wi-Fi. Without it the phone still works through the relay. In Task Manager's Startup apps the server shows up as Console Window Host, from Microsoft, because that's what starts it without a window. Tell him it's The Lab so he doesn't turn it off.
+- On a Mac, it asks whether node may access the Desktop, Documents and Downloads folders. **He clicks Allow on each**, or the agent can't see the files he asks about.
 
 ## 4. The Relay
 
@@ -66,7 +82,7 @@ If the message that started setup gave a relay address, use it:
 node setup.ts relay --url https://the-lab-relay.example.workers.dev
 ```
 
-Only use a relay run by someone he trusts with his computer. It can't read the messages it passes, but it serves the page a pairing QR code opens, so it could read that code. Pairing over the USB cable never goes near it.
+The relay only passes sealed messages and can't read or change them, so any relay that's up will do.
 
 Otherwise put up his own. It's a Cloudflare Worker on the free plan, which is far more than one person uses:
 
@@ -74,9 +90,9 @@ Otherwise put up his own. It's a Cloudflare Worker on the free plan, which is fa
 node setup.ts relay
 ```
 
-The first time, a Cloudflare page opens in the browser. **He signs in, or makes a free account, and clicks Allow.** If Cloudflare asks him to pick a workers.dev subdomain, any name works. The step checks the relay answers, saves its address and restarts the server.
+The first time, a Cloudflare page opens in the browser. **He signs in, or makes a free account, and clicks Allow.** On a brand new account Cloudflare may say a workers.dev subdomain has to be picked first and print a link to its dashboard. Open it with him, have him pick any name, then run the step again. The step checks the relay answers, saves its address and restarts the server.
 
-On Windows, the first time the server starts listening for the phone on the local network, Windows asks whether Node.js may use private networks. **He clicks Allow.** Without it the phone still works through the relay, just never straight over the Wi-Fi.
+If the relay can't go up at all, carry on without it. Pairing still works, and the phone reaches the computer whenever they're on the same Wi-Fi. Running this step later gives the phone the relay without pairing again.
 
 ## 5. The Phone
 
@@ -97,7 +113,7 @@ The first run downloads Java and the Android build tools into `~/.thelab/tools` 
 
 He can turn USB debugging back off afterwards if he likes, though leaving it on makes updates easier.
 
-If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the computer that works once for 10 minutes. He points the phone's camera at it, taps the link it finds and then Pair, and no cable is needed. The link opens The Lab directly, so nothing in it goes through the relay.
+If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the computer that works once for 10 minutes. He points the phone's camera at it, taps the link it finds and then Pair, and no cable is needed. The link opens The Lab directly, so nothing in it goes through the relay. It only works once The Lab is on the phone, so a new phone still needs `node setup.ts phone` over the cable first.
 
 ### Tailscale (Optional)
 
@@ -117,7 +133,7 @@ On Android he can also make The Lab the phone's assistant (Settings, Apps, Defau
 
 ## Updating
 
-Updates run from the Claude or Codex app on the computer, because the agent on the phone can't write to `~/.thelab`. Fetch the newer tag into `~/.thelab/source` the same way as step 1 (his `~/TheLab/app` is never touched), run `npm ci` in `source/computer`, then `node setup.ts computer` to restart the server. Then compare `source/computer/template/CLAUDE.md` with `~/TheLab/CLAUDE.md` and add any sections his copy is missing, keeping his own changes. Setup already adds any other template file he doesn't have. If anything under `source/phone` changed, plug the phone in and run `node setup.ts phone` again. The app keeps its history and pairing across updates.
+Updates run from the Claude or Codex app on the computer, because the agent on the phone can't write to `~/.thelab`. First run `node setup.ts stop` from the current `source/computer`, since Windows won't replace files the running server holds open. Unpack the newer tag next to it as `source.new` and run `npm ci` in `source.new/computer`. Then rename `source` to `source.old` and `source.new` to `source`, and run `node setup.ts computer` from the new one to start the server again. Delete `source.old` once that works. His `~/TheLab/app` is never touched. Then compare `source/computer/template/CLAUDE.md` with `~/TheLab/CLAUDE.md` and add any sections his copy is missing, keeping his own changes. Setup already adds any other template file he doesn't have. If anything under `source/phone` changed, plug the phone in and run `node setup.ts phone` again. The app keeps its history and pairing across updates.
 
 ## When Something's Wrong
 
@@ -126,6 +142,7 @@ Updates run from the Claude or Codex app on the computer, because the agent on t
 - "Signed out" notices on the phone mean `node setup.ts auth` needs running again.
 - To switch between Claude and ChatGPT later, run `node setup.ts auth --engine codex` (or `claude`), then `node setup.ts computer`. It picks up the last conversation it had on that engine, or starts a fresh one, and the history on the phone stays.
 - If the phone says it can't reach the computer, check that the computer is awake and online. Check My Setup on the phone says whether the computer is connected to the relay and listening on the local network.
+- To take The Lab off the computer, run `node setup.ts remove`. The server stops and no longer starts at sign-in. His workspace, his history and the app on the phone stay until he deletes them, and `node setup.ts computer` brings it all back.
 
 ## Installing Through Google Play (Optional)
 

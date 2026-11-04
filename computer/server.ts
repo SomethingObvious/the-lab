@@ -7,20 +7,29 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
-	renameSync,
-	rmSync,
 	statSync,
 	truncateSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { homedir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import process, { env } from "node:process";
+import { pipeline } from "node:stream";
 import type { tailscaleState } from "./checks.ts";
-import { config, home, labDir, setConfig, setting, words } from "./config.ts";
-import { awake } from "./mac.ts";
-import { cleanSchedules, due, GRACE, missed, next, type Schedule } from "./schedule.ts";
+import { config, home, labDir, saveFile, setConfig, setting, words } from "./config.ts";
+import { awake, type Mac } from "./mac.ts";
+import {
+	cleanSchedules,
+	due,
+	firstSeen,
+	GRACE,
+	missed,
+	next,
+	type Schedule,
+} from "./schedule.ts";
 import { cleanSettings, DEFAULTS, type Settings } from "./settings.ts";
 import { launchers } from "./trash.ts";
 import { startTunnel } from "./tunnel.ts";
@@ -87,10 +96,8 @@ const cleanShortcuts = (a: unknown): Shortcut[] | null =>
 					text: s.text.trim().slice(0, 2000),
 				}));
 
-const writeJson = (file: string, value: unknown) => {
-	writeFileSync(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`);
-	renameSync(`${file}.tmp`, file);
-};
+const writeJson = (file: string, value: unknown) =>
+	saveFile(file, `${JSON.stringify(value, null, 2)}\n`);
 
 // Behind tailscale serve every request carries the Tailscale login it came
 // from.
@@ -159,7 +166,12 @@ const sendFile = (
 		"content-length": size,
 		...extra,
 	});
-	createReadStream(path).pipe(res);
+	// A file deleted or locked after the stat errors the stream, and an error
+	// nothing listens for would take the server down.
+	pipeline(createReadStream(path), res, (e) => {
+		if (e && e.code !== "ERR_STREAM_PREMATURE_CLOSE")
+			console.error("sending a file:", e);
+	});
 };
 
 // Memory lines from the phone, trimmed and capped.
@@ -195,6 +207,18 @@ const resultOf = (done: Record<string, unknown>, silent: boolean): Run["result"]
 	if (!done["ok"]) return "failed";
 	return silent ? "silent" : "ok";
 };
+
+// Free space and load move a little every minute, so only a change he'd
+// notice goes out.
+const glance = (m: Mac | null) =>
+	m &&
+	JSON.stringify([
+		m.name,
+		m.battery,
+		Math.round(m.disk.free / 1e8),
+		Math.round(m.memory.free / 1e8),
+		Math.round(m.cpu / 5),
+	]);
 
 if (setting("LAB_CHILD")) serve();
 else supervise();
@@ -284,21 +308,19 @@ async function serve() {
 
 	// Codex has no send_to_phone tool, so it copies files in here instead.
 	const toPhone = join(Home, "to-phone");
+	// One that couldn't be sent or moved away stays put, and isn't tried
+	// again every minute.
+	const stuck = new Set<string>();
 	const drop = async (name: string) => {
 		const p = join(toPhone, name);
-		if (name.startsWith(".") || !existsSync(p) || !statSync(p).isFile()) return;
-		// Wait until the copy has finished growing.
-		for (let size = -1; size !== statSync(p).size; ) {
-			size = statSync(p).size;
-			await new Promise((done) => setTimeout(done, 800));
-		}
-		const r = await lab.sendFile(p);
-		if ("isError" in r)
-			lab.store.add({
-				kind: "notice",
-				text: `Couldn't send ${name} to your phone. ${r.content[0]?.text}`,
-			});
-		rmSync(p, { force: true });
+		if (
+			name.startsWith(".") ||
+			stuck.has(name) ||
+			!existsSync(p) ||
+			!statSync(p).isFile()
+		)
+			return;
+		if (!(await lab.sendDropped(p))) stuck.add(name);
 	};
 	const sending = new Set<string>();
 	let watcher: ReturnType<typeof watch> | null = null;
@@ -377,9 +399,18 @@ async function serve() {
 
 	let macNow = await mac().catch(() => null);
 	setInterval(async () => {
+		const was = glance(macNow);
 		macNow = await mac().catch(() => macNow);
-		if (macNow) lab.store.live(macNow);
+		if (macNow && glance(macNow) !== was) lab.store.live(macNow);
 	}, 60_000).unref();
+
+	// macOS asks before an app reads these, so the prompts come up while he's
+	// at the computer setting up rather than partway through a task.
+	if (process.platform === "darwin")
+		for (const d of ["Desktop", "Documents", "Downloads"])
+			readdir(join(homedir(), d)).catch(() => {
+				// The agent hears about a refusal when it gets there.
+			});
 
 	// While The Lab is open and in front on the computer and he's using it, the
 	// phone doesn't buzz for what he can already see.
@@ -422,7 +453,7 @@ async function serve() {
 				pushSettings();
 			}
 		}, 300);
-	});
+	}).on("error", (e) => console.error("Lab folder watch:", e));
 
 	// ---------- schedules ----------
 
@@ -430,12 +461,18 @@ async function serve() {
 	const ranFile = join(Dir, "schedules-ran.json");
 	let ran: {
 		keys: string[];
-		known: string[];
+		first: Record<string, string>;
 		checked?: string;
 		last: Record<string, Run>;
-	} = { keys: [], known: [], last: {} };
+	} = { keys: [], first: {}, last: {} };
 	try {
-		ran = { ...ran, ...JSON.parse(readFileSync(ranFile, "utf8")) };
+		const { known, ...saved } = JSON.parse(readFileSync(ranFile, "utf8"));
+		ran = { ...ran, ...saved };
+		// An older file lists only the ids, and those count as seen long ago.
+		if (Array.isArray(known) && !saved.first)
+			ran.first = Object.fromEntries(
+				known.map((id) => [String(id), new Date(0).toISOString()]),
+			);
 	} catch {
 		/* nothing has run yet */
 	}
@@ -477,21 +514,23 @@ async function serve() {
 		saveRan();
 	});
 
-	setInterval(() => {
+	const tick = () => {
+		readSchedules();
+		const now = new Date();
+		const first = firstSeen(schedules, ran.first, now);
+		const changed = JSON.stringify(first) !== JSON.stringify(ran.first);
+		ran = { ...ran, first };
 		// The page hangs every event on the newest turn, so a run mid-request
 		// would take over the one he's in. It isn't marked as run, so it goes
 		// on the first idle tick inside the grace window.
-		if (lab.status.working) return;
-		readSchedules();
-		const now = new Date();
+		if (lab.status.working) {
+			if (changed) saveRan();
+			return;
+		}
 		const keys = new Set(ran.keys);
-		const fresh = new Set(
-			schedules.map((s) => s.id).filter((id) => !ran.known.includes(id)),
-		);
-		const old = schedules.filter((s) => !fresh.has(s.id));
 		// Runs too late to send now. Nothing is replayed, he just hears about it.
 		for (const m of ran.checked
-			? missed(old, new Date(Date.parse(ran.checked) - GRACE), now, keys)
+			? missed(schedules, new Date(Date.parse(ran.checked) - GRACE), now, keys, first)
 			: []) {
 			keys.add(m.key);
 			const when = m.at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -502,10 +541,8 @@ async function serve() {
 				action: { label: "Run It Now", send: m.item.text },
 			});
 		}
-		for (const { item, key } of due(schedules, now, keys)) {
+		for (const { item, key } of due(schedules, now, keys, first)) {
 			keys.add(key);
-			// A new entry whose time already passed today waits for its next one.
-			if (fresh.has(item.id)) continue;
 			lab.send(item.text, randomUUID(), [], {
 				label: item.label,
 				...(item.quiet === undefined ? {} : { quiet: item.quiet }),
@@ -515,13 +552,15 @@ async function serve() {
 			// The page shows one run at a time, so the rest wait for the next tick.
 			break;
 		}
-		ran = {
-			...ran,
-			keys: [...keys].slice(-500),
-			known: [...new Set([...ran.known, ...fresh])].slice(-500),
-			checked: now.toISOString(),
-		};
+		ran = { ...ran, keys: [...keys].slice(-500), checked: now.toISOString() };
 		saveRan();
+	};
+	setInterval(() => {
+		try {
+			tick();
+		} catch (e) {
+			console.error("schedules:", e);
+		}
 	}, 20_000).unref();
 
 	const scheduleView = () => {
@@ -618,7 +657,7 @@ async function serve() {
 			"x-accel-buffering": "no",
 		});
 		res.write(
-			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach()] })}\n\n`,
+			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach()] })}\n\n`,
 		);
 		// Replay and subscribe in the same tick, so nothing can land in between.
 		for (const e of lab.store.since(Number.isFinite(after) ? after : null))
@@ -817,23 +856,30 @@ async function serve() {
 	]);
 
 	const pairPhone: Route = async (_req, res) => {
-		if (!(relay || existsSync(urlFile)))
+		// Without a relay or Tailscale the code still pairs over the Wi-Fi.
+		const tailscale = !relay && existsSync(urlFile);
+		if (!(relay || tailscale || tunnel.spec().lan.length > 0))
 			return html(
 				res,
 				409,
 				"Pair a Phone",
-				"<h1>There Is No Relay Yet</h1><p>Pair the phone over its USB cable instead, or ask the agent on the computer to set up the relay first.</p>",
+				"<h1>The Computer Isn't on a Network</h1><p>Connect the computer to Wi-Fi and reload this page, or pair the phone over its USB cable instead.</p>",
 			);
 		const { qrSvg } = await import("./qr.ts");
-		const link = relay
-			? pairLink(code("claim", 10 * 60_000))
-			: `${readFileSync(urlFile, "utf8").trim()}/pair?c=${code("scan", 10 * 60_000)}`;
+		const link = tailscale
+			? `${readFileSync(urlFile, "utf8").trim()}/pair?c=${code("scan", 10 * 60_000)}`
+			: pairLink(code("claim", 10 * 60_000));
 		const img = `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString("base64")}`;
+		const how = relay
+			? "Tap the link the camera finds and The Lab opens."
+			: tailscale
+				? "Turn on Tailscale on the phone first."
+				: "The phone has to be on the same Wi-Fi as the computer. Tap the link the camera finds and The Lab opens.";
 		return html(
 			res,
 			200,
 			"Pair a Phone",
-			`<h1>Point the Phone's Camera at This</h1><p>${relay ? "Tap the link the camera finds and The Lab opens." : "Turn on Tailscale on the phone first."} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`,
+			`<h1>Point the Phone's Camera at This</h1><p>${how} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`,
 		);
 	};
 

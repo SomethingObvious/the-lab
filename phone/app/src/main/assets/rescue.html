@@ -130,7 +130,8 @@
         const li = add('ask', '', (el) => {
           el.innerHTML = '<strong></strong>\n<span></span><div class="row"><button type="button">Deny</button><button type="button" class="primary">Allow</button></div>';
           el.querySelector('strong').textContent = e.title;
-          el.querySelector('span').textContent = e.detail || '';
+          // His words first, as on the notification. The command is a last resort.
+          el.querySelector('span').textContent = [e.from, ...(e.facts || [])].filter(Boolean).join('\n') || e.plain || e.detail || '';
           const [no, yes] = el.querySelectorAll('button');
           yes.onclick = () => lab.answer(e.ref, true);
           no.onclick = () => lab.answer(e.ref, false);
@@ -146,6 +147,22 @@
       case 'undone':
         $('why').textContent = e.ok ? 'Undid the last design change.' : 'There is no earlier design to go back to.';
         return;
+      case 'answerFailed':
+        $('why').textContent = "Couldn't reach the computer, so that answer didn't go through. Try again once it's back.";
+        $('sr').textContent = $('why').textContent;
+        return;
+      case 'stopFailed':
+        $('why').textContent = "Couldn't reach the computer to stop it. Try again once it's back.";
+        $('sr').textContent = $('why').textContent;
+        return;
+      case 'sendFailed': {
+        const t = $('text');
+        if (e.text && !t.value.includes(e.text)) t.value = t.value ? `${e.text}\n${t.value}` : e.text;
+        t.oninput?.();
+        $('why').textContent = e.error || "That message didn't send.";
+        $('sr').textContent = $('why').textContent;
+        return;
+      }
       default: return;
     }
     draw();

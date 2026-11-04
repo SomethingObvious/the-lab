@@ -67,6 +67,9 @@ class LinkService : Service() {
         // service and its line come back with it. The phone's battery
         // allowlist (setup adds it) lets that start happen from the background.
         private val stepDown = Runnable {
+            // With no network of its own the phone can't tell whether the computer is there, and
+            // only a running service hears the network come back. The next link change posts this again.
+            if (!Hub.hasNetwork) return@Runnable
             running?.let { it.stopForeground(STOP_FOREGROUND_REMOVE); it.stopSelf() }
             if (Hub.paired) Retry.schedule(Hub.app)
         }
@@ -102,6 +105,8 @@ class Retry : JobService() {
         Hub.init(this)
         if (!Hub.paired) return false
         Hub.start()
+        // The session from before the freeze has had no traffic, so it may be long dead.
+        Tunnel.drop()
         Hub.reconnectNow()
         // Long enough for a relay dial and the first events.
         android.os.Handler(mainLooper).postDelayed({ jobFinished(params, false) }, 30_000)
@@ -133,6 +138,10 @@ object Notifier {
     private const val REPLY_ID = 2
     private const val NOTICE_ID = 3
     private const val STOP_ID = 4
+    private const val QUEUED_ID = 5
+    private const val UNSENT_ID = 6
+    // The computer's own limit on how long a question waits.
+    private const val ASK_MS = 5 * 60_000L
     // The last few messages each way, so a reply notification reads as a conversation.
     private val recent = ArrayDeque<Triple<CharSequence, Long, Boolean>>()
 
@@ -189,9 +198,7 @@ object Notifier {
         if (waiting) {
             // A promoted card always sits first and expanded, so it carries the
             // buttons rather than sending him down to the ask itself.
-            val at = Hub.events.indexOfLast { it.optString("kind") == "ask" }
-            val ask = Hub.events.getOrNull(at)
-                ?.takeIf { a -> Hub.events.subList(at + 1, Hub.events.size).none { it.optString("kind") == "answered" && it.optString("ref") == a.optString("ref") } }
+            val ask = openAsk()
             b.setContentTitle("Needs your OK").setContentText(ask?.optString("plain")?.ifBlank { null } ?: "Open The Lab to allow or deny it.")
                 .setWhen(since).setShowWhen(true).setUsesChronometer(true)
             if (ask != null) {
@@ -227,6 +234,22 @@ object Notifier {
             if (link.optString("state") != "online") b.setContentText(link.optString("detail"))
         }
         return b.build()
+    }
+
+    // The newest question with no answer after it.
+    private fun openAsk(): JSONObject? {
+        val at = Hub.events.indexOfLast { it.optString("kind") == "ask" }
+        return Hub.events.getOrNull(at)
+            ?.takeIf { a -> Hub.events.subList(at + 1, Hub.events.size).none { it.optString("kind") == "answered" && it.optString("ref") == a.optString("ref") } }
+    }
+
+    // After the replay. A question asked while the phone was away is too old
+    // for onEvent to sound, but it can still be answered until it expires.
+    fun onLoaded() {
+        if (Hub.foreground) return
+        val e = openAsk()?.takeIf { !it.optBoolean("onMac") } ?: return
+        val nm = Hub.app.getSystemService(NotificationManager::class.java)
+        if (nm.activeNotifications.none { it.id == e.optString("ref").hashCode() }) ask(Hub.app, e)
     }
 
     // Only events from the last couple of minutes notify, so a phone coming
@@ -272,24 +295,7 @@ object Notifier {
                     .setCategory(Notification.CATEGORY_MESSAGE)
                     .addAction(Notification.Action.Builder(null, "Reply", reply).addRemoteInput(input).setAllowGeneratedReplies(false).build())
             }
-            "ask" -> {
-                val ref = e.optString("ref")
-                val code = ref.hashCode()
-                // His words first, as on the card. The command stays in the app.
-                val facts = e.optJSONArray("facts")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
-                val lines = listOfNotNull(e.optString("from").ifBlank { null }) + facts + listOfNotNull(e.optString("why").ifBlank { null }?.let { "The agent says: $it" })
-                val text = lines.ifEmpty { listOf(e.optString("detail")) }.joinToString("\n")
-                Notification.Builder(context, "asks")
-                    .setContentTitle(e.optString("title"))
-                    .setContentText(lines.firstOrNull() ?: e.optString("detail"))
-                    .setStyle(Notification.BigTextStyle().bigText(text))
-                    .setCategory(Notification.CATEGORY_REMINDER)
-                    // Allowing runs something on his computer, so it shouldn't work from a locked phone.
-                    .addAction(Notification.Action.Builder(null, "Deny", action(context, AnswerReceiver.DENY, ref, code + 1)).setAuthenticationRequired(true).build())
-                    .addAction(Notification.Action.Builder(null, "Allow", action(context, AnswerReceiver.ALLOW, ref, code)).setAuthenticationRequired(true).build())
-                    .also { nm.notify(code, it.setSmallIcon(R.drawable.ic_status).setColor(VIOLET).setContentIntent(open(context)).setAutoCancel(true).build()) }
-                return
-            }
+            "ask" -> return ask(context, e)
             "notice" -> Notification.Builder(context, "notices")
                 .setContentTitle("The Lab")
                 .setContentText(e.optString("text"))
@@ -298,6 +304,31 @@ object Notifier {
         }
         val id = if (kind == "notice") NOTICE_ID else REPLY_ID
         nm.notify(id, b.setSmallIcon(R.drawable.ic_status).setColor(VIOLET).setContentIntent(open(context)).setAutoCancel(true).build())
+    }
+
+    private fun ask(context: Context, e: JSONObject) {
+        val ref = e.optString("ref")
+        val code = ref.hashCode()
+        val at = runCatching { Instant.parse(e.optString("at")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+        // The computer gives up on a question after five minutes, and the card goes with it.
+        val left = at + ASK_MS - System.currentTimeMillis()
+        if (left <= 0) return
+        // His words first, as on the card. The command stays in the app.
+        val facts = e.optJSONArray("facts")?.let { a -> (0 until a.length()).map { a.optString(it) } }.orEmpty()
+        val lines = listOfNotNull(e.optString("from").ifBlank { null }) + facts + listOfNotNull(e.optString("why").ifBlank { null }?.let { "The agent says: $it" })
+        val text = lines.ifEmpty { listOf(e.optString("detail")) }.joinToString("\n")
+        context.getSystemService(NotificationManager::class.java).notify(code, Notification.Builder(context, "asks")
+            .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
+            .setContentTitle(e.optString("title"))
+            .setContentText(lines.firstOrNull() ?: e.optString("detail"))
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setCategory(Notification.CATEGORY_REMINDER)
+            .setTimeoutAfter(left)
+            // Allowing runs something on his computer, so it shouldn't work from a locked phone.
+            .addAction(Notification.Action.Builder(null, "Deny", action(context, AnswerReceiver.DENY, ref, code + 1)).setAuthenticationRequired(true).build())
+            .addAction(Notification.Action.Builder(null, "Allow", action(context, AnswerReceiver.ALLOW, ref, code)).setAuthenticationRequired(true).build())
+            .setContentIntent(open(context)).setAutoCancel(true)
+            .build())
     }
 
     // Replies are Markdown, which a notification would show as asterisks.
@@ -337,6 +368,41 @@ object Notifier {
             .build())
     }
 
+    // Replaces the question's own card, so it doesn't sound again.
+    fun answerExpired(context: Context, ref: String) {
+        context.getSystemService(NotificationManager::class.java).notify(ref.hashCode(), Notification.Builder(context, "asks")
+            .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
+            .setContentTitle("That question had already closed")
+            .setContentText("It was answered already, or the agent stopped waiting and carried on without it.")
+            .setOnlyAlertOnce(true)
+            .setTimeoutAfter(10 * 60_000L)
+            .setContentIntent(open(context)).setAutoCancel(true)
+            .build())
+    }
+
+    fun queued(context: Context) {
+        // On the quiet connection channel, since it's news about the link rather than something to act on.
+        context.getSystemService(NotificationManager::class.java).notify(QUEUED_ID, Notification.Builder(context, "status")
+            .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
+            .setContentTitle("Your message is saved")
+            .setContentText("It'll go to the computer as soon as it's back.")
+            .setContentIntent(open(context)).setAutoCancel(true)
+            .build())
+    }
+
+    fun sent(context: Context) = context.getSystemService(NotificationManager::class.java).cancel(QUEUED_ID)
+
+    fun unsent(text: String) {
+        val context = Hub.app
+        context.getSystemService(NotificationManager::class.java).notify(UNSENT_ID, Notification.Builder(context, "notices")
+            .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
+            .setContentTitle("A message didn't go through")
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText("The computer couldn't take this message, so it wasn't sent:\n\n$text"))
+            .setContentIntent(open(context)).setAutoCancel(true)
+            .build())
+    }
+
     fun stopFailed(context: Context) {
         context.getSystemService(NotificationManager::class.java).notify(STOP_ID, Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
@@ -352,6 +418,7 @@ object Notifier {
         nm.cancel(REPLY_ID)
         nm.cancel(NOTICE_ID)
         nm.cancel(STOP_ID)
+        nm.cancel(QUEUED_ID)
     }
 }
 
@@ -362,9 +429,12 @@ class AnswerReceiver : BroadcastReceiver() {
         when (intent.action) {
             ALLOW, DENY -> {
                 val pending = goAsync()
-                Hub.answer(ref, intent.action == ALLOW) { ok ->
-                    if (ok) context.getSystemService(NotificationManager::class.java).cancel(ref.hashCode())
-                    else Notifier.answerFailed(context, ref)
+                Hub.answer(ref, intent.action == ALLOW) { code ->
+                    when (code) {
+                        in 200..299 -> context.getSystemService(NotificationManager::class.java).cancel(ref.hashCode())
+                        404 -> Notifier.answerExpired(context, ref)
+                        else -> Notifier.answerFailed(context, ref)
+                    }
                     pending.finish()
                 }
                 return
@@ -379,11 +449,14 @@ class AnswerReceiver : BroadcastReceiver() {
             }
             REPLY -> {
                 val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(TEXT)?.toString()?.trim().orEmpty()
-                if (text.isNotEmpty()) {
-                    Hub.send(text, UUID.randomUUID().toString(), null)
-                    if (Hub.paired) LinkService.start(context)
-                }
                 Notifier.clearReplies(context)
+                if (text.isNotEmpty()) {
+                    val cid = UUID.randomUUID().toString()
+                    Hub.send(text, cid, null)
+                    if (Hub.paired) LinkService.start(context)
+                    // Long enough for a cold start to reach the computer, so the line only shows when it can't.
+                    Hub.onMain(15_000) { if (Hub.queued(cid)) Notifier.queued(Hub.app) }
+                }
             }
         }
         if (ref.isNotEmpty()) context.getSystemService(NotificationManager::class.java).cancel(ref.hashCode())

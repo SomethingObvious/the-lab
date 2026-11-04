@@ -1,5 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { env, platform } from "node:process";
@@ -26,6 +32,31 @@ export interface Config {
 	relay?: string;
 }
 
+// Written to a temp file and renamed into place, so a power cut leaves the
+// old file or the new one and never half of it. On Windows an antivirus,
+// the search indexer or a backup holding the file open turns the rename
+// into EPERM for a moment, so it tries a few times. A save that still fails
+// is logged rather than thrown, as the next save writes the whole file again.
+export function saveFile(file: string, text: string, mode?: number): boolean {
+	for (let i = 1; ; i++) {
+		try {
+			writeFileSync(`${file}.tmp`, text, mode === undefined ? {} : { mode });
+			renameSync(`${file}.tmp`, file);
+			return true;
+		} catch (e) {
+			const code = e instanceof Error && "code" in e ? e.code : "";
+			if (i < 6 && (code === "EPERM" || code === "EBUSY" || code === "EACCES")) {
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * i);
+				continue;
+			}
+			console.error(
+				`couldn't save ${file}: ${e instanceof Error ? e.message : String(e)}`,
+			);
+			return false;
+		}
+	}
+}
+
 // Created once on first start. The token is what the phone was paired with,
 // so it is never regenerated on its own.
 export function config(): Config {
@@ -33,14 +64,14 @@ export function config(): Config {
 	const file = join(dir, "config.json");
 	if (!existsSync(file)) {
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(
+		saveFile(
 			file,
 			JSON.stringify(
 				{ token: randomBytes(32).toString("base64url"), port: 8417 },
 				null,
 				2,
 			),
-			{ mode: 0o600 },
+			0o600,
 		);
 	}
 	return JSON.parse(readFileSync(file, "utf8"));
@@ -49,10 +80,10 @@ export function config(): Config {
 // An undefined field drops that key from config.json, which is how a rename
 // goes back to the computer's own name.
 export function setConfig(patch: { [K in keyof Config]?: Config[K] | undefined }) {
-	writeFileSync(
+	saveFile(
 		join(labDir(), "config.json"),
 		JSON.stringify({ ...config(), ...patch }, null, 2),
-		{ mode: 0o600 },
+		0o600,
 	);
 }
 

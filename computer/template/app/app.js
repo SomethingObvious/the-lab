@@ -502,6 +502,15 @@ function take(e) {
 		case "stopFailed":
 			toast("Couldn't reach the computer to stop it. Try again once it's back.", true);
 			return;
+		// The computer turned a message down, so his words go back in the box.
+		case "sendFailed":
+			if (e.text && !text.value.includes(e.text))
+				text.value = text.value ? `${e.text}\n${text.value}` : e.text;
+			growText();
+			canSend();
+			keep(text.value);
+			toast(e.error || "That message didn't send.", true);
+			return;
 		case "you": {
 			const t = newTurn(e, e.at);
 			byEid.set(String(e.id), t);
