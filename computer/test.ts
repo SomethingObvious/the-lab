@@ -7,6 +7,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	symlinkSync,
 	truncateSync,
 	writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { env } from "node:process";
+import { Readable } from "node:stream";
 import { test } from "node:test";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -53,6 +55,20 @@ const field = (e: Ev | Live, k: string): unknown => Reflect.get(e, k);
 const ignore = () => {
 	// Nothing to do.
 };
+
+test("a link in the app folder whose target is gone doesn't stop the server", () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
+	const app = join(root, "app");
+	mkdirSync(app);
+	writeFileSync(join(app, "index.html"), "one\n");
+	const gone = join(root, "gone");
+	mkdirSync(gone);
+	// A junction, since Windows lets anyone make one without admin rights.
+	symlinkSync(gone, join(app, "old"), "junction");
+	rmSync(gone, { recursive: true });
+	const design = new Design(app, join(root, "history"), ignore);
+	assert.ok(design.version);
+});
 
 test("undo steps back through saved designs", async () => {
 	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
@@ -381,6 +397,7 @@ let turn = 0;
 rl.on('line', (line) => {
   const m = JSON.parse(line);
   if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'model/list') return out({ id: m.id, result: { data: [{ model: 'fake', isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }] } });
   if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
   if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-1' }, model: 'fake' } });
   if (m.method === 'turn/start') {
@@ -483,6 +500,7 @@ let n = 0;
 rl.on('line', (line) => {
   const m = JSON.parse(line);
   if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'model/list') return out({ id: m.id, result: { data: [{ model: 'fake', isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }] } });
   if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
   if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-2' }, model: 'fake' } });
   if (m.method === 'turn/interrupt') return out({ id: m.id, result: {} });
@@ -544,6 +562,46 @@ test("codex folds a message sent while the turn starts into it", async () => {
 	lab.close();
 });
 
+// Takes the first message as a turn and the rest as steers, then ends the
+// turn with every message it was given, in order.
+const GATHER = String.raw`
+const rl = require('readline').createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+const got = [];
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'model/list') return out({ id: m.id, result: { data: [] } });
+  if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
+  if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-5' }, model: 'fake' } });
+  if (m.method === 'turn/start') {
+    got.push(m.params.input[0].text);
+    return setTimeout(() => out({ id: m.id, result: { turn: { id: 't1', status: 'inProgress' } } }), 150);
+  }
+  if (m.method === 'turn/steer') {
+    got.push(m.params.input[0].text);
+    out({ id: m.id, result: { turnId: 't1' } });
+    if (got.length < 3) return;
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a1', phase: 'final_answer', text: got.join(' | ') } } });
+    return out({ method: 'turn/completed', params: { turn: { id: 't1', status: 'completed', durationMs: 50, error: null } } });
+  }
+});
+`;
+
+test("three codex messages sent at once each reach it once", async () => {
+	const { lab, pick } = await codexLab(GATHER);
+	lab.send("Tidy Downloads", crypto.randomUUID());
+	lab.send("And the Desktop", crypto.randomUUID());
+	lab.send("And Photos", crypto.randomUUID());
+	await until(() => pick("done").length > 0);
+	assert.deepEqual(
+		pick("reply").map((e) => field(e, "text")),
+		["Tidy Downloads | And the Desktop | And Photos"],
+	);
+	assert.equal(pick("done").length, 1);
+	lab.close();
+});
+
 // Replies with the effort turn/start was given and the start of the message.
 const ECHO = String.raw`
 const rl = require('readline').createInterface({ input: process.stdin });
@@ -552,6 +610,7 @@ let n = 0;
 rl.on('line', (line) => {
   const m = JSON.parse(line);
   if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'model/list') return out({ id: m.id, result: { data: [{ model: 'fake', isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }] } });
   if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
   if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-4' }, model: 'fake' } });
   if (m.method === 'turn/start') {
@@ -572,16 +631,42 @@ test("thinking and replies reach the next codex turn", async () => {
 	lab.replies = "short";
 	lab.send("Hello", crypto.randomUUID());
 	await until(() => replies().length === 2);
-	// Effort sticks to a Codex thread, so Normal has to be sent as medium.
+	// Effort sticks to a Codex thread, so Normal is sent as the model's default.
 	lab.setEffort(undefined);
 	lab.replies = "normal";
 	lab.send("Hello", crypto.randomUUID());
 	await until(() => replies().length === 3);
+	// A level this model doesn't list goes back to its default too.
+	lab.setEffort("max");
+	lab.send("Hello", crypto.randomUUID());
+	await until(() => replies().length === 4);
 	assert.deepEqual(replies(), [
-		"none Hello",
+		"low Hello",
 		"high (He set replies to Short in Settings, so",
-		"medium Hello",
+		"low Hello",
+		"low Hello",
 	]);
+	lab.close();
+});
+
+test("a turn the server starts shows him one plain line", async () => {
+	const { lab, pick } = await codexLab(ECHO);
+	lab.send("Repair the app.js error by editing app.js only", crypto.randomUUID(), [], {
+		label: "Self-Repair",
+		quiet: true,
+		about: "a repair the server started by itself",
+		auto: true,
+		shown: "Fixing a problem the app ran into",
+	});
+	await until(() => pick("reply").length === 1);
+	const you = present(pick("you")[0]);
+	assert.equal(field(you, "text"), "Fixing a problem the app ran into");
+	assert.equal(field(you, "auto"), true);
+	// The agent's text starts with the preamble, not the line he sees.
+	assert.match(
+		String(field(present(pick("reply")[0]), "text")),
+		/^low This is "Self-Repair"/,
+	);
 	lab.close();
 });
 
@@ -1134,6 +1219,7 @@ const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
 rl.on('line', (line) => {
   const m = JSON.parse(line);
   if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'model/list') return out({ id: m.id, result: { data: [{ model: 'fake', isDefault: true, defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }] } });
   if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
   if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-3' }, model: 'fake' } });
   if (m.method === 'turn/start') {
@@ -1205,6 +1291,25 @@ test("schedules read the times and days the agent writes", () => {
 	assert.match(present(scheduleProblem(file)), /isn't valid JSON/);
 	writeFileSync(file, JSON.stringify(items));
 	assert.equal(scheduleProblem(file), null);
+});
+
+test("a file he sends from the computer still rings the phone", async () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-claude-"));
+	const { Lab } = await import("./lab.ts");
+	const lab = new Lab({ home: root, dir: join(root, ".thelab"), snapshots: false });
+	lab.store.atMac = () => true;
+	const e = await lab.toPhone(
+		"list.txt",
+		"text/plain",
+		Readable.from([Buffer.from("milk")]),
+	);
+	assert.equal(field(e, "fromComputer"), true);
+	assert.equal(field(e, "onMac"), undefined);
+	const stored = decodeURIComponent(String(field(e, "url")).slice("/files/".length));
+	assert.equal(readFileSync(join(root, ".thelab", "files", stored), "utf8"), "milk");
+	// A reply while he's at the computer stays quiet, as before.
+	assert.equal(field(lab.store.add({ kind: "reply", text: "Done" }), "onMac"), true);
+	lab.close();
 });
 
 test("a message waiting behind a turn keeps the task open", async () => {

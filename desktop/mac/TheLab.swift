@@ -7,7 +7,9 @@
 import Cocoa
 import WebKit
 
-final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate {
+final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate,
+	WKScriptMessageHandler
+{
 	let lab: URL
 	let check: String?
 	var window: NSWindow!
@@ -27,20 +29,24 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigati
 		config.websiteDataStore = .nonPersistent()
 		config.userContentController.addUserScript(
 			WKUserScript(
-				source: "globalThis.labShell = 'desktop';",
+				source: "globalThis.labShell = 'desktop'; globalThis.labOs = 'mac';",
 				injectionTime: .atDocumentStart,
 				forMainFrameOnly: true))
+		config.userContentController.add(self, name: "lab")
 		web = WKWebView(frame: .zero, configuration: config)
 		web.navigationDelegate = self
 		web.uiDelegate = self
 		// Without this the page flashes white before it draws, in dark mode too.
 		web.setValue(false, forKey: "drawsBackground")
+		// The page draws its own title bar under the traffic lights, which stay.
 		window = NSWindow(
-			contentRect: NSRect(x: 0, y: 0, width: 960, height: 700),
-			styleMask: [.titled, .closable, .miniaturizable, .resizable],
+			contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
+			styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
 			backing: .buffered,
 			defer: false)
 		window.title = "The Lab"
+		window.titleVisibility = .hidden
+		window.titlebarAppearsTransparent = true
 		window.minSize = NSSize(width: 360, height: 480)
 		window.contentView = web
 		window.delegate = self
@@ -63,6 +69,39 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigati
 
 	func windowWillClose(_ n: Notification) {
 		if n.object as? NSWindow === window { NSApp.terminate(nil) }
+	}
+
+	func windowDidResize(_: Notification) { tell() }
+	func windowDidBecomeKey(_: Notification) { tell() }
+	func windowDidResignKey(_: Notification) { tell() }
+
+	// Tells the page whether the window is zoomed and in front, so its title
+	// bar can match.
+	func tell() {
+		web?.evaluateJavaScript(
+			"globalThis.labHost && labHost({kind: 'window', maximized: \(window.isZoomed), active: \(window.isKeyWindow)})")
+	}
+
+	// What the page's title bar asks for. The agent can change the page, so a
+	// reveal only shows a file the phone or the agent sent, and opens nothing.
+	func userContentController(_: WKUserContentController, didReceive m: WKScriptMessage) {
+		guard ours(m.frameInfo.request.url), let body = m.body as? [String: Any] else { return }
+		switch body["window"] as? String {
+		case "minimize": window.miniaturize(nil)
+		case "maximize": window.zoom(nil)
+		case "close": window.performClose(nil)
+		case "drag": if let e = NSApp.currentEvent { window.performDrag(with: e) }
+		default: break
+		}
+		if let path = body["reveal"] as? String, path.hasPrefix("/files/"),
+			let name = String(path.dropFirst(7)).removingPercentEncoding,
+			!name.contains("/"), !name.hasPrefix(".")
+		{
+			let file = lab.appendingPathComponent("files").appendingPathComponent(name)
+			if FileManager.default.fileExists(atPath: file.path) {
+				NSWorkspace.shared.activateFileViewerSelecting([file])
+			}
+		}
 	}
 
 	func go() {
@@ -125,6 +164,7 @@ final class Shell: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigati
 	}
 
 	func webView(_ view: WKWebView, didFinish _: WKNavigation!) {
+		if view === web { tell() }
 		guard let check, view === web, ours(web.url), !(web.url?.path.hasPrefix("/pair") ?? true) else { return }
 		DispatchQueue.main.asyncAfter(deadline: .now() + 4) { self.report(check) }
 	}

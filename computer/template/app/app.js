@@ -320,6 +320,9 @@ let uploading = 0;
 let selected = null;
 let moreOpen = false;
 let booted = false;
+// The Lab's own window on the computer, which gets a title bar and a side panel.
+const desk = lab.platform === "desktop";
+let phone = null;
 
 const thread = $("thread");
 const log = document.createElement("div");
@@ -456,6 +459,13 @@ function take(e) {
 		case "mac":
 			mac = e;
 			drawGlance();
+			return;
+		case "phone":
+			phone = e;
+			drawHub();
+			return;
+		case "window":
+			drawWindow(e);
 			return;
 		case "update":
 			updates = e;
@@ -773,12 +783,19 @@ function youEl(e, queued) {
 			: "";
 	const meta = queued
 		? `${icon("clock")}Waiting to send`
-		: e.scheduled
-			? `${icon("clock")}<span class="sr">Scheduled, </span>${esc(e.scheduled)} at ${clock(e.at)}`
-			: clock(e.at);
-	return `<div class="you${queued ? " queued" : ""}" data-eid="${esc(e.id ?? "")}">
+		: e.auto
+			? `${icon("redo")}<span class="sr">Started by the computer, </span>${esc(e.scheduled)} at ${clock(e.at)}`
+			: e.scheduled
+				? `${icon("clock")}<span class="sr">Scheduled, </span>${esc(e.scheduled)} at ${clock(e.at)}`
+				: clock(e.at);
+	// A turn the computer started isn't his message, so it has nothing to
+	// send again or save.
+	const bubble = e.auto
+		? `<p class="bubble">${esc(e.text)}</p>`
+		: `<button type="button" class="bubble" data-cid="${esc(e.cid)}" aria-expanded="${selected === e.cid}">${esc(e.text)}</button>`;
+	return `<div class="you${queued ? " queued" : ""}${e.auto ? " auto" : ""}" data-eid="${esc(e.id ?? "")}">
       ${files ? `<div class="you-files">${files}</div>` : ""}
-      ${e.text ? `<button type="button" class="bubble" data-cid="${esc(e.cid)}" aria-expanded="${selected === e.cid}">${esc(e.text)}</button>` : ""}
+      ${e.text ? bubble : ""}
       <span class="meta${queued || e.scheduled ? "" : " time"}">${meta}</span>${actions}</div>`;
 }
 
@@ -874,9 +891,11 @@ function outEl(e) {
 		return `<div class="end quiet" data-eid="${esc(e.id)}">${icon("check")}Nothing to report</div>`;
 	if (e.kind === "reply")
 		return `<div class="reply" data-eid="${esc(e.id)}">${md(e.text)}</div>`;
+	// One he sent across from the computer's window rather than from the agent.
+	const sent = e.fromComputer ? "Sent from the computer · " : "";
 	if (isImage(e))
-		return `<button type="button" class="photo" data-open="${esc(e.url)}" data-eid="${esc(e.id)}"><img src="${thumb(e.url, 300)}" alt="" loading="lazy" decoding="async"><span>${esc(e.caption || e.name)}</span></button>`;
-	return `<button type="button" class="file" data-open="${esc(e.url)}" data-eid="${esc(e.id)}">${fileIcon()}<span><span class="fn">${esc(e.name)}</span><br><span class="fs">${esc(e.caption ? `${e.caption} · ` : "")}${bytes(e.size || 0)}</span></span></button>`;
+		return `<button type="button" class="photo" data-open="${esc(e.url)}" data-eid="${esc(e.id)}"><img src="${thumb(e.url, 300)}" alt="" loading="lazy" decoding="async"><span>${sent}${esc(e.caption || e.name)}</span></button>`;
+	return `<button type="button" class="file" data-open="${esc(e.url)}" data-eid="${esc(e.id)}">${fileIcon()}<span><span class="fn">${esc(e.name)}</span><br><span class="fs">${sent}${esc(e.caption ? `${e.caption} · ` : "")}${bytes(e.size || 0)}</span></span></button>`;
 }
 
 function turnEl(t) {
@@ -1144,7 +1163,14 @@ const Widgets = {
 		about: "Which model the agent uses",
 		sizes: ["wide", "long", "small"],
 		tone: () => "deep",
-		data: () => ({ value: modelName(), label: "Model", icon: "star" }),
+		data: () => {
+			const e = effortLabel();
+			return {
+				value: modelName(),
+				label: e ? `${e} ${effortTerm().toLowerCase()}` : "Model",
+				icon: "star",
+			};
+		},
 		tap: () => openModels(),
 	},
 	next: {
@@ -1188,8 +1214,44 @@ const Widgets = {
 let modelList = null;
 const modelName = () => {
 	const id = settings.model;
-	if (!id) return "Default";
+	if (!id) return modelList?.defaultName || "Default";
 	return modelList?.choices.find((m) => m.id === id)?.name || id;
+};
+// Each level in the provider's own words. Claude's xhigh is Extra High.
+const effortWords = {
+	none: "None",
+	minimal: "Minimal",
+	low: "Low",
+	medium: "Medium",
+	high: "High",
+	xhigh: "Extra High",
+	max: "Max",
+	ultra: "Ultra",
+};
+const effortTerm = () => modelList?.term || "Effort";
+const modelNow = () => {
+	const c = modelList?.choices ?? [];
+	const id = settings.model || "default";
+	return (
+		c.find((m) => m.id === id) ||
+		(settings.model ? null : c.find((m) => m.name === modelList.defaultName))
+	);
+};
+// A level the model doesn't list runs as its default, on the computer too.
+const effortNow = () => {
+	const m = modelNow();
+	const e = settings.effort;
+	if (e && (!m || m.efforts.some((x) => x.id === e))) return e;
+	return m?.defaultEffort ?? null;
+};
+const effortLabel = () => {
+	const e = effortNow();
+	return e ? effortWords[e] || e : null;
+};
+const effortHint = () => {
+	const e = effortLabel();
+	if (!e) return modelList ? "This model has no levels to pick" : "";
+	return settings.effort === effortNow() ? e : `${e}, the default`;
 };
 // For the Next Schedule widget, asked for at start and after any change.
 let upcoming = null;
@@ -1273,6 +1335,7 @@ function drawGlance() {
         <div class="more-btns"><button type="button" class="link-btn" data-topbar>${icon("edit")}Edit the Top Bar</button><button type="button" class="link-btn" data-hidemore>${icon("chev")}Hide Details</button></div>`,
 		);
 	}
+	drawHub();
 }
 function toggleGlance(open) {
 	glanceOpen = open;
@@ -1499,16 +1562,12 @@ const redrawTurns = () => {
 	schedule();
 };
 const thinking = {
-	key: "effort",
-	type: "choice",
-	label: "Thinking",
-	hint: "Quick answers sooner. Thorough takes longer over hard tasks.",
-	options: [
-		["low", "Quick"],
-		[null, "Normal"],
-		["high", "Thorough"],
-	],
-	apply: () => drawChips(),
+	type: "open",
+	get label() {
+		return effortTerm();
+	},
+	hint: () => effortHint(),
+	open: () => openModels(),
 };
 const Settings = [
 	{ head: "Agent" },
@@ -1551,7 +1610,7 @@ const Settings = [
 	{
 		key: "autoUpdate",
 		type: "switch",
-		label: "Install Updates by Themselves",
+		label: "Install Updates Automatically",
 		hint: "While the agent isn't working. One that won't start is put back.",
 	},
 	{
@@ -1696,7 +1755,7 @@ function settingsChanged(was) {
 	for (const row of Settings)
 		if (row.apply && was[row.key] !== settings[row.key])
 			guard(`the ${row.label} setting`, row.apply);
-	if (was.model !== settings.model) drawChips();
+	if (was.model !== settings.model || was.effort !== settings.effort) drawChips();
 	if (was.welcomeDone !== settings.welcomeDone)
 		for (const it of items)
 			if (it.type === "notice" && it.e.points) {
@@ -1730,7 +1789,7 @@ function openSettings() {
 async function openModels() {
 	openSheet(
 		"models",
-		"Model",
+		`Model and ${effortTerm()}`,
 		'<p class="hint">Asking the computer which models it has</p>',
 		closeBtn,
 	);
@@ -1740,8 +1799,34 @@ async function openModels() {
 		if (sheetKind === "models") setHTML($("sheet-body"), offline(err));
 		return;
 	}
+	drawChips();
+	drawGlance();
 	if (sheetKind !== "models") return;
 	drawModels();
+}
+function effortRows(m) {
+	const now = modelNow();
+	const levels = now?.efforts ?? [];
+	const name = esc(modelName());
+	if (levels.length === 0)
+		return `<p class="hint">${name} doesn't take a ${esc(m.term.toLowerCase())} level, so it decides for itself how long to think.</p>`;
+	const def = now.defaultEffort;
+	const on = effortNow();
+	// Picking the default level saves null, so it follows the default if that changes.
+	const rows = levels.map((x) => {
+		const sub = x.id === def ? `Default. ${x.description}` : x.description;
+		return `<button type="button" role="radio" class="model-row" aria-checked="${x.id === on}" data-effort="${x.id === def ? "" : esc(x.id)}"><span class="radio" aria-hidden="true"></span><span><b>${esc(effortWords[x.id] || x.id)}</b>${sub ? `<span>${esc(sub)}</span>` : ""}</span></button>`;
+	});
+	return `<h3 id="effort-head">${esc(m.term)}</h3>
+    <p class="hint">How long ${name} thinks before it answers. Higher levels take longer and use more of your plan.</p>
+    <div class="model-list" role="radiogroup" aria-labelledby="effort-head">${rows.join("")}</div>
+    <h3 id="model-head">Model</h3>`;
+}
+async function pickEffort(id) {
+	await saveSettings({ effort: id || null });
+	if (sheetKind !== "models" || !modelList) return;
+	drawModels();
+	sheet.querySelector('[data-effort][aria-checked="true"]')?.focus();
 }
 function drawModels() {
 	const m = modelList;
@@ -1762,9 +1847,9 @@ function drawModels() {
 		() => {
 			setHTML(
 				$("sheet-body"),
-				`<div class="set-list">${settingRow(thinking)}</div>
+				`${effortRows(m)}
         <p class="hint">These are the models ${m.engine === "codex" ? "Codex" : "Claude"} on the computer can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ""}. A change starts with your next message.</p>
-        <ul class="model-list" role="radiogroup" aria-label="Model">${choices.map((c) => `<li><button type="button" role="radio" class="model-row" aria-checked="${c.id === chosen}" data-model="${esc(c.id)}"><span class="radio" aria-hidden="true"></span><span><b>${esc(c.name)}</b>${c.description ? `<span>${esc(c.description)}</span>` : ""}</span></button></li>`).join("")}</ul>
+        <div class="model-list" role="radiogroup" aria-labelledby="model-head">${choices.map((c) => `<button type="button" role="radio" class="model-row" aria-checked="${c.id === chosen}" data-model="${esc(c.id)}"><span class="radio" aria-hidden="true"></span><span><b>${esc(c.name)}</b>${c.description ? `<span>${esc(c.description)}</span>` : ""}</span></button>`).join("")}</div>
         <label for="model-other">Another Model</label>
         <div class="model-other"><input id="model-other" value="${listed || chosen === "default" ? "" : esc(chosen)}" placeholder="Its exact name" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"><button type="button" class="pill" data-modelother>Use It</button></div>
         <p class="hint">For a model your provider has that isn't listed. Type its name exactly as the provider writes it.</p>`,
@@ -1844,7 +1929,7 @@ function openMenu() {
 		"menu",
 		"More",
 		`<ul class="menu-list">
-      ${menuRow("settings", "edit", "Settings", "The model, thinking, replies, theme and top bar")}
+      ${menuRow("settings", "edit", "Settings", "The model, effort, replies, theme and top bar")}
       ${menuRow("memory", "star", "Memory", "What the agent remembers about you")}
       ${menuRow("schedules", "clock", "Schedules", "Messages the computer sends itself on a timer")}
       ${menuRow("allowed", "shield", "Always Allowed", "Commands that run without asking")}
@@ -2049,21 +2134,20 @@ function openRestore(t) {
 
 // Shortcuts
 
-const effortWord = { low: "Quick", high: "Thorough" };
 function drawChips() {
 	const c = $("chips");
 	const listed = shortcuts.length > 0 && settings.chips !== false;
 	const model = settings.modelChip !== false;
 	c.hidden = !(listed || model);
-	const name = settings.model ? modelName() : "Model";
-	const effort = effortWord[settings.effort];
+	const name = modelName();
+	const effort = effortLabel();
 	refocus(
 		c,
 		() => {
 			setHTML(
 				c,
 				(model
-					? `<button type="button" class="chip model" id="model-chip" aria-label="Model, ${esc(settings.model ? name : "Default")}${effort ? `, ${effort}` : ""}">${icon("star")}${esc(name)}${effort ? `<span class="chip-sub">${effort}</span>` : ""}</button>`
+					? `<button type="button" class="chip model" id="model-chip" aria-label="Model, ${esc(name)}${effort ? `, ${esc(effortTerm())} ${esc(effort)}` : ""}">${icon("star")}${esc(name)}${effort ? `<span class="chip-sub">${esc(effort)}</span>` : ""}</button>`
 					: "") + (listed ? shortcutChips() : ""),
 			);
 		},
@@ -2118,7 +2202,8 @@ function openSheet(kind, title, body, actions) {
 }
 function closeSheet() {
 	sheetKind = null;
-	leave(sheet, "translateY(100%)");
+	// The window's sheets are dialogs in the middle, so they fade out instead.
+	leave(sheet, desk ? "translateY(8px)" : "translateY(100%)", desk);
 	leave($("scrim"), "", true);
 	backing();
 	restore(sheetFrom, text);
@@ -2442,6 +2527,7 @@ function drawSide() {
 	sideIO.disconnect();
 	const m = list.querySelector("[data-sidemore]");
 	if (m) sideIO.observe(m);
+	drawHub();
 }
 
 // Files view
@@ -2533,17 +2619,23 @@ function send(t, files) {
 function menu(open) {
 	$("attach-menu").hidden = !open;
 	$("attach").setAttribute("aria-expanded", String(open));
+	// The menu sits over the shortcut chips, so they can't be reached under it.
+	$("chips").inert = open;
 	backing();
 	if (open) $("attach-menu").querySelector("button").focus();
 }
-async function attach(kind) {
+function attach(kind) {
 	menu(false);
 	$("attach").focus();
+	return attachFrom(() => lab.attach(kind));
+}
+// Files dropped or pasted into the window go through the same upload.
+async function attachFrom(upload) {
 	uploading++;
 	drawPending();
 	let failed = null;
 	try {
-		const got = await lab.attach(kind);
+		const got = await upload();
 		pending.push(...got);
 		if (got.length > 0) say(`Attached ${got.map((f) => f.name).join(", ")}.`);
 	} catch (err) {
@@ -2612,6 +2704,7 @@ function top() {
 	if (shown($("files-view"))) return closeFiles;
 	if (!$("search-row").hidden) return closeSearch;
 	if (glanceOpen) return () => toggleGlance(false);
+	if (hubOpen) return () => toggleHub(false);
 	if (selected) return deselect;
 	return null;
 }
@@ -2642,6 +2735,245 @@ function findYou(cid) {
 	for (const t of items) if (t.type === "turn" && t.you?.cid === cid) return t;
 	return null;
 }
+
+// Desktop
+
+// The window on the computer has room the phone doesn't, so the panel on the
+// right shows more about the computer and the phone, and sends files across.
+const hub = $("hub");
+const hubFiles = () => {
+	const all = [];
+	for (const t of items) {
+		if (t.type !== "turn") continue;
+		for (const f of t.you?.files || [])
+			all.push({ ...f, at: t.you.at, who: "From you" });
+		for (const o of t.out)
+			if (o.kind === "file")
+				all.push({
+					...o,
+					who: o.fromComputer ? "Sent to the phone" : "From the agent",
+				});
+	}
+	return all.toReversed().slice(0, 5);
+};
+const dayAt = (iso) =>
+	`${dayLabel(iso) === "Today" ? "Today" : shortDay(iso)} at ${clock(iso)}`;
+const dropZone = (ev) => ev.target.closest?.("[data-drop]");
+const holdingFiles = (ev) => ev.dataTransfer?.types.includes("Files");
+function phoneState() {
+	if (!phone) return { tone: "off", title: "Checking the Phone", detail: "" };
+	const route =
+		phone.relay === "connected"
+			? "It can reach this computer from anywhere."
+			: "It can reach this computer on the same Wi-Fi.";
+	if (phone.online) return { tone: "on", title: "Phone Connected", detail: route };
+	if (phone.seen)
+		return {
+			tone: "away",
+			title: "Phone Away",
+			detail: `Last connected ${ago(phone.seen)}. Files sent now reach it once it's back.`,
+		};
+	return {
+		tone: "off",
+		title: "No Phone Yet",
+		detail: "Pair a phone to text this computer from anywhere.",
+	};
+}
+function hubHTML() {
+	// A widget with nothing to open is a plain tile here, as the details it
+	// would unfold are all on show already.
+	const pc = ["battery", "storage", "memory", "cpu", "uptime", "task", "model"]
+		.map((id) => {
+			const t = guard(`the ${id} widget`, () => tile({ id, size: "wide" }), "");
+			return Widgets[id].tap
+				? t
+				: t
+						.replace(/^<button type="button"/, '<div role="group"')
+						.replace(/<\/button>$/, "</div>");
+		})
+		.join("");
+	const p = phoneState();
+	const files = hubFiles();
+	const next = (upcoming || [])
+		.filter((s) => s.next && !s.paused)
+		.toSorted((a, b) => Date.parse(a.next) - Date.parse(b.next))
+		.slice(0, 3);
+	return `<section class="hub-sec">
+      <h2>${esc(mac?.name || "This Computer")}<button type="button" class="link-btn" data-rename>${icon("edit")}Rename</button></h2>
+      <div class="hub-tiles">${pc}</div>
+    </section>
+    <section class="hub-sec">
+      <h2>Phone</h2>
+      <div class="hub-phone is-${p.tone}">
+        <span class="hub-dot" aria-hidden="true">${icon("phone")}</span>
+        <span><b>${p.title}</b>${p.detail ? `<span class="hub-sub">${esc(p.detail)}</span>` : ""}</span>
+      </div>
+      ${
+				phone?.seen || phone?.online
+					? `<div class="hub-drop" data-drop="phone"><p>Drop files here to send them to the phone.</p><button type="button" class="btn tonal" data-tophone>${icon("send")}Send Files</button></div>
+      ${phone.online ? `<p class="hub-note">While you're at this window, replies don't buzz the phone. Files you send here always do.</p>` : ""}`
+					: `<button type="button" class="btn filled" data-menu="pair">${icon("wifi")}Pair a Phone</button>`
+			}
+    </section>
+    <section class="hub-sec">
+      <h2>Recent Files${files.length > 0 ? `<button type="button" class="link-btn" data-hubfiles>See All</button>` : ""}</h2>
+      ${
+				files.length > 0
+					? `<ul class="hub-list">${files
+							.map(
+								(f) =>
+									`<li><button type="button" class="hub-row" data-open="${esc(f.url)}">${isImage(f) ? `<img src="${thumb(f.url, 40)}" alt="" width="40" height="40" decoding="async">` : `<span class="fi">${icon("doc")}</span>`}<span><b>${esc(f.name)}</b><span class="hub-sub">${f.who} · ${bytes(f.size || 0)} · ${shortDay(f.at)}</span></span></button><button type="button" class="icon-btn" data-reveal="${esc(f.url)}" aria-label="Show ${esc(f.name)} in ${lab.os === "mac" ? "Finder" : "File Explorer"}" title="Show in ${lab.os === "mac" ? "Finder" : "File Explorer"}">${icon("folder")}</button></li>`,
+							)
+							.join("")}</ul>`
+					: `<p class="hub-empty">Files from the phone and the agent show up here.</p>`
+			}
+    </section>
+    <section class="hub-sec">
+      <h2>Coming Up<button type="button" class="link-btn" data-hubsched>Schedules</button></h2>
+      ${
+				next.length > 0
+					? `<ul class="hub-list">${next.map((s) => `<li><button type="button" class="hub-row" data-hubsched><span class="fi fi-sun">${icon("clock")}</span><span><b>${esc(s.label)}</b><span class="hub-sub">${dayAt(s.next)}</span></span></button></li>`).join("")}</ul>`
+					: `<p class="hub-empty">Nothing scheduled. Ask the agent to do something every morning, say, and it shows up here.</p>`
+			}
+    </section>`;
+}
+function drawHub() {
+	if (!(desk && booted)) return;
+	refocus(
+		hub,
+		() => setHTML(hub, guard("the side panel", hubHTML, "")),
+		() => $("side-search"),
+	);
+}
+function drawWindow(e) {
+	root.classList.toggle("win-max", e.maximized === true);
+	root.classList.toggle("win-off", e.active === false);
+	const b = $("win-max");
+	const label = e.maximized ? "Restore Down" : "Maximize";
+	b.setAttribute("aria-label", label);
+	b.title = label;
+	b.querySelector("use").setAttribute("href", e.maximized ? "#i-restore" : "#i-max");
+	tintStrip();
+}
+async function sendToPhone(files) {
+	if (files.length === 0) return;
+	toast(
+		`Sending ${files.length === 1 ? files[0].name : `${files.length} files`} to the phone`,
+	);
+	try {
+		const sent = await lab.toPhone(files);
+		toast(`Sent ${sent.map((e) => e.name).join(", ")} to the phone.`);
+	} catch (err) {
+		toast(err.message || "Couldn't send that to the phone.", true);
+	}
+}
+function pickForPhone() {
+	const input = Object.assign(document.createElement("input"), {
+		type: "file",
+		multiple: true,
+	});
+	input.addEventListener("change", () => sendToPhone([...input.files]));
+	input.click();
+}
+function clickDesk(d) {
+	if (d.win) lab.window?.[d.win]?.();
+	else if (d.reveal) lab.reveal(d.reveal);
+	else if (d.tophone !== undefined) pickForPhone();
+	else if (d.hubfiles !== undefined) openFiles();
+	else if (d.hubsched !== undefined)
+		load("schedules", "Schedules", "/schedules", drawSchedules);
+	else if (d.hubtoggle !== undefined) toggleHub(!hubOpen);
+	else return false;
+	return true;
+}
+// Under 1040 px there's no room for the panel beside the conversation, so the
+// title bar's phone button slides it in over the right edge.
+let hubOpen = false;
+const wideHub = matchMedia("(min-width: 1040px)");
+function toggleHub(open) {
+	if (open === hubOpen) return;
+	hubOpen = open;
+	root.classList.toggle("hub-open", open);
+	$("open-hub").setAttribute("aria-expanded", String(open));
+	if (open) hub.querySelector("button")?.focus();
+	else if (hub.contains(document.activeElement)) $("open-hub").focus();
+	backing();
+}
+// "rgb(75, 31, 212)" as "#4b1fd4", for the strip Windows resizes the window from.
+const hex = (rgb) =>
+	`#${(rgb.match(/\d+/g) || [0, 0, 0])
+		.slice(0, 3)
+		.map((n) => Number(n).toString(16).padStart(2, "0"))
+		.join("")}`;
+// Windows resizes from a strip above the page, which matches the title bar.
+const tintStrip = () => lab.window?.tint(hex(getComputedStyle(head).backgroundColor));
+function startDesk() {
+	root.dataset.shell = "desktop";
+	if (lab.os) root.dataset.os = lab.os;
+	hub.hidden = false;
+	$("open-hub").hidden = false;
+	wideHub.addEventListener("change", () => toggleHub(false));
+	$("win-btns").hidden = !lab.window || lab.os === "mac";
+	tintStrip();
+	const search = $("side-search");
+	search.setAttribute("aria-keyshortcuts", lab.os === "mac" ? "Meta+K" : "Control+K");
+	search.insertAdjacentHTML(
+		"afterend",
+		`<kbd class="kbd" aria-hidden="true">${lab.os === "mac" ? "Cmd" : "Ctrl"} K</kbd>`,
+	);
+	// WebKit on a Mac has no app-region, so the title bar asks to be dragged.
+	if (lab.os === "mac") {
+		head.addEventListener("pointerdown", (ev) => {
+			if (ev.button === 0 && !ev.target.closest("button, a, input")) lab.window.drag();
+		});
+		head.addEventListener("dblclick", (ev) => {
+			if (!ev.target.closest("button, a, input")) lab.window.maximize();
+		});
+	}
+	document.addEventListener("keydown", (ev) => {
+		if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+		if (ev.key.toLowerCase() === "k") {
+			ev.preventDefault();
+			$("side-search").focus();
+			$("side-search").select();
+		} else if (ev.key === ",") {
+			ev.preventDefault();
+			openSettings();
+		}
+	});
+	// Files dropped on the window go with the next message, and ones dropped
+	// on the Phone panel go to the phone.
+	addEventListener("dragover", (ev) => {
+		if (!holdingFiles(ev)) return;
+		ev.preventDefault();
+		root.classList.add("dropping");
+		for (const z of hub.querySelectorAll("[data-drop]"))
+			z.classList.toggle("over", z === dropZone(ev));
+	});
+	const done = () => {
+		root.classList.remove("dropping");
+		for (const z of hub.querySelectorAll("[data-drop]")) z.classList.remove("over");
+	};
+	addEventListener("dragleave", (ev) => {
+		if (!ev.relatedTarget) done();
+	});
+	addEventListener("drop", (ev) => {
+		if (!holdingFiles(ev)) return;
+		ev.preventDefault();
+		const files = [...ev.dataTransfer.files];
+		const toPhone = Boolean(dropZone(ev));
+		done();
+		if (toPhone) sendToPhone(files);
+		else if (files.length > 0) attachFrom(() => lab.upload(files));
+	});
+}
+// A picture pasted into the message box is attached, where the bridge can upload.
+text.addEventListener("paste", (ev) => {
+	const files = [...(ev.clipboardData?.files || [])];
+	if (!(lab.upload && files.length > 0)) return;
+	ev.preventDefault();
+	attachFrom(() => lab.upload(files));
+});
 
 // Events
 
@@ -3035,6 +3367,7 @@ function clickSettings(d) {
 	if (d.setkey) pickSetting(d.setkey, d.setval);
 	else if (d.setopen) guard("a setting", () => Settings[Number(d.setopen)].open());
 	else if (d.model) pickModel(d.model);
+	else if (d.effort !== undefined) pickEffort(d.effort);
 	else if (d.modelother !== undefined) pickOtherModel();
 	else if (d.updatecheck !== undefined) askUpdate("check");
 	else if (d.updateinstall !== undefined) askUpdate("install");
@@ -3098,6 +3431,7 @@ document.addEventListener("click", (ev) => {
 	}
 	if (
 		clickTurn(d) ||
+		clickDesk(d) ||
 		clickMenu(d) ||
 		clickSchedules(d) ||
 		clickMessage(d, b) ||
@@ -3141,9 +3475,24 @@ $("chips").addEventListener("contextmenu", (ev) => {
 });
 
 $("scrim").addEventListener("click", closeSheet);
+// A tap outside the open menu only closes it, as a Material menu does, so the
+// half-covered shortcut chip under it can't send a message by accident.
+let swallowUntil = 0;
 document.addEventListener("pointerdown", (ev) => {
-	if (!($("attach-menu").hidden || ev.target.closest(".attach-wrap"))) menu(false);
+	if ($("attach-menu").hidden || ev.target.closest(".attach-wrap")) return;
+	menu(false);
+	swallowUntil = ev.timeStamp + 800;
 });
+document.addEventListener(
+	"click",
+	(ev) => {
+		if (ev.timeStamp > swallowUntil) return;
+		swallowUntil = 0;
+		ev.preventDefault();
+		ev.stopPropagation();
+	},
+	true,
+);
 $("search").addEventListener("input", () => {
 	clearTimeout(typeTimer);
 	typeTimer = setTimeout(drawResults, 120);
@@ -3244,6 +3593,17 @@ lab.subscribe((e) =>
 booted = true;
 applySettings();
 refreshSchedules();
+// The saved list names the default model without starting the agent.
+(async () => {
+	try {
+		modelList ??= await call("GET", "/models?saved=1");
+	} catch {
+		// The chip says Default until the Model sheet asks again.
+		return;
+	}
+	drawChips();
+	drawGlance();
+})();
 setInterval(refreshSchedules, 10 * 60_000);
 threadH = thread.clientHeight;
 measure();
@@ -3252,6 +3612,7 @@ drawChips();
 drawGlance();
 drawNow();
 drawLink(link.state);
+if (desk) startDesk();
 drawSide();
 drawPending();
 growText();

@@ -8,7 +8,7 @@ This folder is the workspace for The Lab. Messages typed into The Lab on the own
 
 - `app/` is the app's interface, a plain web page (HTML, CSS and JavaScript). The phone shows it, and so does The Lab's window on this computer, so whatever you save here reaches both within a couple of seconds.
 - `DESIGN.md` is the design system for `app/`. Read it before changing anything there.
-- `settings.json` holds his settings for the app: the widgets in the top bar (`topBar`, a list of `{ id, size }`), the theme, text size, which model you run on (`model`, or `null` for the default), how hard you think (`effort`, `low`, `high` or `null` for normal), how long your replies run (`replies`, `short`, `normal` or `long`), whether the status card in his notifications comes back after he swipes it away (`statusCard`, `tasks` for each new task, `always` or `never`) and the rest. The server applies `effort` and `replies` on your next turn. The Settings sheet on the phone writes it, and a change you make here reaches the phone within a second.
+- `settings.json` holds his settings for the app: the widgets in the top bar (`topBar`, a list of `{ id, size }`), the theme, text size, which model you run on (`model`, or `null` for the default), how hard you think (`effort`, one of the levels your provider lists for the model, like Claude's `low` to `max` or Codex's `low` to `ultra`, or `null` for the default, which is `high` on Claude and the model's own on Codex), how long your replies run (`replies`, `short`, `normal` or `long`), whether the status card in his notifications comes back after he swipes it away (`statusCard`, `tasks` for each new task, `always` or `never`) and the rest. The server applies `effort` and `replies` on your next turn. The Settings sheet on the phone writes it, and a change you make here reaches the phone within a second.
 - `shortcuts.json` holds the one-tap shortcuts shown in the app, as a list of `{ "id", "label", "text" }`. When he asks for a shortcut, add it here and it shows up on the phone within a second. Keep labels to a few words.
 - `schedules.json` holds messages the server sends you on a timer. See Schedules below.
 - `memory.md` is your notes, loaded at the start of every conversation. See Memory below.
@@ -114,6 +114,11 @@ The page talks to the phone and the server only through `window.lab`, which is t
 | `lab.onBack(fn)` | Set it only while something is open that back should close, and pass `null` once it's closed, so back can leave the app with the system's own animation. |
 | `lab.ready()` | Tells the phone the page has drawn. |
 | `lab.platform` | `'android'` on the phone, `'desktop'` in The Lab's window on this computer, `'web'` in a browser. |
+| `lab.os` | `'windows'` or `'mac'` in The Lab's window, empty elsewhere. |
+| `lab.window` | The window's own title bar buttons, `minimize()`, `maximize()` (which also restores) and `close()`, plus `drag()` for a Mac, whose WebKit has no `app-region`, and `tint(hex)`, the title bar's colour. `null` anywhere but The Lab's window. |
+| `lab.reveal(url)` | Shows a file from a `file` event or an attachment in File Explorer or the Finder. It never opens or runs the file. Desktop only. |
+| `lab.upload(files)` | Uploads `File` objects (dropped or pasted) and resolves to attachments to send with `lab.send`. Not on the phone. |
+| `lab.toPhone(files)` | Sends `File` objects to the phone as `file` events with `fromComputer`, which notify it even while he's at the computer. Not on the phone. |
 
 The routes for `lab.call` are these.
 
@@ -145,7 +150,7 @@ The events are saved in history and replayed to `subscribe` when the page loads.
 | `memory` | `added`, `removed`, the lines that changed in `memory.md`. |
 | `done` | `ok`, `stopped`, `ms`, `error`, and `upto`, the `id` of the last `you` event this run answered. The end of a turn. A message sent mid-task usually joins the running turn, so give this `done` to every turn since the last one up to `upto` (all of them when `upto` is missing), and leave any later turn running. |
 | `notice` | `text`, and maybe `action` (`label`, `send`), a button that sends `send` as a message. The welcome card before his first message has `first`, `title` and `points`, a list of `{ icon, text }`, with `text` as a plain version for a design that doesn't draw points. |
-| `file` | `name`, `url`, `size`, `caption`. |
+| `file` | `name`, `url`, `size`, `caption`, and `fromComputer` when he sent it to the phone from the computer's window. |
 
 Every saved event also has `id` and `at` (an ISO time). These events are live only and are never replayed.
 
@@ -169,6 +174,8 @@ Every saved event also has `id` and `at` (an ISO time). These events are live on
 | `openFailed` | `url`. Nothing on the phone could open it. |
 | `answerFailed` | `ref`. An Allow or Deny never reached the computer, so the question is still open. |
 | `stopFailed` | A Stop never reached the computer, so it is still working. |
+| `phone` | `online` (The Lab on a phone is connected now), `seen` (when one last was, ISO, or `null` if none ever has) and `relay` (`connected`, `off` or how it's failing). On connect and on every change. |
+| `window` | `maximized`, `active`. The Lab's window on the computer, whenever it's maximized, restored, focused or left. |
 
 ## Files
 

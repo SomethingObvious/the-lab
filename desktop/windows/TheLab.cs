@@ -59,6 +59,20 @@ class Shell : Form
 {
 	[DllImport("user32.dll")]
 	static extern uint GetDpiForSystem();
+	[DllImport("user32.dll")]
+	static extern uint GetDpiForWindow(IntPtr hwnd);
+	[DllImport("user32.dll")]
+	static extern int GetSystemMetricsForDpi(int index, uint dpi);
+	[DllImport("user32.dll")]
+	static extern bool IsZoomed(IntPtr hwnd);
+	[DllImport("user32.dll")]
+	static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
+
+	[StructLayout(LayoutKind.Sequential)]
+	struct RECT
+	{
+		public int Left, Top, Right, Bottom;
+	}
 
 	public static bool Again;
 	readonly WebView2 web = new WebView2();
@@ -69,6 +83,7 @@ class Shell : Form
 	bool offline;
 
 	readonly string check;
+	readonly int strip;
 
 	public Shell(EventWaitHandle show, string check)
 	{
@@ -81,7 +96,12 @@ class Shell : Form
 		// would say 96, as WinForms doesn't know the process is DPI aware.
 		var k = GetDpiForSystem() / 96f;
 		MinimumSize = new Size((int)(360 * k), (int)(480 * k));
-		Size = new Size((int)(960 * k), (int)(700 * k));
+		var work = Screen.PrimaryScreen.WorkingArea;
+		Size = new Size(Math.Min((int)(1280 * k), work.Width), Math.Min((int)(820 * k), work.Height));
+		// The page draws its own title bar, so the system's is taken away in
+		// WndProc. This strip above the page is the top edge to resize from.
+		strip = Math.Max(1, (int)Math.Round(4 * k));
+		Padding = new Padding(0, strip, 0, 0);
 		StartPosition = FormStartPosition.CenterScreen;
 		BackColor = Dark() ? Color.FromArgb(0x10, 0x0c, 0x1e) : Color.FromArgb(0xf5, 0xf1, 0xff);
 		web.DefaultBackgroundColor = BackColor;
@@ -93,7 +113,13 @@ class Shell : Form
 		Load += (s, e) => Start();
 		if (check == null)
 			FormClosing += (s, e) => Save();
-		Resize += (s, e) => Slim();
+		Resize += (s, e) =>
+		{
+			Slim();
+			Tell();
+		};
+		Activated += (s, e) => Tell();
+		Deactivate += (s, e) => Tell();
 		if (check != null)
 		{
 			ShowInTaskbar = false;
@@ -148,7 +174,16 @@ class Shell : Form
 		core.Settings.IsStatusBarEnabled = false;
 		core.Settings.IsPasswordAutosaveEnabled = false;
 		core.Settings.IsGeneralAutofillEnabled = false;
-		await core.AddScriptToExecuteOnDocumentCreatedAsync("globalThis.labShell = 'desktop';");
+		// Parts of the page marked app-region: drag move the window, the way a
+		// title bar does, with snapping and double-click to maximize.
+		core.Settings.IsNonClientRegionSupportEnabled = true;
+		await core.AddScriptToExecuteOnDocumentCreatedAsync(
+			"globalThis.labShell = 'desktop'; globalThis.labOs = 'windows';");
+		core.WebMessageReceived += (s, e) =>
+		{
+			if (Ours(e.Source))
+				Heard(e.WebMessageAsJson);
+		};
 		// Its own pages (a photo, the pairing code) open in a WebView2 window
 		// that shares the sign-in. Anything else goes to the browser.
 		core.NewWindowRequested += (s, e) =>
@@ -171,6 +206,7 @@ class Shell : Form
 				Down();
 			else if (check != null && Ours(core.Source) && !core.Source.Contains("/pair"))
 				Report();
+			Tell();
 		};
 		core.ProcessFailed += (s, e) =>
 		{
@@ -271,6 +307,79 @@ class Shell : Form
 				// The window closed while it was asking.
 			}
 		});
+	}
+
+	// What the page's title bar asks for. The page is only ever The Lab's own,
+	// but the agent can change it, so a reveal only shows a file it sent or
+	// got, and never opens or runs anything.
+	void Heard(string json)
+	{
+		var w = Regex.Match(json, @"""window""\s*:\s*""(\w+)""").Groups[1].Value;
+		if (w == "minimize")
+			WindowState = FormWindowState.Minimized;
+		else if (w == "maximize")
+			WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+		else if (w == "close")
+			Close();
+		var bar = Regex.Match(json, @"""bar""\s*:\s*""(#[0-9a-fA-F]{6})""").Groups[1].Value;
+		if (bar.Length > 0)
+			BackColor = ColorTranslator.FromHtml(bar);
+		var reveal = Regex.Match(json, @"""reveal""\s*:\s*""/files/([^""/\\]+)""").Groups[1].Value;
+		if (reveal.Length > 0)
+		{
+			var name = Uri.UnescapeDataString(reveal);
+			var file = Path.Combine(lab, "files", name);
+			if (name.IndexOfAny(new[] { '/', '\\', ':', '"' }) < 0 && !name.StartsWith(".") && File.Exists(file))
+				Process.Start("explorer.exe", "/select,\"" + file + "\"");
+		}
+	}
+
+	// Tells the page whether the window is maximized and in front, so its
+	// buttons and title bar can match.
+	void Tell()
+	{
+		if (web.CoreWebView2 == null)
+			return;
+		web.CoreWebView2.PostWebMessageAsJson(
+			"{\"kind\":\"window\",\"maximized\":" + (WindowState == FormWindowState.Maximized ? "true" : "false")
+			+ ",\"active\":" + (ActiveForm == this ? "true" : "false") + "}");
+		var top = WindowState == FormWindowState.Normal ? strip : 0;
+		if (Padding.Top != top)
+			Padding = new Padding(0, top, 0, 0);
+	}
+
+	protected override void OnHandleCreated(EventArgs e)
+	{
+		base.OnHandleCreated(e);
+		// SWP_FRAMECHANGED, so WM_NCCALCSIZE runs again with the frame taken away.
+		SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004);
+	}
+
+	protected override void WndProc(ref Message m)
+	{
+		const int WM_NCCALCSIZE = 0x0083, WM_NCHITTEST = 0x0084;
+		if (m.Msg == WM_NCCALCSIZE && m.WParam != IntPtr.Zero)
+		{
+			// Windows keeps the side and bottom edges, which are invisible and
+			// resize the window, and the top goes back to where the frame began.
+			var r = (RECT)Marshal.PtrToStructure(m.LParam, typeof(RECT));
+			var top = r.Top;
+			base.WndProc(ref m);
+			r = (RECT)Marshal.PtrToStructure(m.LParam, typeof(RECT));
+			// A maximized window hangs over the screen's edges by its frame.
+			var dpi = GetDpiForWindow(Handle);
+			r.Top = top + (IsZoomed(Handle) ? GetSystemMetricsForDpi(33, dpi) + GetSystemMetricsForDpi(92, dpi) : 0);
+			Marshal.StructureToPtr(r, m.LParam, false);
+			m.Result = IntPtr.Zero;
+			return;
+		}
+		base.WndProc(ref m);
+		if (m.Msg == WM_NCHITTEST && m.Result == (IntPtr)1 && !IsZoomed(Handle))
+		{
+			var at = PointToClient(new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16))));
+			if (at.Y < strip)
+				m.Result = (IntPtr)(at.X < strip * 4 ? 13 : at.X >= ClientSize.Width - strip * 4 ? 14 : 12);
+		}
 	}
 
 	// A minimized window gives memory back. The page keeps its connection.

@@ -39,6 +39,12 @@
     <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 4 2.4 5 5.4.6-4 3.7 1.1 5.3L12 16l-4.9 2.6 1.1-5.3-4-3.7 5.4-.6z"/></symbol>
     <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 9.5a13 13 0 0 1 18 0M6 13a8.5 8.5 0 0 1 12 0M9 16.5a4 4 0 0 1 6 0"/><circle cx="12" cy="19.5" r=".8" fill="currentColor"/></symbol>
     <symbol id="i-more" viewBox="0 0 24 24"><circle cx="12" cy="5.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="18.5" r="1.6" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-min" viewBox="0 0 24 24"><path d="M6.5 12h11"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><rect x="6.5" y="9" width="8.5" height="8.5" rx="1.5"/><path d="M9.5 6.5h6.5a1.5 1.5 0 0 1 1.5 1.5v6.5"/></symbol>
+    <symbol id="i-wclose" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10.5 18h3"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6.5v5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9v-5l-7-3z"/><path d="M12 8v4.5M12 15.5v.5"/></symbol>
   </defs>
 </svg>
@@ -50,6 +56,9 @@
       <button type="button" class="icon-btn on-head" id="open-search" aria-label="Search">
         <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
       </button>
+      <button type="button" class="icon-btn on-head" id="open-hub" data-hubtoggle aria-label="This Computer and the Phone" aria-expanded="false" aria-controls="hub" hidden>
+        <svg class="ic" aria-hidden="true"><use href="#i-phone"/></svg>
+      </button>
       <button type="button" class="icon-btn on-head" id="open-files" aria-label="Files and Photos">
         <svg class="ic" aria-hidden="true"><use href="#i-files"/></svg>
       </button>
@@ -59,8 +68,13 @@
       <button type="button" class="icon-btn on-head" id="open-menu" aria-label="More: Settings, Memory, Schedules and Setup">
         <svg class="ic" aria-hidden="true"><use href="#i-more"/></svg>
       </button>
+      <div class="win-btns" id="win-btns" hidden>
+        <button type="button" class="win-btn" data-win="minimize" aria-label="Minimize" title="Minimize"><svg class="ic" aria-hidden="true"><use href="#i-min"/></svg></button>
+        <button type="button" class="win-btn" id="win-max" data-win="maximize" aria-label="Maximize" title="Maximize"><svg class="ic" aria-hidden="true"><use href="#i-max"/></svg></button>
+        <button type="button" class="win-btn close" data-win="close" aria-label="Close" title="Close"><svg class="ic" aria-hidden="true"><use href="#i-wclose"/></svg></button>
+      </div>
     </div>
-    <search class="head-row search-row" id="search-row" hidden><form>
+    <search class="head-row search-row" id="search-row" hidden><h1 class="sr">Search The Lab</h1><form>
       <button type="button" class="icon-btn on-head" id="close-search" aria-label="Close Search">
         <svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>
       </button>
@@ -114,6 +128,8 @@
       </span>
     </div>
   </main>
+
+  <aside class="hub" id="hub" aria-label="This Computer and the Phone" hidden></aside>
 
   <footer class="composer" id="composer">
    <div class="tray">

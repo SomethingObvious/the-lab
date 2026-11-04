@@ -48,6 +48,37 @@
 			body: JSON.stringify(body ?? {}),
 		});
 	}
+	// Sends each file to `path` in turn and returns what the server made of them.
+	async function upload(path, files) {
+		const out = [];
+		try {
+			for (const f of files) {
+				const r = await fetch(`${path}?name=${encodeURIComponent(f.name)}`, {
+					method: "POST",
+					headers: { "content-type": f.type || "application/octet-stream" },
+					body: f,
+				});
+				if (!r.ok)
+					throw new Error(
+						(await r.json().catch(() => ({}))).error || `Couldn't upload ${f.name}.`,
+					);
+				out.push(await r.json());
+			}
+		} catch (e) {
+			throw e instanceof Error && e.message !== "Failed to fetch"
+				? e
+				: new Error("Couldn't reach the server, so nothing was sent.");
+		}
+		return out;
+	}
+
+	// The Lab's own window passes messages to its native side: WebView2 on
+	// Windows, WebKit on a Mac. A browser tab has neither.
+	const webview = globalThis.chrome?.webview;
+	const webkit = globalThis.webkit?.messageHandlers?.lab;
+	const host = (m) => (webview ?? webkit)?.postMessage(m);
+	webview?.addEventListener("message", (e) => emit(e.data));
+	globalThis.labHost = (e) => emit(e);
 
 	const connect = () => {
 		const es = new EventSource(lastId === null ? "/events" : `/events?after=${lastId}`);
@@ -113,6 +144,26 @@
 	globalThis.lab = {
 		// The Lab's own window on Windows and macOS says so before the page runs.
 		platform: globalThis.labShell === "desktop" ? "desktop" : "web",
+		os: globalThis.labShell === "desktop" ? globalThis.labOs || "" : "",
+		// Only the desktop window has these. It sends a "window" event whenever
+		// it's maximized, restored, focused or left.
+		window:
+			globalThis.labShell === "desktop"
+				? {
+						minimize: () => host({ window: "minimize" }),
+						maximize: () => host({ window: "maximize" }),
+						close: () => host({ window: "close" }),
+						// WebView2 moves the window from app-region: drag by itself, and a
+						// Mac's WebKit has no such thing, so the page asks on a press.
+						drag: () => host({ window: "drag" }),
+						// The title bar's colour, for the strip Windows resizes from.
+						tint: (color) => host({ bar: color }),
+					}
+				: null,
+		// Shows a file the phone or the agent sent in Explorer or the Finder.
+		reveal: (url) => host({ reveal: url }),
+		upload: (files) => upload("/upload", files),
+		toPhone: (files) => upload("/to-phone", files),
 		subscribe(fn) {
 			listeners.add(fn);
 			fn(link);
@@ -174,40 +225,16 @@
 				() => false,
 			),
 		attach(kind) {
-			return new Promise((done, fail) => {
+			return new Promise((done) => {
 				const input = Object.assign(document.createElement("input"), {
 					type: "file",
 					multiple: true,
 					accept: kind === "photos" ? "image/*" : "",
 				});
-				input.addEventListener("change", async () => {
-					try {
-						const out = [];
-						for (const f of input.files) {
-							const r = await fetch(`/upload?name=${encodeURIComponent(f.name)}`, {
-								method: "POST",
-								headers: { "content-type": f.type || "application/octet-stream" },
-								body: f,
-							});
-							if (!r.ok)
-								throw new Error(
-									(await r.json().catch(() => ({}))).error ||
-										`Couldn't upload ${f.name}.`,
-								);
-							out.push(await r.json());
-						}
-						done(out);
-					} catch (e) {
-						fail(
-							e instanceof Error && e.message !== "Failed to fetch"
-								? e
-								: new Error("Couldn't reach the server, so nothing was attached."),
-						);
-					}
-				});
+				input.addEventListener("change", () => done(input.files));
 				input.addEventListener("cancel", () => done([]));
 				input.click();
-			});
+			}).then((files) => upload("/upload", files));
 		},
 		fileUrl: (url) => url,
 		open: (url) => window.open(url, "_blank", "noopener"),

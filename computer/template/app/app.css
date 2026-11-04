@@ -72,6 +72,8 @@
 	--loader-bg: light-dark(rgb(255 255 255 / 0.12), rgb(29 20 64 / 0.1));
 	--loader-fg: light-dark(#9ff0d3, #6b45f0);
 	--track: rgb(0 56 42 / 0.18);
+	--meter-track: rgb(0 0 0 / 0.14);
+	--meter-track-deep: rgb(255 255 255 / 0.2);
 	--track-off: rgb(38 16 110 / 0.16);
 	--scrim: rgb(16 8 40 / 0.5);
 	--shade: light-dark(rgb(20 8 60), rgb(0 0 0));
@@ -474,7 +476,7 @@ input[type="search"]::-webkit-search-cancel-button {
 	height: 6px;
 	margin-top: 5px;
 	border-radius: var(--r-bar);
-	background: rgb(0 0 0 / 0.14);
+	background: var(--meter-track);
 	overflow: hidden;
 }
 .t-meter i {
@@ -504,7 +506,7 @@ input[type="search"]::-webkit-search-cancel-button {
 	--on-tile: var(--on-head);
 }
 .tone-deep .t-meter {
-	background: rgb(255 255 255 / 0.2);
+	background: var(--meter-track-deep);
 }
 .tone-off {
 	--tile: var(--off-c);
@@ -801,6 +803,15 @@ input[type="search"]::-webkit-search-cancel-button {
 .you.queued .bubble {
 	background: var(--surface-2);
 	color: var(--dim);
+}
+/* The computer started this one, so it isn't drawn as his. */
+.you.auto .bubble {
+	margin: 0;
+	background: var(--surface-1);
+	color: var(--ink);
+}
+.you.auto .bubble:active {
+	transform: none;
 }
 .you .meta {
 	color: var(--faint);
@@ -3399,11 +3410,11 @@ textarea::placeholder {
 	color: var(--ink);
 	text-align: left;
 }
-.model-list li:first-child .model-row {
+.model-row:first-child {
 	border-top-left-radius: var(--r-pill-48);
 	border-top-right-radius: var(--r-pill-48);
 }
-.model-list li:last-child .model-row {
+.model-row:last-child {
 	border-bottom-left-radius: var(--r-pill-48);
 	border-bottom-right-radius: var(--r-pill-48);
 }
@@ -3594,6 +3605,7 @@ textarea::placeholder {
 	.att,
 	.menu,
 	.sheet,
+	.hub,
 	.toast {
 		animation: fade 0.2s var(--ease) !important;
 	}
@@ -3614,5 +3626,576 @@ textarea::placeholder {
 	}
 	.flash {
 		animation: flash 1.6s steps(1, end) !important;
+	}
+}
+
+/* The Lab's own window on the computer. It draws its own title bar in place
+   of the system one, sits flatter and denser than the phone, and has a panel
+   on the right for the computer and the phone. Only data-shell="desktop"
+   gets any of this, so the phone and a browser tab look as they did. */
+:root[data-shell="desktop"] {
+	/* The phone's springy motion is for touch. A mouse gets plain ease-out. */
+	--spring: var(--ease);
+	--head-hover: color-mix(in srgb, var(--on-head) 14%, transparent);
+	--head-press: color-mix(in srgb, var(--on-head) 24%, transparent);
+	/* The red Windows itself uses behind a hovered close button. */
+	--win-close: #c42b1c;
+	--on-win-close: #ffffff;
+	--r-block: 0px;
+	--r-card: 16px;
+	--r-pill-40: 12px;
+	--r-pill-48: 14px;
+	--r-field: 12px;
+	--hair: color-mix(in srgb, var(--ink) 9%, transparent);
+	--hover: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+[data-shell="desktop"] .app {
+	padding-inline: 0;
+}
+[data-shell="desktop"] .head {
+	app-region: drag;
+	margin-inline: 0;
+	padding: 0 0 0 18px;
+	border-radius: 0;
+	box-shadow: 0 1px 0 var(--head-deep);
+}
+[data-shell="desktop"][data-os="mac"] .head {
+	padding-left: 84px;
+}
+[data-shell="desktop"] #head .head-row {
+	min-height: 46px;
+	gap: 0;
+}
+[data-shell="desktop"] #head .title-wrap {
+	flex-direction: row;
+	align-items: baseline;
+	gap: 12px;
+}
+[data-shell="desktop"] #head .title {
+	font-size: calc(19px * var(--ts, 1));
+	letter-spacing: -0.01em;
+}
+[data-shell="desktop"] #head .head-sub {
+	font-size: var(--fs-label-m);
+}
+[data-shell="desktop"] :is(.glance, .glance-more, #fold-head, #open-search) {
+	display: none;
+}
+[data-shell="desktop"] #head .icon-btn {
+	app-region: no-drag;
+	width: 40px;
+	height: 40px;
+	border-radius: 10px;
+}
+[data-shell="desktop"] #head .icon-btn:hover {
+	background: var(--head-hover);
+}
+#win-btns {
+	app-region: no-drag;
+	display: flex;
+	align-self: stretch;
+	margin-left: 6px;
+}
+#win-btns[hidden] {
+	display: none;
+}
+#win-btns .win-btn {
+	width: 46px;
+	border: 0;
+	background: none;
+	color: var(--on-head);
+	display: grid;
+	place-items: center;
+	transition: background-color 0.12s var(--ease);
+}
+#win-btns .win-btn .ic {
+	width: 16px;
+	height: 16px;
+	stroke-width: 1.4;
+}
+#win-btns .win-btn:hover {
+	background: var(--head-hover);
+}
+#win-btns .win-btn:active {
+	background: var(--head-press);
+}
+#win-btns .win-btn.close:hover,
+#win-btns .win-btn.close:focus-visible {
+	background: var(--win-close);
+	color: var(--on-win-close);
+}
+#win-btns .win-btn:focus-visible {
+	outline: 2px solid var(--on-head);
+	outline-offset: -4px;
+}
+[data-shell="desktop"].win-off .head {
+	background: var(--head-deep);
+}
+[data-shell="desktop"].win-off :is(.title-wrap, #win-btns .win-btn) {
+	opacity: 0.72;
+}
+
+/* Three panes: requests, the conversation, then the computer and phone. */
+@media (min-width: 720px) {
+	[data-shell="desktop"] .app {
+		grid-template-columns: 272px minmax(0, 1fr);
+	}
+	[data-shell="desktop"] .head {
+		display: block;
+		padding-right: 0;
+		padding-bottom: 0;
+	}
+	[data-shell="desktop"] .side {
+		background: var(--surface);
+		border-right: 1px solid var(--hair);
+	}
+	[data-shell="desktop"] .side-search {
+		margin: 12px 12px 6px;
+		padding: 0 12px;
+		min-height: 40px;
+		border-radius: 10px;
+		gap: 8px;
+	}
+	[data-shell="desktop"] .side-search .ic {
+		width: 18px;
+		height: 18px;
+	}
+	[data-shell="desktop"] .side-search input {
+		font-size: var(--fs-body-m);
+	}
+	[data-shell="desktop"] .side-search .kbd {
+		flex: none;
+		padding: 2px 7px;
+		border-radius: 6px;
+		background: var(--surface-2);
+		color: var(--dim);
+		font: inherit;
+		font-size: var(--fs-label-s);
+		font-weight: var(--fw-label);
+	}
+	[data-shell="desktop"] .side-search:has(input:not(:placeholder-shown)) .kbd {
+		display: none;
+	}
+	[data-shell="desktop"] .side-list {
+		padding: 2px 8px 12px;
+	}
+	[data-shell="desktop"] .req {
+		gap: 10px;
+		padding: 9px 10px 9px 8px;
+		border-radius: 10px;
+	}
+	[data-shell="desktop"] .req:hover {
+		background: var(--hover);
+	}
+	[data-shell="desktop"] .req.current {
+		border-radius: 10px;
+	}
+	[data-shell="desktop"] .req .state {
+		width: 24px;
+		height: 24px;
+	}
+	[data-shell="desktop"] .req .state .ic {
+		width: 13px;
+		height: 13px;
+	}
+	[data-shell="desktop"] .req-text {
+		font-size: var(--fs-body-m);
+		line-height: 1.35;
+	}
+	[data-shell="desktop"] .req-meta {
+		font-size: var(--fs-label-s);
+	}
+	[data-shell="desktop"] :is(.main, .banner) {
+		margin-right: 0;
+	}
+	[data-shell="desktop"] .composer {
+		padding-left: 12px;
+	}
+}
+.hub {
+	display: none;
+}
+@media (min-width: 1040px) {
+	[data-shell="desktop"] .app {
+		grid-template-columns: 272px minmax(0, 1fr) 316px;
+		grid-template-areas: "head head head" "side banner hub" "side main hub" "side composer hub";
+	}
+	[data-shell="desktop"] .composer {
+		padding-right: 12px;
+	}
+	[data-shell="desktop"] .hub:not([hidden]) {
+		grid-area: hub;
+		display: flex;
+		flex-direction: column;
+		gap: 22px;
+		min-height: 0;
+		overflow-y: auto;
+		padding: 16px 16px 24px;
+		background: var(--surface);
+		border-left: 1px solid var(--hair);
+		scrollbar-width: thin;
+	}
+}
+#hub .hub-sec h2 {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin: 0 0 10px;
+	min-height: 32px;
+	font-size: var(--fs-title-m);
+	font-weight: var(--fw-title);
+	overflow-wrap: anywhere;
+}
+#hub .hub-sec h2 .link-btn {
+	min-height: 32px;
+	padding: 0 8px;
+	margin-right: -8px;
+	font-size: var(--fs-label-m);
+	border-radius: 8px;
+	flex: none;
+}
+#hub .hub-sec h2 .link-btn:hover {
+	background: var(--hover);
+}
+#hub .hub-tiles {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 6px;
+}
+/* Calm tiles, since a wall of bright ones beside a conversation reads as a
+   phone's home screen. */
+#hub .hub-tiles .widget {
+	grid-column: auto;
+	min-height: 64px;
+	padding: 10px 12px;
+	border-radius: 12px;
+	background: var(--surface-1);
+	color: var(--ink);
+}
+#hub .hub-tiles .widget .t-meter {
+	background: var(--meter-track);
+}
+#hub .hub-tiles .widget .t-meter i {
+	background: var(--primary);
+}
+#hub .hub-tiles .widget:last-child:nth-child(odd) {
+	grid-column: 1 / -1;
+}
+#hub .hub-tiles button.widget:hover {
+	background-image: linear-gradient(var(--press), var(--press));
+}
+#hub .hub-tiles .t-value {
+	font-size: var(--fs-title-m);
+}
+#hub .hub-tiles .t-label {
+	font-size: var(--fs-label-s);
+	color: var(--dim);
+}
+#hub .hub-phone {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 12px;
+	border-radius: 12px;
+	background: var(--surface-1);
+}
+#hub .hub-phone > span:last-child {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+	font-size: var(--fs-body-m);
+}
+#hub .hub-sub {
+	color: var(--dim);
+	font-size: var(--fs-body-s);
+	line-height: 1.4;
+}
+#hub .hub-dot {
+	flex: none;
+	width: 36px;
+	height: 36px;
+	display: grid;
+	place-items: center;
+	border-radius: 10px;
+	background: var(--surface-2);
+	color: var(--dim);
+}
+#hub .hub-dot .ic {
+	width: 20px;
+	height: 20px;
+}
+#hub .hub-phone.is-on .hub-dot {
+	background: var(--mint);
+	color: var(--on-mint);
+}
+#hub .hub-phone.is-away .hub-dot {
+	background: var(--sun);
+	color: var(--on-sun);
+}
+#hub .hub-drop {
+	margin-top: 8px;
+	padding: 14px;
+	border-radius: 12px;
+	border: 1.5px dashed color-mix(in srgb, var(--primary) 45%, transparent);
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 10px;
+	transition:
+		background-color 0.15s var(--ease),
+		border-color 0.15s var(--ease);
+}
+#hub .hub-drop p {
+	margin: 0;
+	color: var(--dim);
+	font-size: var(--fs-body-s);
+}
+.dropping #hub .hub-drop {
+	border-color: var(--primary);
+}
+#hub .hub-drop.over {
+	background: var(--primary-c);
+	border-style: solid;
+}
+#hub .hub-drop.over p {
+	color: var(--on-primary-c);
+}
+#hub .hub-sec .btn {
+	min-height: 36px;
+	padding: 0 14px;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	border-radius: 10px;
+	font-size: var(--fs-label-m);
+}
+#hub .hub-sec .btn .ic {
+	width: 16px;
+	height: 16px;
+}
+#hub .hub-sec .btn.filled {
+	margin-top: 8px;
+	background: var(--primary);
+	color: var(--on-primary);
+}
+#hub .hub-sec .btn.tonal {
+	background: var(--primary-c);
+	color: var(--on-primary-c);
+}
+#hub .hub-sec .btn:hover {
+	background-image: linear-gradient(var(--press), var(--press));
+}
+#hub .hub-note,
+#hub .hub-empty {
+	margin: 8px 0 0;
+	color: var(--faint);
+	font-size: var(--fs-body-s);
+	line-height: 1.45;
+}
+#hub .hub-empty {
+	margin: 0;
+}
+#hub .hub-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+#hub .hub-list li {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+#hub .hub-row {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 6px 8px;
+	border: 0;
+	border-radius: 10px;
+	background: none;
+	color: var(--ink);
+	text-align: left;
+}
+#hub .hub-row:hover,
+#hub .hub-list .icon-btn:hover {
+	background: var(--hover);
+}
+#hub .hub-row > img,
+#hub .hub-row > .fi {
+	flex: none;
+	width: 40px;
+	height: 40px;
+	border-radius: 8px;
+	object-fit: cover;
+}
+#hub .hub-row > .fi {
+	display: grid;
+	place-items: center;
+	background: var(--pink);
+	color: var(--on-pink);
+}
+#hub .hub-row > .fi-sun {
+	background: var(--sun);
+	color: var(--on-sun);
+}
+#hub .hub-row > span {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+#hub .hub-row b {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--fs-body-m);
+	font-weight: var(--fw-medium);
+}
+#hub .hub-row .hub-sub {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--faint);
+	font-size: var(--fs-label-s);
+	font-variant-numeric: tabular-nums;
+}
+#hub .hub-list .icon-btn {
+	flex: none;
+	width: 36px;
+	height: 36px;
+	border-radius: 10px;
+	color: var(--dim);
+}
+#hub .hub-list .icon-btn .ic {
+	width: 18px;
+	height: 18px;
+}
+
+[data-shell="desktop"] #head .icon-btn .ic {
+	width: 20px;
+	height: 20px;
+}
+
+/* A desktop-sized composer, conversation and dialogs. The phone's sizes are
+   for a thumb, and at a desk they made the window look like a phone app
+   stretched wide. */
+[data-shell="desktop"] #composer .tray {
+	padding: 6px;
+	border-radius: 14px;
+	box-shadow: inset 0 0 0 1px var(--hair);
+}
+[data-shell="desktop"] #composer .chips {
+	gap: 6px;
+	margin: -6px -6px 0;
+	padding: 6px 36px 6px 6px;
+}
+[data-shell="desktop"] #composer .chip {
+	min-height: 32px;
+	padding: 2px 12px;
+	border-radius: 8px;
+	font-size: var(--fs-label-m);
+}
+[data-shell="desktop"] #composer .chip.model {
+	padding-inline: 10px 12px;
+}
+[data-shell="desktop"] #composer .chip .ic {
+	width: 16px;
+	height: 16px;
+}
+[data-shell="desktop"] #composer .chip:hover {
+	background-image: linear-gradient(var(--press), var(--press));
+}
+[data-shell="desktop"] #composer .round {
+	width: 40px;
+	height: 40px;
+	border-radius: 10px;
+}
+[data-shell="desktop"] #composer #text {
+	min-height: 40px;
+	padding: 9px 12px;
+	border-radius: 10px;
+	font-size: calc(15px * var(--ts, 1));
+}
+[data-shell="desktop"] #composer .send {
+	width: 44px;
+	height: 44px;
+	margin: -2px 0;
+}
+[data-shell="desktop"] #composer .send .ic {
+	width: 20px;
+	height: 20px;
+}
+[data-shell="desktop"] #thread .bubble {
+	min-height: 40px;
+	padding: 9px 14px;
+	font-size: calc(15px * var(--ts, 1));
+}
+[data-shell="desktop"] #thread .reply {
+	padding: 12px 16px;
+	font-size: calc(15px * var(--ts, 1));
+}
+[data-shell="desktop"] #sheet {
+	inset: 0;
+	width: min(560px, calc(100% - 48px));
+	max-width: none;
+	height: fit-content;
+	max-height: calc(100% - 96px);
+	margin: auto;
+	padding: 20px 24px;
+	border-radius: var(--r-card);
+	box-shadow: 0 24px 60px -12px color-mix(in srgb, var(--shade) 55%, transparent);
+	animation: pop 0.18s var(--ease);
+}
+[data-shell="desktop"] #handle {
+	display: none;
+}
+@keyframes pop {
+	from {
+		opacity: 0;
+		transform: translateY(8px) scale(0.98);
+	}
+}
+#head #open-hub[hidden] {
+	display: none;
+}
+@media (min-width: 1040px) {
+	#head #open-hub {
+		display: none;
+	}
+}
+@media (max-width: 1039px) {
+	[data-shell="desktop"].hub-open .hub:not([hidden]) {
+		position: fixed;
+		z-index: 9;
+		top: 46px;
+		right: 0;
+		bottom: 0;
+		width: min(316px, 100%);
+		display: flex;
+		flex-direction: column;
+		gap: 22px;
+		overflow-y: auto;
+		padding: 16px 16px 24px;
+		background: var(--surface);
+		border-left: 1px solid var(--hair);
+		box-shadow: -16px 0 40px -16px color-mix(in srgb, var(--shade) 45%, transparent);
+		scrollbar-width: thin;
+		animation: in-right 0.18s var(--ease);
+	}
+	[data-shell="desktop"].hub-open #head #open-hub {
+		background: var(--head-hover);
+	}
+}
+@keyframes in-right {
+	from {
+		opacity: 0;
+		transform: translateX(24px);
 	}
 }

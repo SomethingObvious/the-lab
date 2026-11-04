@@ -56,7 +56,14 @@ type Listener = (e: Ev | Live) => void;
 export type Live =
 	| Mac
 	| {
-			kind: "status" | "design" | "shortcuts" | "settings" | "reach" | "update";
+			kind:
+				| "status"
+				| "design"
+				| "shortcuts"
+				| "settings"
+				| "reach"
+				| "update"
+				| "phone";
 			[k: string]: unknown;
 	  };
 export interface Attached {
@@ -130,7 +137,9 @@ export class Store {
 			id: this.next++,
 			at: new Date().toISOString(),
 			...e,
-			...(LOUD.has(e.kind) && this.atMac() ? { onMac: true } : {}),
+			...(LOUD.has(e.kind) && !e["fromComputer"] && this.atMac()
+				? { onMac: true }
+				: {}),
 		} as Ev;
 		writeSync(this.fd, `${JSON.stringify(ev)}\n`);
 		if (durable) fdatasyncSync(this.fd);
@@ -180,6 +189,11 @@ export interface State {
 	open?: { text: string; at: string } | null;
 	memoryPaused?: boolean;
 	login?: string;
+	// When a phone last had The Lab connected, for the desktop's Phone panel.
+	phoneSeen?: string;
+	// The last model list, so the app can name the default model without
+	// starting the agent just to ask.
+	models?: Models;
 }
 
 class Channel implements AsyncIterable<SDKUserMessage> {
@@ -244,7 +258,9 @@ export const UNFINISHED =
 // that an Allow still means he remembers what it was for.
 export const ASK_MS = 5 * 60_000;
 // What the engine says when the conversation it was told to reopen is gone.
-const GONE = /No conversation found with session ID/;
+// A transcript it can't load (past the CLI's size cap, say) fails the same
+// way every time, so that counts as gone too.
+const GONE = /No conversation found with session ID|Failed to resume session/;
 
 // How long a Stop waits for the engine before ending the turn itself.
 export const STOP_MS = 15_000;
@@ -304,7 +320,71 @@ const REPLIES: Record<string, string> = {
 		"He set replies to Short in Settings, so answer in a few sentences and leave out detail he didn't ask for.",
 	long: "He set replies to Detailed in Settings, so explain fully, with the steps and the reasons.",
 };
-export type Effort = "low" | "medium" | "high";
+// Every level either provider takes. Claude's are low to max, and Codex
+// lists its own for each model.
+export const EFFORTS = [
+	"none",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+	"ultra",
+] as const;
+export type Effort = (typeof EFFORTS)[number];
+const CLAUDE_EFFORTS = new Set<Effort>(["low", "medium", "high", "xhigh", "max"]);
+// High rather than Claude Code's own default, as it cost 31% less than xhigh
+// for the same work when it was measured on his Claude Code.
+const CLAUDE_DEFAULT = "high";
+const CLAUDE_EFFORT_TEXT: Record<string, string> = {
+	low: "Fastest, with the least thinking",
+	medium: "Quicker, with some thinking",
+	high: "Thinks things through, the right level for most work",
+	xhigh: "Thinks longer over hard, many-step work",
+	max: "Thinks as long as it needs, the slowest and costliest",
+};
+// The token settings from his Claude Code, which did the same month of work
+// for about a third of the cost. Compacting at 400K stops every call from
+// re-reading close to the whole 1M window, and helper requests keep their
+// cache through an idle hour. Unused skills stay usable but drop their
+// descriptions from every conversation.
+const SAVER = {
+	autoCompactWindow: 400_000,
+	subagentPromptCacheTtl: "1h",
+	skillOverrides: Object.fromEntries(
+		[
+			"anthropic-skills:pptx",
+			"anthropic-skills:xlsx",
+			"anthropic-skills:docx",
+			"anthropic-skills:google-workspace",
+			"anthropic-skills:morning",
+			"anthropic-skills:import-memory",
+			"anthropic-skills:skill-creator",
+			"anthropic-skills:computer-use",
+			"anthropic-skills:built-in-browser",
+			"anthropic-skills:chrome-browser",
+			"keybindings-help",
+			"fewer-permission-prompts",
+		].map((k) => [k, "name-only" as const]),
+	),
+} as const;
+export interface ModelChoice {
+	id: string;
+	name: string;
+	description: string;
+	efforts: { id: string; description: string }[];
+	defaultEffort: string | null;
+}
+export interface Models {
+	engine: string;
+	// What the provider calls it, Effort for Claude and Reasoning Effort for Codex.
+	term: string;
+	chosen: string | null;
+	inUse: string | null;
+	defaultName: string | null;
+	choices: ModelChoice[];
+}
 export interface LabOptions {
 	home: string;
 	dir: string;
@@ -512,12 +592,20 @@ export class Lab {
 		this.store.live({ kind: "status", ...this.status });
 	}
 
-	// `scheduled` is the schedules.json entry that sent it.
+	// `scheduled` is the schedules.json entry that sent it, or a turn the
+	// server started itself (`auto`), which shows him `shown` instead of the
+	// instructions the agent gets.
 	send(
 		text: string,
 		cid: string,
 		files: Attached[] = [],
-		scheduled?: { label: string; quiet?: boolean; about?: string },
+		scheduled?: {
+			label: string;
+			quiet?: boolean;
+			about?: string;
+			auto?: boolean;
+			shown?: string;
+		},
 	): boolean {
 		if (this.seen.has(cid)) return false;
 		this.seen.add(cid);
@@ -528,16 +616,17 @@ export class Lab {
 		const you = this.store.add(
 			{
 				kind: "you",
-				text,
+				text: scheduled?.shown ?? text,
 				cid,
 				...(files.length > 0 ? { files } : {}),
 				...(scheduled ? { scheduled: scheduled.label } : {}),
+				...(scheduled?.auto ? { auto: true } : {}),
 			},
 			true,
 		);
 		this.youIds.set(cid, you.id);
 		this.state.open = {
-			text: text || files.map((f) => f.name).join(", "),
+			text: scheduled?.shown ?? (text || files.map((f) => f.name).join(", ")),
 			at: new Date().toISOString(),
 		};
 		this.save();
@@ -866,13 +955,9 @@ export class Lab {
 	// ---------- models ----------
 
 	// What the engine's provider offers right now, whichever provider that is.
-	async models(): Promise<{
-		engine: string;
-		chosen: string | null;
-		inUse: string | null;
-		choices: { id: string; name: string; description: string }[];
-	}> {
-		let choices: { id: string; name: string; description: string }[];
+	async models(): Promise<Models> {
+		let choices: ModelChoice[];
+		let defaultName: string | null = null;
 		if (this.opts.engine === "codex") {
 			this.codex ??= new Codex(
 				this,
@@ -880,7 +965,9 @@ export class Lab {
 				PROMPT(this.trashCmd),
 				this.opts.model,
 			);
-			choices = await this.codex.models();
+			const listed = await this.codex.models();
+			choices = listed.choices;
+			defaultName = listed.defaultName;
 		} else {
 			const { q } = this.ensureRunning();
 			const got = await Promise.race([
@@ -892,18 +979,41 @@ export class Lab {
 					),
 				),
 			]);
-			choices = got.map((m) => ({
-				id: m.value,
-				name: m.displayName,
-				description: m.description,
-			}));
+			choices = got.map((m) => {
+				const efforts = m.supportsEffort ? (m.supportedEffortLevels ?? []) : [];
+				return {
+					id: m.value,
+					name: m.displayName,
+					description: m.description,
+					efforts: efforts.map((id) => ({
+						id,
+						description: CLAUDE_EFFORT_TEXT[id] ?? "",
+					})),
+					defaultEffort: efforts.length > 0 ? CLAUDE_DEFAULT : null,
+				};
+			});
+			// The default row is called "Default (recommended)", so its real name is
+			// the row for the same model.
+			const def = got.find((m) => m.value === "default");
+			defaultName =
+				got.find(
+					(m) =>
+						m !== def && def?.resolvedModel && m.resolvedModel === def.resolvedModel,
+				)?.displayName ??
+				def?.description.split(" · ")[0] ??
+				null;
 		}
-		return {
+		const models = {
 			engine: this.opts.engine ?? "claude",
+			term: this.opts.engine === "codex" ? "Reasoning Effort" : "Effort",
 			chosen: this.opts.model ?? null,
 			inUse: this.modelInUse,
+			defaultName,
 			choices,
 		};
+		this.state.models = models;
+		this.save();
+		return models;
 	}
 
 	// Takes effect from the next message. Undefined goes back to the default.
@@ -917,10 +1027,17 @@ export class Lab {
 	setEffort(effort: Effort | undefined) {
 		if (effort === this.effort) return;
 		this.effort = effort;
-		// Null goes back to the model's own default.
 		this.q
-			?.applyFlagSettings({ effortLevel: effort ?? null })
+			?.applyFlagSettings({ effortLevel: this.claudeEffort() })
 			.catch((e) => console.error("effort:", e));
+	}
+
+	// A level only Codex has, left over from a switch of engine, counts as the default.
+	private claudeEffort() {
+		const e = this.effort;
+		return e && CLAUDE_EFFORTS.has(e)
+			? (e as "low" | "medium" | "high" | "xhigh" | "max")
+			: CLAUDE_DEFAULT;
 	}
 
 	// ---------- memory ----------
@@ -1106,7 +1223,8 @@ export class Lab {
 				permissionMode: "auto",
 				...(this.state.sessionId === undefined ? {} : { resume: this.state.sessionId }),
 				...(this.opts.model === undefined ? {} : { model: this.opts.model }),
-				...(this.effort ? { effort: this.effort } : {}),
+				effort: this.claudeEffort(),
+				settings: SAVER,
 				mcpServers: { lab },
 				env: cleanEnv({
 					PATH: `${join(this.opts.dir, "bin")}${delimiter}${setting("PATH") ?? ""}`,
@@ -1548,6 +1666,19 @@ export class Lab {
 		closeSync(fd);
 		renameSync(`${out}.part`, out);
 		return { name: clean, url: `/files/${encodeURIComponent(stored)}`, size, type };
+	}
+
+	// A file he sends to the phone from the computer's window. It shows up and
+	// notifies the same way as one the agent sends.
+	async toPhone(name: string, type: string, body: AsyncIterable<Buffer>) {
+		const f = await this.upload(name, type, body);
+		return this.store.add({
+			kind: "file",
+			name: f.name,
+			url: f.url,
+			size: f.size,
+			fromComputer: true,
+		});
 	}
 
 	// Checks attachments named in a /send against what was actually uploaded.

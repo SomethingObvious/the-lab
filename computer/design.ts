@@ -7,10 +7,12 @@ import { createHash } from "node:crypto";
 import {
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
+	type Stats,
 	statSync,
 	watch,
 } from "node:fs";
@@ -146,7 +148,16 @@ function walk(dir: string, out: string[] = []): string[] {
 	for (const name of readdirSync(dir)) {
 		if (name.startsWith(".")) continue;
 		const p = join(dir, name);
-		if (statSync(p).isDirectory()) walk(p, out);
+		// Links are skipped, since one whose target moved threw on every start
+		// and one to a folder outside would publish that folder.
+		let st: Stats;
+		try {
+			st = lstatSync(p);
+		} catch {
+			continue;
+		}
+		if (st.isSymbolicLink()) continue;
+		if (st.isDirectory()) walk(p, out);
 		else out.push(p);
 	}
 	return out;

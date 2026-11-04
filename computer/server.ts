@@ -21,7 +21,7 @@ import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { tailscaleState } from "./checks.ts";
 import { config, home, labDir, saveFile, setConfig, setting, words } from "./config.ts";
-import type { Live } from "./lab.ts";
+import { EFFORTS, type Live } from "./lab.ts";
 import { awake, type Mac } from "./mac.ts";
 import {
 	cleanSchedules,
@@ -140,7 +140,7 @@ const html = (res: ServerResponse, status: number, title: string, body: string) 
 			"default-src 'none'; style-src 'unsafe-inline'; img-src data:",
 	});
 	res.end(
-		`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${words(title)}</title><style>body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:#1d1b20;background:#fdf7ff}h1{font-size:1.6rem;line-height:1.2}a.btn{display:inline-block;background:#5a2ee6;color:#fff;padding:.9rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}img{width:100%;max-width:22rem;display:block;margin:1.5rem 0;image-rendering:pixelated}@media (prefers-color-scheme:dark){body{background:#141218;color:#e6e0e9}}</style></head><body>${words(body)}</body></html>`,
+		`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${words(title)}</title><style>:root{color-scheme:light dark;--bg:light-dark(#f5f1ff,#100c1e);--ink:light-dark(#1a1530,#f0ebff);--primary:light-dark(#5a2ee6,#6b45f0);--link:light-dark(#4a20d6,#c4b2ff);--focus:light-dark(#5a2ee6,#c4b2ff)}body{font:18px/1.5 system-ui,sans-serif;max-width:32rem;margin:3rem auto;padding:0 1.25rem;color:var(--ink);background:var(--bg)}h1{font-size:1.6rem;line-height:1.2;text-wrap:balance}a{color:var(--link);text-underline-offset:3px}a.btn{display:inline-block;min-height:48px;box-sizing:border-box;background:var(--primary);color:#fff;padding:.75rem 1.6rem;border-radius:2rem;text-decoration:none;font-weight:600}a:focus-visible{outline:3px solid var(--focus);outline-offset:3px}::selection{background:var(--primary);color:#fff}img{width:100%;max-width:22rem;display:block;margin:1.5rem 0;border-radius:12px;image-rendering:pixelated}</style></head><body><main>${words(body)}</main></body></html>`,
 	);
 };
 
@@ -347,9 +347,7 @@ async function serve() {
 	});
 	const prefs = () => {
 		const { effort, replies } = settings;
-		lab.setEffort(
-			effort === "low" || effort === "medium" || effort === "high" ? effort : undefined,
-		);
+		lab.setEffort(EFFORTS.find((e) => e === effort));
 		lab.replies = typeof replies === "string" ? replies : "normal";
 	};
 	prefs();
@@ -483,6 +481,8 @@ async function serve() {
 				label: "Self-Repair",
 				quiet: true,
 				about: "a repair the server started by itself",
+				auto: true,
+				shown: `Fixing a problem the app ran into: ${problem}`,
 			},
 		);
 	};
@@ -741,6 +741,16 @@ async function serve() {
 		lan: tunnel.spec().lan,
 		relay: relay ?? null,
 	});
+	// Whether a phone has The Lab connected right now, for the desktop's Phone
+	// panel. The phone's own client is OkHttp, and setup's checks use the same
+	// token from Node, so the user agent is what tells them apart.
+	let phones = 0;
+	const phoneNow = () => ({
+		kind: "phone" as const,
+		online: phones > 0,
+		seen: lab.state.phoneSeen ?? null,
+		relay: tunnel.state.relay,
+	});
 	// Everything the phone needs to find and trust this computer. The Pixel
 	// camera opens a thelab:// link straight into the app (it won't follow an
 	// intent:// one), so none of it passes through a web page.
@@ -793,8 +803,10 @@ async function serve() {
 			"x-accel-buffering": "no",
 		});
 		res.write(
-			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach()] })}\n\n`,
+			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow()] })}\n\n`,
 		);
+		const phone = /okhttp/i.test(req.headers["user-agent"] ?? "");
+		if (phone && ++phones === 1) lab.store.live(phoneNow());
 		// Replay and subscribe in the same tick, so nothing can land in between.
 		for (const e of lab.store.since(Number.isFinite(after) ? after : null))
 			res.write(`id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`);
@@ -815,6 +827,10 @@ async function serve() {
 		req.on("close", () => {
 			off();
 			clearInterval(ping);
+			if (!phone) return;
+			lab.state.phoneSeen = new Date().toISOString();
+			lab.save();
+			if (--phones === 0) lab.store.live(phoneNow());
 		});
 	};
 
@@ -1036,7 +1052,7 @@ async function serve() {
 			res,
 			200,
 			"Pair a Phone",
-			`<h1>Point the Phone's Camera at This</h1><p>${how} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code"><p>Reload this page for a new code.</p>`,
+			`<h1>Point the Phone's Camera at This</h1><p>${how} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code for The Lab, for the phone's camera"><p><a class="btn" href="/pair-phone">New Code</a></p>`,
 		);
 	};
 
@@ -1245,6 +1261,16 @@ async function serve() {
 			},
 		],
 		[
+			"POST /to-phone",
+			async (req, res, url) => {
+				const name = url.searchParams.get("name") ?? "";
+				const given = String(req.headers["content-type"] ?? "").split(";")[0];
+				const type =
+					given && given !== "application/octet-stream" ? given : typeOf(name);
+				return json(res, 200, await lab.toPhone(name, type, req));
+			},
+		],
+		[
 			"POST /shortcuts",
 			async (req, res) => {
 				const items = cleanShortcuts((await readBody(req))["items"]);
@@ -1336,7 +1362,15 @@ async function serve() {
 				return json(res, 200, { values: settings });
 			},
 		],
-		["GET /models", async (_req, res) => json(res, 200, await lab.models())],
+		[
+			"GET /models",
+			async (_req, res, url) =>
+				json(
+					res,
+					200,
+					(url.searchParams.has("saved") && lab.state.models) || (await lab.models()),
+				),
+		],
 		["POST /model", chooseModel],
 		["POST /app-error", appError],
 		["GET /folders", (_req, res) => json(res, 200, folders)],
@@ -1415,8 +1449,15 @@ async function serve() {
 		table.get(`${method} ${path}`) ?? table.get(`* ${path}`);
 
 	const server = createServer(async (req, res) => {
-		const url = new URL(req.url ?? "/", "http://lab");
-		const path = decodeURIComponent(url.pathname);
+		let url: URL;
+		let path: string;
+		// A path like /% throws here, and outside the try that ended the server.
+		try {
+			url = new URL(req.url ?? "/", "http://lab");
+			path = decodeURIComponent(url.pathname);
+		} catch {
+			return json(res, 400, { error: "That address isn't valid." });
+		}
 		try {
 			const before = find(open, req.method, path);
 			if (before) {
@@ -1453,8 +1494,14 @@ async function serve() {
 	// Addresses change when the computer moves networks, so the phone hears
 	// the new ones over whichever route still works.
 	let sentReach = JSON.stringify(reach());
+	let sentPhone = JSON.stringify(phoneNow());
 	setInterval(() => {
 		const now = reach();
+		const phone = phoneNow();
+		if (JSON.stringify(phone) !== sentPhone) {
+			sentPhone = JSON.stringify(phone);
+			lab.store.live(phone);
+		}
 		if (JSON.stringify(now) === sentReach) return;
 		sentReach = JSON.stringify(now);
 		lab.store.live(now);

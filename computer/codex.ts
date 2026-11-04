@@ -100,6 +100,9 @@ interface CodexModel {
 	displayName?: string;
 	description?: string;
 	isDefault?: boolean;
+	hidden?: boolean;
+	supportedReasoningEfforts?: { reasoningEffort: string; description?: string }[];
+	defaultReasoningEffort?: string;
 }
 
 // What a call resolves with, across every method this file calls.
@@ -220,19 +223,31 @@ export class Codex {
 	// messages it answered.
 	send(text: string, images: string[], you: number) {
 		this.queue.push({ text, images, you });
-		this.pump().catch((e) => this.broke(e));
+		this.pumpNext();
+	}
+
+	// One pump at a time. Two running together both steer the first message
+	// in the queue, and the one behind it is never sent.
+	private pumping: Promise<void> = Promise.resolve();
+	private pumpNext() {
+		this.pumping = this.pumping.then(() => this.pump()).catch((e) => this.broke(e));
 	}
 
 	setModel(model: string | undefined) {
 		this.model = model;
 	}
 
-	// Effort sticks to the thread too, so once one has been sent, Normal is
-	// sent as medium, which is Codex's own default.
-	private effortSent = false;
-	private turnEffort(): string | undefined {
-		if (this.lab.effort) this.effortSent = true;
-		return this.lab.effort ?? (this.effortSent ? "medium" : undefined);
+	// Effort sticks to the thread too, so it's always sent, as the model's own
+	// default when he hasn't picked one or the model doesn't take his pick.
+	private async turnEffort(): Promise<string | undefined> {
+		const r = await this.list();
+		const m = r?.data?.find((x) =>
+			this.model ? (x.model ?? x.id) === this.model : x.isDefault,
+		);
+		const takes = (m?.supportedReasoningEfforts ?? []).map((x) => x.reasoningEffort);
+		const e = this.lab.effort;
+		if (e && (takes.length === 0 || takes.includes(e))) return e;
+		return m?.defaultReasoningEffort ?? undefined;
 	}
 
 	// A model given to turn/start sticks to the thread, so going back to the
@@ -244,20 +259,44 @@ export class Codex {
 			return this.model;
 		}
 		if (!this.picked) return undefined;
-		const r = await this.call("model/list", { limit: 100 }).catch(() => null);
+		const r = await this.list();
 		const def = r?.data?.find((m) => m.isDefault);
 		if (def) this.picked = false;
 		return def ? String(def.model ?? def.id) : undefined;
 	}
 
+	// Asked for once, since every turn reads it. A failed ask is tried again next turn.
+	private listing: Promise<Reply | null> | null = null;
+	private list() {
+		this.listing ??= this.call("model/list", { limit: 100 }).catch(() => {
+			this.listing = null;
+			return null;
+		});
+		return this.listing;
+	}
+
 	async models() {
 		await this.start();
+		this.listing = null;
 		const r = await this.call("model/list", { limit: 100 });
-		return (r.data ?? []).map((m) => ({
-			id: String(m.model ?? m.id),
-			name: String(m.displayName ?? m.model ?? m.id),
-			description: String(m.description ?? ""),
-		}));
+		this.listing = Promise.resolve(r);
+		const data = (r.data ?? []).filter((m) => !m.hidden);
+		const def = data.find((m) => m.isDefault);
+		return {
+			defaultName: def ? String(def.displayName ?? def.model ?? def.id) : null,
+			choices: data.map((m) => ({
+				id: String(m.model ?? m.id),
+				name: String(m.displayName ?? m.model ?? m.id),
+				description: String(m.description ?? ""),
+				efforts: (m.supportedReasoningEfforts ?? []).map((x) => ({
+					id: String(x.reasoningEffort),
+					description: String(x.description ?? ""),
+				})),
+				defaultEffort: m.defaultReasoningEffort
+					? String(m.defaultReasoningEffort)
+					: null,
+			})),
+		};
 	}
 
 	close() {
@@ -341,7 +380,7 @@ export class Codex {
 				let r: Reply;
 				try {
 					const model = await this.turnModel();
-					const effort = this.turnEffort();
+					const effort = await this.turnEffort();
 					r = await this.call("turn/start", {
 						threadId,
 						input: this.input(m),
@@ -362,7 +401,11 @@ export class Codex {
 						...(effort ? { effort } : {}),
 					});
 				} catch (e) {
+					// When app-server quit during the start, its exit already ended the
+					// turn and told him, so this isn't a second failure to report.
+					const ended = this.turn !== "starting";
 					this.turn = null;
+					if (ended) return;
 					throw e;
 				}
 				if (this.turn === "starting") {
@@ -687,7 +730,7 @@ export class Codex {
 		this.lab.setStatus(false);
 		if (this.queue.length > 0) {
 			this.lab.setStatus(true, "Reading your message");
-			this.pump().catch((e) => this.broke(e));
+			this.pumpNext();
 		}
 	}
 

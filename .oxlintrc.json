@@ -11,7 +11,7 @@
 	},
 	"overrides": [
 		{
-			"files": ["phone/app/src/main/assets/bridge.js"],
+			"files": ["phone/app/src/main/assets/bridge.js", "computer/web-bridge.js"],
 			"rules": {
 				"unicorn/require-post-message-target-origin": "off"
 			}
