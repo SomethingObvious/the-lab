@@ -13,7 +13,7 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 - `~/TheLab/`, the workspace and the only folder the agent on the phone can change. It holds `app/` (the phone app's interface, which you can edit later when he asks), `CLAUDE.md` (also linked as `AGENTS.md`), `DESIGN.md`, `memory.md`, `shortcuts.json` and `schedules.json`.
 - `~/.thelab/`, the server's own state: its token, history, log, the files he sends and the tools setup downloads. It sits outside the workspace so the agent can't loosen its own limits.
 - `~/.thelab/source/`, this repository.
-- A login item that keeps the server running (`~/Library/LaunchAgents/com.somethingobvious.thelab.plist` on a Mac, a `TheLab` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows, which starts it hidden when he signs in).
+- A login item that keeps the server running. On a Mac it's `~/Library/LaunchAgents/com.somethingobvious.thelab.plist`, which starts `~/.thelab/The Lab.app`, a small app holding Node so macOS names The Lab in its prompts and settings. On Windows it's a `TheLab` value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which starts it hidden when he signs in.
 - A relay on Cloudflare's free plan, unless he was given the address of one that's already up.
 - The Lab on the phone, built on this computer and installed over a USB cable.
 
@@ -72,7 +72,7 @@ The first sets up `~/TheLab`, installs the login item and starts the server, whi
 The computer asks for permission once or twice as the server starts, so he should be at the screen for it.
 
 - On Windows, a Windows Security window asks whether Node.js may communicate on private networks. **He clicks Allow.** That's the encrypted tunnel that lets the phone come straight in over the Wi-Fi. Without it the phone still works through the relay, and if he clicks Cancel by mistake, step 5 notices and fixes it with one Yes. In Task Manager's Startup apps the server shows up as Console Window Host, from Microsoft, because that's what starts it without a window. Tell him it's The Lab so he doesn't turn it off.
-- On a Mac, it asks whether node may access the Desktop, Documents and Downloads folders. **He clicks Allow on each**, or the agent can't see the files he asks about. The step waits for his answers. If he clicks Don't Allow, it opens System Settings at Files and Folders and waits while he switches them on under node.
+- On a Mac, it asks whether The Lab may access the Desktop, Documents and Downloads folders. **He clicks Allow on each**, or the agent can't see the files he asks about. The step waits for his answers. If he clicks Don't Allow, it opens System Settings at Files and Folders and waits while he switches them on under The Lab. Then it opens System Settings at Full Disk Access, with a Finder window showing The Lab. **He drags The Lab into the list and confirms with his password or Touch ID.** That lets the agent put deleted files back from the Trash and from Time Machine snapshots. In System Settings, General, Login Items, the server shows up as The Lab under Allow in the Background.
 
 ## 4. The Relay
 

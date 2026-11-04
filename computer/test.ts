@@ -750,6 +750,8 @@ test("a change to app/ that cannot run never reaches the phone", async () => {
 		(p) => held.push(p),
 	);
 	const good = design.version;
+	// macOS starts delivering file events a moment after watch() returns.
+	await wait(200);
 	writeFileSync(join(app, "app.js"), "const a = ;");
 	await wait(1000);
 	assert.equal(design.version, good);

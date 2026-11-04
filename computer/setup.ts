@@ -272,13 +272,68 @@ function fitToSystem(file: string) {
 
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
-const isThisNode = (p: string) => {
-	try {
-		return realpathSync(p) === realpathSync(process.execPath);
-	} catch {
-		return false;
+// macOS names a bare binary "node" in its prompts, in Login Items and in Full
+// Disk Access. So the server runs from a small app called The Lab, holding the
+// official Node build, which needs no other files. Its local signature gives
+// macOS a stable name for the permissions he grants.
+async function macApp(): Promise<string> {
+	const node = join(TOOLS, "node", "bin", "node");
+	if (!existsSync(node)) {
+		say("Downloading Node for The Lab (about 50 MB)");
+		const base = "https://nodejs.org/dist/latest-v24.x/";
+		const want = `darwin-${process.arch === "arm64" ? "arm64" : "x64"}.tar.gz`;
+		const sums = await (await fetch(`${base}SHASUMS256.txt`)).text();
+		const file =
+			/\S+$/.exec(sums.split("\n").find((l) => l.endsWith(want)) ?? "")?.[0] ??
+			fail(`Node's download list has no ${want}.`);
+		await download(base + file, join(TOOLS, file));
+		extract(join(TOOLS, file), TOOLS);
+		rmSync(join(TOOLS, "node"), { force: true });
+		symlinkSync(join(TOOLS, file.replace(/\.tar\.gz$/, "")), join(TOOLS, "node"));
 	}
-};
+	const app = join(LAB, "The Lab.app");
+	const exe = join(app, "Contents", "MacOS", "TheLab");
+	// Kept outside the bundle, since a file the signature doesn't cover would break it.
+	const from = join(LAB, "app-node");
+	const source = realpathSync(node);
+	const icon = join(app, "Contents", "Resources", "TheLab.icns");
+	if (
+		existsSync(exe) &&
+		existsSync(from) &&
+		readFileSync(from, "utf8") === source &&
+		existsSync(icon) &&
+		readFileSync(icon).equals(readFileSync(join(HERE, "TheLab.icns")))
+	)
+		return exe;
+	// macOS ties his permissions to the signed app, so rebuilding it asks for them again.
+	rmSync(app, { recursive: true, force: true });
+	mkdirSync(dirname(icon), { recursive: true });
+	cpSync(join(HERE, "TheLab.icns"), icon);
+	mkdirSync(dirname(exe), { recursive: true });
+	cpSync(source, exe);
+	writeFileSync(
+		join(app, "Contents", "Info.plist"),
+		`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>TheLab</string>
+  <key>CFBundleIconFile</key><string>TheLab</string>
+  <key>CFBundleIdentifier</key><string>${LABEL}</string>
+  <key>CFBundleName</key><string>The Lab</string>
+  <key>CFBundleDisplayName</key><string>The Lab</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSBackgroundOnly</key><true/>
+</dict>
+</plist>
+`,
+	);
+	// Without the hardened runtime Node's JIT needs no entitlements.
+	const sign = run("codesign", ["--force", "--sign", "-", app]);
+	if (!sign.ok) fail(`codesign couldn't sign The Lab: ${sign.out}`);
+	writeFileSync(from, source);
+	return exe;
+}
 
 async function computer() {
 	workspace();
@@ -286,22 +341,15 @@ async function computer() {
 	launchers(join(LAB, "bin"));
 	say(`Messages go to ${engine() === "codex" ? "Codex" : "Claude"}.`);
 	if (MAC) {
-		// Homebrew's node resolves into a versioned Cellar folder that the next
-		// upgrade deletes, so the login item uses a stable link to it if there is one.
-		const nodeBin =
-			[
-				"/opt/homebrew/bin/node",
-				"/usr/local/bin/node",
-				join(TOOLS, "node", "bin", "node"),
-			].find(isThisNode) ?? process.execPath;
-		const nodeDir = dirname(nodeBin);
+		const exe = await macApp();
+		const nodeDir = join(TOOLS, "node", "bin");
 		const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key>
-  <array><string>${esc(nodeBin)}</string><string>${esc(join(HERE, "server.ts"))}</string></array>
+  <array><string>${esc(exe)}</string><string>${esc(join(HERE, "server.ts"))}</string></array>
   <key>WorkingDirectory</key><string>${esc(HERE)}</string>
   <key>EnvironmentVariables</key>
   <dict>
@@ -393,14 +441,34 @@ async function folderAccess() {
 			.catch(() => f);
 	};
 	const waiting = () => Object.values(f).includes("asking");
-	const refused = () =>
+	// The Trash only opens with Full Disk Access, which is a different switch.
+	const refused = (trash: boolean) =>
 		Object.entries(f)
-			.filter(([, v]) => v === "refused")
+			.filter(([k, v]) => v === "refused" && (k === ".Trash") === trash)
 			.map(([k]) => k);
+	const fix = async (trash: boolean, pane: string, tell: string, giveUp: string) => {
+		show(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
+		say(tell);
+		let restarted = false;
+		for (
+			let until = Date.now() + 300_000;
+			refused(trash).length && Date.now() < until;
+		) {
+			await sleep(3000);
+			await ask("POST");
+			// macOS can hold on to a refusal for as long as the process runs.
+			if (refused(trash).length && !restarted && Date.now() > until - 240_000) {
+				restarted = true;
+				await restart();
+				await ask("POST");
+			}
+		}
+		if (refused(trash).length) fail(giveUp);
+	};
 	await ask();
 	if (waiting()) {
 		say(
-			"macOS is asking whether node may see the Desktop, Documents and Downloads folders. He clicks Allow on each. This waits for him.",
+			"macOS is asking whether The Lab may see the Desktop, Documents and Downloads folders. He clicks Allow on each. This waits for him.",
 		);
 		for (let until = Date.now() + 180_000; waiting() && Date.now() < until; ) {
 			await sleep(1000);
@@ -411,29 +479,25 @@ async function folderAccess() {
 				"The folder prompts haven't been answered. They may be behind another window, and the agent can't see those folders until they are.",
 			);
 	}
-	if (!refused().length) return;
-	show(
-		"x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders",
-	);
-	say(
-		`node was turned down for ${refused().join(", ")}, so the agent can't see what's in there. System Settings is open at Files and Folders. He finds node in the list and switches on ${refused().join(", ")}. This waits for him.`,
-	);
-	let restarted = false;
-	for (let until = Date.now() + 300_000; refused().length && Date.now() < until; ) {
-		await sleep(3000);
-		await ask("POST");
-		// macOS can hold on to a refusal for as long as the process runs.
-		if (refused().length && !restarted && Date.now() > until - 240_000) {
-			restarted = true;
-			await restart();
-			await ask("POST");
-		}
-	}
-	if (refused().length)
-		fail(
-			`The agent still can't see ${refused().join(", ")}. Switch them on under node in System Settings, Privacy & Security, Files and Folders, then run node setup.ts computer again.`,
+	const folders = refused(false).join(", ");
+	if (folders)
+		await fix(
+			false,
+			"Privacy_FilesAndFolders",
+			`The Lab was turned down for ${folders}, so the agent can't see what's in there. System Settings is open at Files and Folders. He finds The Lab in the list and switches on ${folders}. This waits for him.`,
+			`The agent still can't see ${folders}. Switch on ${folders} under The Lab in System Settings, Privacy & Security, Files and Folders, then run node setup.ts computer again.`,
 		);
-	say("node can see the Desktop, Documents and Downloads folders now.");
+	if (refused(true).length) {
+		// The Lab isn't in the Full Disk Access list until he adds it, so Finder shows him the app to drag in.
+		run("open", ["-R", join(LAB, "The Lab.app")]);
+		await fix(
+			true,
+			"Privacy_AllFiles",
+			"The agent can't open the Trash, so it can't put back what it deleted. System Settings is open at Full Disk Access, and a Finder window shows The Lab. He drags The Lab from Finder into the Full Disk Access list, confirms with his password or Touch ID, and checks its switch is on. This waits for him.",
+			"The agent still can't open the Trash. Add The Lab under System Settings, Privacy & Security, Full Disk Access, then run node setup.ts computer again.",
+		);
+	}
+	say("The Lab can see the Desktop, Documents and Downloads folders and the Trash.");
 }
 
 // ---------- relay ----------
@@ -855,7 +919,7 @@ async function firewall(adb: string, serial: string, since: string, lanPort: num
 	if (!sameWifi || (await route(since)) === "direct") return;
 	if (!WIN) {
 		say(
-			"The phone is on the same Wi-Fi but can't come straight in, so it goes through the relay, which is slower. The Mac's firewall is probably blocking node. In System Settings, Network, Firewall, Options, set node to allow incoming connections.",
+			"The phone is on the same Wi-Fi but can't come straight in, so it goes through the relay, which is slower. The Mac's firewall is probably blocking The Lab. In System Settings, Network, Firewall, Options, set The Lab to allow incoming connections.",
 		);
 		return;
 	}

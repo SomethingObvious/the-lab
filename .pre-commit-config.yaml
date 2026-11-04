@@ -78,7 +78,8 @@ repos:
       - id: android
         name: Android Lint, Kotlin and Unit Tests
         language: system
-        # A JAVA_HOME that is only a runtime can't compile, so fall back to the JDK.
-        entry: bash -c 'cd phone && j="${JAVA_HOME:-}" && { [ -x "$j/bin/javac" ] || j="/c/Program Files/Eclipse Adoptium/jdk-21.0.12.101-hotspot"; } && JAVA_HOME="$j" ./gradlew -q :app:lintDebug :app:testDebugUnitTest'
+        # A JAVA_HOME that is only a runtime can't compile, so fall back to the JDK
+        # setup downloaded (a Mac one sits under Contents/Home), then the Windows one.
+        entry: bash -c 'cd phone && j="${JAVA_HOME:-}" && { [ -x "$j/bin/javac" ] || for c in "$HOME"/.thelab/tools/jdk/*/Contents/Home "$HOME"/.thelab/tools/jdk/* "/c/Program Files/Eclipse Adoptium/jdk-21.0.12.101-hotspot"; do [ -x "$c/bin/javac" ] && j="$c" && break; done; } && JAVA_HOME="$j" ./gradlew -q :app:lintDebug :app:testDebugUnitTest'
         files: ^phone/
         pass_filenames: false

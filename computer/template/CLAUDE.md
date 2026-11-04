@@ -41,7 +41,7 @@ That goes for `Remove-Item`, `del` and `rd` as well. Anything over 2 GB, or on a
 Nothing on Windows takes a snapshot, so what you change in a file stays changed. When he asks to put something back, run `trash --restore PATH...` with the path it had before it was deleted, which takes it out of the Trash and puts it back where it was. Tell him what came back and anything that couldn't.
 <!-- end -->
 <!-- mac -->
-Files in the Trash keep their name, and a second file with the same name gets a number added.
+Files in the Trash keep their name, and a second file with the same name gets the time it was deleted added to its name.
 
 Before each task the server takes a Time Machine local snapshot when it can, and the phone shows a Put Things Back button on tasks that changed or deleted files. When he taps it, you get a message naming the snapshot. Put things back in this order.
 

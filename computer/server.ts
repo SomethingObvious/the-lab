@@ -106,7 +106,8 @@ const login = (req: IncomingMessage) =>
 
 const hasError = (b: unknown): b is { error: string } =>
 	typeof b === "object" && b !== null && "error" in b && typeof b.error === "string";
-const MAC_FOLDERS = ["Desktop", "Documents", "Downloads"];
+// The Trash never prompts. Only Full Disk Access opens it.
+const MAC_FOLDERS = ["Desktop", "Documents", "Downloads", ".Trash"];
 
 const json = (res: ServerResponse, status: number, body: unknown) => {
 	res.writeHead(status, {
@@ -801,13 +802,21 @@ async function serve() {
 								"One is taken before each task. If this stays, turn on Time Machine in System Settings.",
 						},
 			);
-		const refused = MAC_FOLDERS.filter((d) => folders[d] === "refused");
+		const refused = MAC_FOLDERS.filter(
+			(d) => d !== ".Trash" && folders[d] === "refused",
+		);
 		if (refused.length > 0)
 			out.push({
 				ok: false,
 				title: `The agent can't see your ${refused.join(" or ")} folder${refused.length > 1 ? "s" : ""}`,
+				detail: `On the Mac, open System Settings, Privacy & Security, Files and Folders, and switch ${refused.length > 1 ? "them" : "it"} on under The Lab.`,
+			});
+		if (folders[".Trash"] === "refused")
+			out.push({
+				ok: false,
+				title: "The agent can't put things back from the Trash",
 				detail:
-					"On the Mac, open System Settings, Privacy & Security, Files and Folders, and switch them on under node.",
+					"On the Mac, open System Settings, Privacy & Security, Full Disk Access, and switch on The Lab.",
 			});
 		const mem = lab.memory();
 		if (mem.chars > mem.cap * 0.8)
