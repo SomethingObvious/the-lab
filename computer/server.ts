@@ -304,6 +304,14 @@ async function serve() {
 		model: picked(),
 		...(engine === undefined ? {} : { engine }),
 	});
+	const prefs = () => {
+		const { effort, replies } = settings;
+		lab.setEffort(
+			effort === "low" || effort === "medium" || effort === "high" ? effort : undefined,
+		);
+		lab.replies = typeof replies === "string" ? replies : "normal";
+	};
+	prefs();
 
 	// The agent deletes with this, which moves files to the Trash.
 	launchers(join(Dir, "bin"));
@@ -447,6 +455,7 @@ async function serve() {
 	let sentSettings = JSON.stringify(settings);
 	const pushSettings = () => {
 		lab.setModel(picked());
+		prefs();
 		if (JSON.stringify(settings) === sentSettings) return;
 		sentSettings = JSON.stringify(settings);
 		lab.store.live({ kind: "settings", values: settings });

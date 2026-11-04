@@ -1731,25 +1731,34 @@ mark {
 		border-radius 0.35s var(--spring),
 		transform 0.35s var(--spring);
 }
-.chip:nth-child(4n + 1) {
+.chip:nth-child(4n + 1 of [data-sc]) {
 	background: var(--pink);
 	color: var(--on-pink);
 }
-.chip:nth-child(4n + 2) {
+.chip:nth-child(4n + 2 of [data-sc]) {
 	background: var(--mint);
 	color: var(--on-mint);
 }
-.chip:nth-child(4n + 3) {
+.chip:nth-child(4n + 3 of [data-sc]) {
 	background: var(--sun);
 	color: var(--on-sun);
 }
-.chip:nth-child(4n + 4) {
+.chip:nth-child(4n + 4 of [data-sc]) {
 	background: var(--lilac);
 	color: var(--on-lilac);
 }
 .chip:active {
 	border-radius: var(--r-joint);
 	transform: scale(0.96);
+}
+.chip.model {
+	background: var(--primary-c);
+	color: var(--on-primary-c);
+	padding-inline: 12px 16px;
+}
+.chip-sub {
+	font-weight: var(--fw-body);
+	opacity: 0.8;
 }
 .chip.edit {
 	background: var(--surface);
@@ -3437,6 +3446,9 @@ textarea::placeholder {
 .model-other input {
 	flex: 1;
 	min-width: 0;
+}
+.set-list + .hint {
+	margin-top: 18px;
 }
 .model-other + .hint {
 	margin-top: 6px;

@@ -541,6 +541,47 @@ test("codex folds a message sent while the turn starts into it", async () => {
 	lab.close();
 });
 
+// Replies with the effort turn/start was given and the start of the message.
+const ECHO = String.raw`
+const rl = require('readline').createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+let n = 0;
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
+  if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-4' }, model: 'fake' } });
+  if (m.method === 'turn/start') {
+    const id = 't' + ++n;
+    out({ id: m.id, result: { turn: { id, status: 'inProgress' } } });
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a' + n, text: (m.params.effort || 'none') + ' ' + m.params.input[0].text.slice(0, 40) } } });
+    return out({ method: 'turn/completed', params: { turn: { id, status: 'completed', durationMs: 5, error: null } } });
+  }
+});
+`;
+
+test("thinking and replies reach the next codex turn", async () => {
+	const { lab, pick } = await codexLab(ECHO);
+	const replies = () => pick("reply").map((e) => field(e, "text"));
+	lab.send("Hello", crypto.randomUUID());
+	await until(() => replies().length === 1);
+	lab.setEffort("high");
+	lab.replies = "short";
+	lab.send("Hello", crypto.randomUUID());
+	await until(() => replies().length === 2);
+	// Effort sticks to a Codex thread, so Normal has to be sent as medium.
+	lab.setEffort(undefined);
+	lab.replies = "normal";
+	lab.send("Hello", crypto.randomUUID());
+	await until(() => replies().length === 3);
+	assert.deepEqual(replies(), [
+		"none Hello",
+		"high (He set replies to Short in Settings, so",
+		"medium Hello",
+	]);
+	lab.close();
+});
+
 test("codex stop before a turn begins leaves it usable", async () => {
 	const { lab, pick } = await codexLab(SLOW);
 	lab.send("Tidy Downloads", crypto.randomUUID());

@@ -227,6 +227,14 @@ export class Codex {
 		this.model = model;
 	}
 
+	// Effort sticks to the thread too, so once one has been sent, Normal is
+	// sent as medium, which is Codex's own default.
+	private effortSent = false;
+	private turnEffort(): string | undefined {
+		if (this.lab.effort) this.effortSent = true;
+		return this.lab.effort ?? (this.effortSent ? "medium" : undefined);
+	}
+
 	// A model given to turn/start sticks to the thread, so going back to the
 	// default has to name the default.
 	private picked = false;
@@ -333,6 +341,7 @@ export class Codex {
 				let r: Reply;
 				try {
 					const model = await this.turnModel();
+					const effort = this.turnEffort();
 					r = await this.call("turn/start", {
 						threadId,
 						input: this.input(m),
@@ -350,6 +359,7 @@ export class Codex {
 							excludeSlashTmp: false,
 						},
 						...(model ? { model } : {}),
+						...(effort ? { effort } : {}),
 					});
 				} catch (e) {
 					this.turn = null;

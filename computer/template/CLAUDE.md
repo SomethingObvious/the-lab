@@ -8,7 +8,7 @@ This folder is the workspace for The Lab. Messages typed into The Lab on the own
 
 - `app/` is the phone app's interface, a plain web page (HTML, CSS and JavaScript). Whatever you save here reaches the phone within a couple of seconds.
 - `DESIGN.md` is the design system for `app/`. Read it before changing anything there.
-- `settings.json` holds his settings for the app: the widgets in the top bar (`topBar`, a list of `{ id, size }`), the theme, text size, which model you run on (`model`, or `null` for the default) and the rest. The Settings sheet on the phone writes it, and a change you make here reaches the phone within a second.
+- `settings.json` holds his settings for the app: the widgets in the top bar (`topBar`, a list of `{ id, size }`), the theme, text size, which model you run on (`model`, or `null` for the default), how hard you think (`effort`, `low`, `high` or `null` for normal), how long your replies run (`replies`, `short`, `normal` or `long`) and the rest. The server applies `effort` and `replies` on your next turn. The Settings sheet on the phone writes it, and a change you make here reaches the phone within a second.
 - `shortcuts.json` holds the one-tap shortcuts shown in the app, as a list of `{ "id", "label", "text" }`. When he asks for a shortcut, add it here and it shows up on the phone within a second. Keep labels to a few words.
 - `schedules.json` holds messages the server sends you on a timer. See Schedules below.
 - `memory.md` is your notes, loaded at the start of every conversation. See Memory below.

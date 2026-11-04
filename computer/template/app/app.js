@@ -33,6 +33,9 @@ const DefaultSettings = {
 	digest: true,
 	motion: "full",
 	model: null,
+	modelChip: true,
+	effort: null,
+	replies: "normal",
 };
 let settings = { ...DefaultSettings };
 
@@ -1490,7 +1493,57 @@ const redrawTurns = () => {
 	want.side = true;
 	schedule();
 };
+const thinking = {
+	key: "effort",
+	type: "choice",
+	label: "Thinking",
+	hint: "Quick answers sooner. Thorough takes longer over hard tasks.",
+	options: [
+		["low", "Quick"],
+		[null, "Normal"],
+		["high", "Thorough"],
+	],
+	apply: () => drawChips(),
+};
 const Settings = [
+	{ head: "Agent" },
+	{ type: "open", label: "Model", hint: () => modelName(), open: () => openModels() },
+	thinking,
+	{
+		key: "replies",
+		type: "choice",
+		label: "Replies",
+		hint: "How much the agent writes back",
+		options: [
+			["short", "Short"],
+			["normal", "Normal"],
+			["long", "Detailed"],
+		],
+	},
+	{
+		type: "open",
+		label: "Notifications",
+		hint: "Sounds, vibration and what shows on the lock screen",
+		open: () => lab.fix?.("notifications"),
+	},
+	{
+		type: "open",
+		label: "Rename This Computer",
+		hint: () => mac?.name || "",
+		open: () => openRename(),
+	},
+	{
+		type: "open",
+		label: "Show the Welcome Card Again",
+		open: async () => {
+			closeSheet();
+			await saveSettings({ welcomeDone: false });
+			// It's the first thing in the conversation, so a long history needs a jump back to it.
+			const card = items.find((it) => it.type === "notice" && it.e.points);
+			if (card) jump(card.e.id);
+			else toast("This conversation doesn't have a welcome card.", true);
+		},
+	},
 	{ head: "Top Bar" },
 	{
 		key: "topBarHidden",
@@ -1559,6 +1612,13 @@ const Settings = [
 		apply: () => drawChips(),
 	},
 	{
+		key: "modelChip",
+		type: "switch",
+		label: "Show the Model Above the Message Box",
+		hint: "One tap to change the model or how hard it thinks",
+		apply: () => drawChips(),
+	},
+	{
 		key: "enterSends",
 		type: "switch",
 		label: "Enter Key Sends",
@@ -1571,26 +1631,6 @@ const Settings = [
 		key: "digest",
 		type: "switch",
 		label: "Sum Up What Happened While You Were Away",
-	},
-	{ head: "Agent" },
-	{ type: "open", label: "Model", hint: () => modelName(), open: () => openModels() },
-	{
-		type: "open",
-		label: "Rename This Computer",
-		hint: () => mac?.name || "",
-		open: () => openRename(),
-	},
-	{
-		type: "open",
-		label: "Show the Welcome Card Again",
-		open: async () => {
-			closeSheet();
-			await saveSettings({ welcomeDone: false });
-			// It's the first thing in the conversation, so a long history needs a jump back to it.
-			const card = items.find((it) => it.type === "notice" && it.e.points);
-			if (card) jump(card.e.id);
-			else toast("This conversation doesn't have a welcome card.", true);
-		},
 	},
 ];
 const urlTheme = root.dataset.theme;
@@ -1627,6 +1667,7 @@ function settingsChanged(was) {
 	for (const row of Settings)
 		if (row.apply && was[row.key] !== settings[row.key])
 			guard(`the ${row.label} setting`, row.apply);
+	if (was.model !== settings.model) drawChips();
 	if (was.welcomeDone !== settings.welcomeDone)
 		for (const it of items)
 			if (it.type === "notice" && it.e.points) {
@@ -1692,7 +1733,8 @@ function drawModels() {
 		() => {
 			setHTML(
 				$("sheet-body"),
-				`<p class="hint">These are the models ${m.engine === "codex" ? "Codex" : "Claude"} on the computer can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ""}. A change starts with your next message.</p>
+				`<div class="set-list">${settingRow(thinking)}</div>
+        <p class="hint">These are the models ${m.engine === "codex" ? "Codex" : "Claude"} on the computer can use right now${m.inUse ? `. It's running ${esc(m.inUse)}` : ""}. A change starts with your next message.</p>
         <ul class="model-list" role="radiogroup" aria-label="Model">${choices.map((c) => `<li><button type="button" role="radio" class="model-row" aria-checked="${c.id === chosen}" data-model="${esc(c.id)}"><span class="radio" aria-hidden="true"></span><span><b>${esc(c.name)}</b>${c.description ? `<span>${esc(c.description)}</span>` : ""}</span></button></li>`).join("")}</ul>
         <label for="model-other">Another Model</label>
         <div class="model-other"><input id="model-other" value="${listed || chosen === "default" ? "" : esc(chosen)}" placeholder="Its exact name" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done"><button type="button" class="pill" data-modelother>Use It</button></div>
@@ -1705,9 +1747,10 @@ function drawModels() {
 async function pickModel(id) {
 	try {
 		await call("POST", "/model", { model: id === "default" ? null : id });
+		const was = settings;
 		settings = { ...settings, model: id === "default" ? null : id };
+		settingsChanged(was);
 		if (sheetKind === "models") drawModels();
-		drawGlance();
 		toast(`It will use ${modelName()} from your next message.`);
 	} catch (err) {
 		toast(
@@ -1727,7 +1770,7 @@ function openMenu() {
 		"menu",
 		"More",
 		`<ul class="menu-list">
-      ${menuRow("settings", "edit", "Settings", "The top bar, text size, theme and model")}
+      ${menuRow("settings", "edit", "Settings", "The model, thinking, replies, theme and top bar")}
       ${menuRow("memory", "star", "Memory", "What the agent remembers about you")}
       ${menuRow("schedules", "clock", "Schedules", "Messages the computer sends itself on a timer")}
       ${menuRow("allowed", "shield", "Always Allowed", "Commands that run without asking")}
@@ -1931,29 +1974,39 @@ function openRestore(t) {
 
 // Shortcuts
 
+const effortWord = { low: "Quick", high: "Thorough" };
 function drawChips() {
 	const c = $("chips");
-	c.hidden = shortcuts.length === 0 || settings.chips === false;
+	const listed = shortcuts.length > 0 && settings.chips !== false;
+	const model = settings.modelChip !== false;
+	c.hidden = !(listed || model);
+	const name = settings.model ? modelName() : "Model";
+	const effort = effortWord[settings.effort];
 	refocus(
 		c,
 		() => {
 			setHTML(
 				c,
-				shortcuts
-					.map(
-						(s) =>
-							`<button type="button" class="chip" data-sc="${esc(s.id)}" title="${esc(s.text)}">${esc(s.label)}</button>`,
-					)
-					.join("") +
-					(shortcuts.length > 0
-						? `<button type="button" class="chip edit" id="manage">${icon("edit")}Edit</button>`
-						: ""),
+				(model
+					? `<button type="button" class="chip model" id="model-chip" aria-label="Model, ${esc(settings.model ? name : "Default")}${effort ? `, ${effort}` : ""}">${icon("star")}${esc(name)}${effort ? `<span class="chip-sub">${effort}</span>` : ""}</button>`
+					: "") + (listed ? shortcutChips() : ""),
 			);
 		},
 		() => text,
 	);
 	for (const t of items)
 		if (t.type === "turn" && t.you && t.you.cid === selected) draw(t);
+}
+function shortcutChips() {
+	return (
+		shortcuts
+			.map(
+				(s) =>
+					`<button type="button" class="chip" data-sc="${esc(s.id)}" title="${esc(s.text)}">${esc(s.label)}</button>`,
+			)
+			.join("") +
+		`<button type="button" class="chip edit" id="manage">${icon("edit")}Edit</button>`
+	);
 }
 
 // Bottom sheet
@@ -2860,10 +2913,10 @@ function clickBar(d) {
 
 async function pickSetting(key, val) {
 	await saveSettings({ [key]: JSON.parse(val) });
-	if (sheetKind === "settings") {
-		openSettings();
-		sheet.querySelector(`[data-setkey="${key}"][aria-checked="true"]`)?.focus();
-	}
+	if (sheetKind === "settings") openSettings();
+	else if (sheetKind === "models" && modelList) drawModels();
+	else return;
+	sheet.querySelector(`[data-setkey="${key}"][aria-checked="true"]`)?.focus();
 }
 function pickOtherModel() {
 	const v = $("model-other").value.trim();
@@ -2945,6 +2998,8 @@ function clickById(id) {
 			return menu($("attach-menu").hidden);
 		case "manage":
 			return openManage();
+		case "model-chip":
+			return openModels();
 		case "older":
 			return more();
 		case "handle":

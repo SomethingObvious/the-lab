@@ -373,7 +373,7 @@ Saturated violet and four fixed pastels on a cool lilac paper, with green, amber
 - **Link Violet** (`link`): links, text buttons, list markers, the "From you" and "From the computer" tags.
 
 ### Secondary
-- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header widgets (each widget picks one as its tone), the marks on the welcome card, cycle across the shortcut chips in that order with lilac fourth, and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every widget colour while the computer is offline. A widget can also take `deep`, which is `head-deep` with `on-head`.
+- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header widgets (each widget picks one as its tone), the marks on the welcome card, cycle across the shortcut chips in that order with lilac fourth (the model chip in front of them is `primary-c` with a star and doesn't count), and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every widget colour while the computer is offline. A widget can also take `deep`, which is `head-deep` with `on-head`.
 
 ### Tertiary
 - **Work Green** (`work`, container `work-c`): the live run card and the working loaders.
@@ -559,7 +559,7 @@ The facts and `from` lines are the server's, worked out from the command itself,
 A 72 px `toolbar` pill with a 52 px loader, the current step and "Working for 0:07", and Stop on the right. While a request waits on him the whole bar turns `ask` amber, the loader becomes a still burst on a dark disc, the label says Needs Your OK, and Review appears joined to Stop. Review jumps to the approval card.
 
 ### Composer
-The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the shortcut chips on top, any attachments waiting to send, then a row with the round attach button, the message field and the send shape. Send is a 56 px violet cookie with an up arrow, and a pale circle when there's nothing to send. Attach opens a menu with a mint circle for Photos and a pink rounded square for Files.
+The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the model chip and the shortcut chips on top, any attachments waiting to send, then a row with the round attach button, the message field and the send shape. Send is a 56 px violet cookie with an up arrow, and a pale circle when there's nothing to send. Attach opens a menu with a mint circle for Photos and a pink rounded square for Files.
 
 ### Messages
 His messages are `primary` bubbles on the right, at most 86% wide. Tapping one opens a split button, Save as Shortcut with a chevron that holds Send Again and Copy. Messages still waiting to send turn `surface-2` and `dim` with a clock. Replies are `surface` bubbles on the left (92% wide at most) with Markdown, `link` list markers and mono code. Files arrive as `surface` pills with a pink flower icon, photos as images with the reply tail. A message the server sent from `schedules.json` shows its label and a clock in the `meta` line under the bubble.
@@ -587,9 +587,9 @@ Each row in More is a 64 px `surface-1` row with a 44 px `primary-c` icon disc, 
 - **Check My Setup:** grouped rows, each with a state mark (green cookie or red clover) and a title, with what to do under it. A row that can be fixed from the phone has a Fix pill. The rows that need fixing turn `fail-c`.
 
 ### Settings
-Grouped like the More sheet under Title Medium headings (Top Bar, Look, Conversation, Agent). A switch row has its label on the left and a 52 by 32 px switch on the right, violet when on with the knob growing as it moves. A choice row has its label above a connected segmented row, with the picked one `primary` and fully round. Rows that open something end in a chevron. Every row is an entry in the `Settings` list in `app.js`, and the values are saved in `settings.json`.
+Grouped like the More sheet under Title Medium headings (Agent, Top Bar, Look, Conversation). Agent comes first, with Model, Thinking, Replies and Notifications, which opens the phone's own notification settings for The Lab. A switch row has its label on the left and a 52 by 32 px switch on the right, violet when on with the knob growing as it moves. A choice row has its label above a connected segmented row, with the picked one `primary` and fully round. Rows that open something end in a chevron. Every row is an entry in the `Settings` list in `app.js`, and the values are saved in `settings.json`.
 - **Edit the Top Bar:** grouped rows for the widgets in the bar, each with its name, what it shows, move earlier and later, remove, and a size picker, then the widgets that aren't in the bar with Add pills, then Put Back the Usual Widgets. Every change shows in the header behind the sheet straight away.
-- **Model:** the models the provider offers right now, as grouped radio rows with their descriptions, the picked one `primary-c`. Under them, a field and Use It pill for a model the list doesn't have.
+- **Model:** the Thinking choice (Quick, Normal, Thorough) on top, then the models the provider offers right now, as grouped radio rows with their descriptions, the picked one `primary-c`. Under them, a field and Use It pill for a model the list doesn't have.
 
 ### Welcome Card
 The first thing in a new conversation. A `surface-1` card with 32 px corners, Before You Start in Title Large, and one row per thing to know: a 40 px rounded square mark in sun, mint, pink, lilac and then violet with its icon, and a single short sentence next to it. Got It, a violet pill on the right, hides it, and Settings can bring it back.

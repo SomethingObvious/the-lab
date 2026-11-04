@@ -29,6 +29,9 @@ export const DEFAULTS: Settings = {
 	digest: true,
 	motion: "full",
 	model: null,
+	modelChip: true,
+	effort: null,
+	replies: "normal",
 };
 
 export function cleanSettings(v: unknown): Settings | null {

@@ -299,6 +299,12 @@ export const cleanEnv = (extra: Record<string, string> = {}) => ({
 	...extra,
 });
 
+const REPLIES: Record<string, string> = {
+	short:
+		"He set replies to Short in Settings, so answer in a few sentences and leave out detail he didn't ask for.",
+	long: "He set replies to Detailed in Settings, so explain fully, with the steps and the reasons.",
+};
+export type Effort = "low" | "medium" | "high";
 export interface LabOptions {
 	home: string;
 	dir: string;
@@ -368,6 +374,9 @@ export class Lab {
 	state: State;
 	private readonly opts: LabOptions;
 	private codex: Codex | null = null;
+	// From Thinking and Replies in his Settings, read at the start of each turn.
+	effort: Effort | undefined;
+	replies = "normal";
 	private readonly stateFile: string;
 	private readonly filesDir: string;
 	private readonly rulesFile: string;
@@ -545,7 +554,9 @@ export class Lab {
 				: text;
 		if (scheduled)
 			content = `This is "${scheduled.label}", a scheduled message from schedules.json, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.${scheduled.quiet ? " If there is nothing worth telling him, reply with exactly [SILENT] and he won't be notified." : ""}\n\n${content}`;
-		const notes = [...this.notes, this.memoryNote()].filter(Boolean).join(" ");
+		const notes = [...this.notes, this.memoryNote(), REPLIES[this.replies]]
+			.filter(Boolean)
+			.join(" ");
 		if (notes) content = `(${notes})\n\n${content}`;
 		this.notes = [];
 		this.setStatus(true, "Reading your message");
@@ -899,6 +910,15 @@ export class Lab {
 		this.codex?.setModel(model);
 	}
 
+	setEffort(effort: Effort | undefined) {
+		if (effort === this.effort) return;
+		this.effort = effort;
+		// Null goes back to the model's own default.
+		this.q
+			?.applyFlagSettings({ effortLevel: effort ?? null })
+			.catch((e) => console.error("effort:", e));
+	}
+
 	// ---------- memory ----------
 
 	private memoryGate(tool: string, args: Record<string, unknown>): string | null {
@@ -1082,6 +1102,7 @@ export class Lab {
 				permissionMode: "auto",
 				...(this.state.sessionId === undefined ? {} : { resume: this.state.sessionId }),
 				...(this.opts.model === undefined ? {} : { model: this.opts.model }),
+				...(this.effort ? { effort: this.effort } : {}),
 				mcpServers: { lab },
 				env: cleanEnv({
 					PATH: `${join(this.opts.dir, "bin")}${delimiter}${setting("PATH") ?? ""}`,

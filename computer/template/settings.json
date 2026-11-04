@@ -22,5 +22,8 @@
 	"chips": true,
 	"digest": true,
 	"motion": "full",
-	"model": null
+	"model": null,
+	"modelChip": true,
+	"effort": null,
+	"replies": "normal"
 }
