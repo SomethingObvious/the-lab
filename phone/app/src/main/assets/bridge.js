@@ -213,6 +213,8 @@
 				: url;
 		},
 		fix: (fix) => call("fix", { fix }),
+		// Whether the status card comes back after he swipes it away: "always", "tasks" or "never".
+		statusCard: (mode) => call("statusCard", { mode }),
 		retry: () => call("retry"),
 		safeMode: (reason) => call("rescue", { reason }),
 		// For an error the page caught itself, so one broken part can be skipped

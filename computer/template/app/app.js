@@ -1527,6 +1527,17 @@ const Settings = [
 		open: () => lab.fix?.("notifications"),
 	},
 	{
+		key: "statusCard",
+		type: "choice",
+		label: "Status Card",
+		hint: "Whether the card in your notifications comes back after you swipe it away",
+		options: [
+			["tasks", "Each Task"],
+			["always", "Always"],
+			["never", "Never"],
+		],
+	},
+	{
 		type: "open",
 		label: "Rename This Computer",
 		hint: () => mac?.name || "",
@@ -1645,6 +1656,7 @@ function applySettings() {
 	);
 	root.classList.toggle("calm", s.motion === "calm");
 	root.classList.toggle("no-times", s.times === false);
+	lab.statusCard?.(s.statusCard ?? "tasks");
 }
 async function saveSettings(change) {
 	const was = settings;

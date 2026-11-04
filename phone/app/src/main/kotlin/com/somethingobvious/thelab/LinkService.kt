@@ -78,7 +78,7 @@ class LinkService : Service() {
             Widget.update(Hub.app)
             follow()
             val s = running ?: return
-            s.getSystemService(NotificationManager::class.java).notify(Notifier.STATUS_ID, Notifier.status(s))
+            if (Notifier.showAgain(s)) s.getSystemService(NotificationManager::class.java).notify(Notifier.STATUS_ID, Notifier.status(s))
             // Done shows for 10 minutes, then the line goes back to idle.
             main.removeCallbacks(again)
             Notifier.doneUntil()?.let { main.postDelayed(again, it - System.currentTimeMillis() + 500) }
@@ -167,6 +167,27 @@ object Notifier {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
+    // What the card showed when he swiped it away, or null while it's up.
+    // Android 14 and later let him swipe it, and reposting it on every change
+    // would bring it straight back.
+    private var swiped: String? = null
+
+    // Each task he starts has its own key, so Each Task can tell a new one.
+    private fun about(): String =
+        if (Hub.status.optBoolean("working")) "task " + (Hub.events.lastOrNull { it.optString("kind") == "you" }?.optLong("id") ?: 0) else "idle"
+
+    fun swipedAway() { swiped = about() }
+
+    // Whether the card goes back up after a swipe, by the Status Card setting:
+    // always, for each new task (the default), or never.
+    fun showAgain(context: Context): Boolean {
+        val gone = swiped ?: return true
+        val mode = context.getSharedPreferences("lab", Context.MODE_PRIVATE).getString("statusCard", "tasks")
+        val back = mode == "always" || (mode == "tasks" && about() != "idle" && about() != gone)
+        if (back) swiped = null
+        return back
+    }
+
     // When the Done line should go back to idle, or null when it already has.
     fun doneUntil(): Long? {
         val at = Hub.lastDone?.let { runCatching { Instant.parse(it.optString("at")).toEpochMilli() }.getOrNull() } ?: return null
@@ -187,6 +208,7 @@ object Notifier {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_STATUS)
+            .setDeleteIntent(action(context, AnswerReceiver.SWIPED, "", 11))
         val since = runCatching { Instant.parse(Hub.status.optString("since")).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
         if (waiting) {
             // A promoted card always sits first and expanded, so it carries the
@@ -439,6 +461,7 @@ class AnswerReceiver : BroadcastReceiver() {
                 }
                 return
             }
+            SWIPED -> Notifier.swipedAway()
             STOP -> {
                 val pending = goAsync()
                 Hub.stop { ok ->
@@ -466,6 +489,7 @@ class AnswerReceiver : BroadcastReceiver() {
         const val ALLOW = "com.somethingobvious.thelab.ALLOW"
         const val DENY = "com.somethingobvious.thelab.DENY"
         const val STOP = "com.somethingobvious.thelab.STOP"
+        const val SWIPED = "com.somethingobvious.thelab.SWIPED"
         const val REPLY = "com.somethingobvious.thelab.REPLY"
         const val TEXT = "text"
     }

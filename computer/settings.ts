@@ -32,6 +32,7 @@ export const DEFAULTS: Settings = {
 	modelChip: true,
 	effort: null,
 	replies: "normal",
+	statusCard: "tasks",
 };
 
 export function cleanSettings(v: unknown): Settings | null {

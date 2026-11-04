@@ -546,6 +546,10 @@ class MainActivity : Activity() {
             "back" -> wantsBack(m.optBoolean("on"))
             "open" -> open(m.optString("url"))
             "fix" -> fix(m.optString("fix"))
+            "statusCard" -> m.optString("mode").takeIf { it in setOf("always", "tasks", "never") }?.let {
+                getSharedPreferences("lab", MODE_PRIVATE).edit { putString("statusCard", it) }
+                LinkService.refresh()
+            }
             "retry" -> Hub.reconnectNow()
         }
     }

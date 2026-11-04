@@ -25,5 +25,6 @@
 	"model": null,
 	"modelChip": true,
 	"effort": null,
-	"replies": "normal"
+	"replies": "normal",
+	"statusCard": "tasks"
 }
