@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- No cloud backup, as allowBackup="false" already says. A move to a new
+     phone still copies everything, which Android 12 and up do regardless. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" path="." />
+        <exclude domain="device_root" path="." />
+        <exclude domain="external" path="." />
+    </cloud-backup>
+</data-extraction-rules>

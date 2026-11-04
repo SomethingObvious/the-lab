@@ -1,7 +1,6 @@
 package com.somethingobvious.thelab
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.NotificationManager
@@ -13,7 +12,6 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
-import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.util.TypedValue
@@ -37,8 +35,13 @@ import android.window.BackEvent
 import android.window.OnBackAnimationCallback
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import androidx.annotation.RequiresApi
 import androidx.core.content.FileProvider
+import androidx.core.content.edit
+import androidx.core.graphics.drawable.toDrawable
+import androidx.core.net.toUri
 import androidx.core.util.Consumer
+import androidx.core.view.WindowCompat
 import androidx.window.java.layout.WindowInfoTrackerCallbackAdapter
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
@@ -105,7 +108,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Hub.init(this)
-        window.setDecorFitsSystemWindows(false)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         frame = FrameLayout(this)
         setContentView(frame)
         paintStart()
@@ -202,8 +205,8 @@ class MainActivity : Activity() {
                 ?: return Toast.makeText(this, "That pairing link is damaged. Show a new code on the computer.", Toast.LENGTH_LONG).show()
         }
         val base = uri.getQueryParameter("u")?.trimEnd('/')
-        if (tunnel == null && (base == null || Uri.parse(base).scheme != "https")) return Toast.makeText(this, "That pairing link isn't from The Lab.", Toast.LENGTH_LONG).show()
-        val host = tunnel?.let { t -> t.relay?.let { Uri.parse(it).host } ?: "your Wi-Fi" } ?: Uri.parse(base).host ?: return
+        if (tunnel == null && (base == null || base.toUri().scheme != "https")) return Toast.makeText(this, "That pairing link isn't from The Lab.", Toast.LENGTH_LONG).show()
+        val host = tunnel?.let { t -> t.relay?.toUri()?.host ?: "your Wi-Fi" } ?: base?.toUri()?.host ?: return
         AlertDialog.Builder(this)
             .setTitle("Pair With This Computer?")
             .setMessage(if (tunnel != null) "The Lab will talk to the computer that showed this code, straight over Wi-Fi when it can and through $host otherwise. Only say yes if you just scanned the code on your own computer."
@@ -274,7 +277,6 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
     private fun build() {
         web?.let { frame.removeView(it); it.destroy() }
         unlisten?.invoke()
@@ -322,8 +324,10 @@ class MainActivity : Activity() {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(w, assets.open("bridge.js").bufferedReader().readText(), setOf(ORIGIN))
         }
-        WebViewCompat.addWebMessageListener(w, "labNative", setOf(ORIGIN)) { _, message, _, isMainFrame, reply ->
-            if (isMainFrame) handle(message.data ?: return@addWebMessageListener, reply)
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(w, "labNative", setOf(ORIGIN)) { _, message, _, isMainFrame, reply ->
+                if (isMainFrame) handle(message.data ?: return@addWebMessageListener, reply)
+            }
         }
         frame.addView(w, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         web = w
@@ -353,7 +357,12 @@ class MainActivity : Activity() {
     }
 
     private fun send(e: JSONObject) {
-        port?.postMessage(e.toString())
+        port?.let { post(it, e.toString()) }
+    }
+
+    // A proxy only comes from the listener, so the feature is always there by now.
+    private fun post(to: JavaScriptReplyProxy, text: String) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) to.postMessage(text)
     }
 
     private fun handle(raw: String, reply: JavaScriptReplyProxy) {
@@ -370,15 +379,15 @@ class MainActivity : Activity() {
                 val hasDesign = Hub.designDir.resolve("index.html").exists()
                 val reason = rescueReason ?: if (!hasDesign && Hub.paired) "Your design hasn't arrived from the computer yet. It loads as soon as the computer is reachable." else null
                 if (reason != null) batch.put(JSONObject().put("kind", "rescue").put("reason", reason).put("hasDesign", hasDesign && rescueReason != null))
-                reply.postMessage(JSONObject().put("batch", batch).toString())
+                post(reply, JSONObject().put("batch", batch).toString())
                 Hub.onLoaded {
                     if (port !== reply) return@onLoaded
                     val history = JSONArray()
                     for (e in Hub.events) history.put(e)
                     history.put(JSONObject().put("kind", "loaded"))
-                    reply.postMessage(JSONObject().put("batch", history).toString())
+                    post(reply, JSONObject().put("batch", history).toString())
                     unlisten = Hub.listen { send(it) }
-                    compose?.let { reply.postMessage(it.toString()); keyboard() }
+                    compose?.let { post(reply, it.toString()); keyboard() }
                     compose = null
                 }
             }
@@ -390,7 +399,7 @@ class MainActivity : Activity() {
                 // Asked here, when replies and approvals start to matter, rather than on first launch.
                 val prefs = getSharedPreferences("lab", MODE_PRIVATE)
                 if (!prefs.getBoolean("askedNotify", false) && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                    prefs.edit().putBoolean("askedNotify", true).apply()
+                    prefs.edit { putBoolean("askedNotify", true) }
                     requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
                 }
             }
@@ -477,7 +486,7 @@ class MainActivity : Activity() {
         // the moment before the first paint.
         if (runCatching { Color.parseColor(m.optString("bg")) }.isFailure) return
         bars(m)
-        getSharedPreferences("lab", MODE_PRIVATE).edit().putString(if (night) "look-dark" else "look-light", m.toString()).apply()
+        getSharedPreferences("lab", MODE_PRIVATE).edit { putString(if (night) "look-dark" else "look-light", m.toString()) }
     }
 
     private fun bars(m: JSONObject) {
@@ -501,11 +510,11 @@ class MainActivity : Activity() {
         val layers = if (head != null && head != bg && height > 0) {
             val r = m.optDouble("headRadius", 0.0).toFloat() * d
             val band = GradientDrawable().apply { setColor(head); cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r) }
-            LayerDrawable(arrayOf(ColorDrawable(bg), band)).apply {
+            LayerDrawable(arrayOf(bg.toDrawable(), band)).apply {
                 setLayerGravity(1, Gravity.TOP or Gravity.FILL_HORIZONTAL)
                 setLayerHeight(1, height)
             }
-        } else ColorDrawable(bg)
+        } else bg.toDrawable()
         window.setBackgroundDrawable(layers)
         bars(m)
     }
@@ -517,6 +526,7 @@ class MainActivity : Activity() {
         else onBackInvokedDispatcher.unregisterOnBackInvokedCallback(back)
     }
 
+    @RequiresApi(34)
     private fun progress(e: BackEvent) {
         send(JSONObject().put("kind", "backprogress").put("progress", e.progress.toDouble())
             .put("edge", if (e.swipeEdge == BackEvent.EDGE_RIGHT) "right" else "left"))
@@ -564,7 +574,7 @@ class MainActivity : Activity() {
     }
 
     private fun open(url: String) {
-        val uri = Uri.parse(url)
+        val uri = url.toUri()
         if (uri.scheme == "http" || uri.scheme == "https") {
             if (uri.host != HOST) return openExternal(uri)
         }
@@ -588,7 +598,7 @@ class MainActivity : Activity() {
 
     private fun openApp(pkg: String) {
         packageManager.getLaunchIntentForPackage(pkg)?.let { startActivity(it) }
-            ?: openExternal(Uri.parse("market://details?id=$pkg"))
+            ?: openExternal("market://details?id=$pkg".toUri())
     }
 
     private fun mime(name: String): String {

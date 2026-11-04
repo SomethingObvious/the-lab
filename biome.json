@@ -1,0 +1,226 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": ["**", "!demos", "!.impeccable"],
+		"ignoreUnknown": true
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"lineWidth": 88
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "all",
+			"nursery": {
+				"recommended": true,
+				"noFloatingPromises": "off"
+			},
+			"suspicious": {
+				"noImportCycles": "off",
+				"noConsole": {
+					"level": "warn",
+					"options": {
+						"allow": ["error", "warn"]
+					}
+				},
+				"noReactSpecificProps": "off",
+				"noMisplacedAssertion": "off",
+				"noUnnecessaryConditions": "off"
+			},
+			"security": {
+				"noSecrets": "off"
+			},
+			"correctness": {
+				"useImportExtensions": "off",
+				"noUnresolvedImports": "off",
+				"noUndeclaredDependencies": "off",
+				"noNodejsModules": "off",
+				"useQwikValidLexicalScope": "off",
+				"noSolidDestructuredProps": "off"
+			},
+			"performance": {
+				"noImgElement": "off",
+				"noJsxPropsBind": "off",
+				"useSolidForComponent": "off",
+				"noAwaitInLoops": "off",
+				"useTopLevelRegex": "off",
+				"noBarrelFile": "off",
+				"noReExportAll": "off"
+			},
+			"complexity": {
+				"noImportantStyles": "off",
+				"noVoid": "off",
+				"noExcessiveLinesPerFunction": "off",
+				"noForEach": "off",
+				"useLiteralKeys": "off",
+				"useMaxParams": "off",
+				"noExcessiveCognitiveComplexity": {
+					"level": "error",
+					"options": {
+						"maxAllowedComplexity": 30
+					}
+				}
+			},
+			"style": {
+				"useFilenamingConvention": {
+					"level": "error",
+					"options": {
+						"filenameCases": ["camelCase", "PascalCase", "kebab-case"]
+					}
+				},
+				"useComponentExportOnlyModules": "off",
+				"useBlockStatements": "off",
+				"noTernary": "off",
+				"noNestedTernary": "off",
+				"noMagicNumbers": "off",
+				"noJsxLiterals": "off",
+				"noHexColors": "off",
+				"noContinue": "off",
+				"noIncrementDecrement": "off",
+				"useExportsLast": "off",
+				"noExcessiveLinesPerFile": "off",
+				"noNegationElse": "off",
+				"noImplicitBoolean": "off",
+				"useDefaultSwitchClause": "off",
+				"noDefaultExport": "off",
+				"useDestructuring": "off",
+				"noExcessiveClassesPerFile": "off",
+				"useNamingConvention": {
+					"level": "error",
+					"options": {
+						"strictCase": false,
+						"conventions": [
+							{
+								"selector": {
+									"kind": "objectLiteralProperty"
+								},
+								"formats": ["camelCase", "PascalCase", "CONSTANT_CASE", "snake_case"]
+							},
+							{
+								"selector": {
+									"kind": "typeProperty"
+								},
+								"formats": ["camelCase", "PascalCase", "CONSTANT_CASE", "snake_case"]
+							}
+						]
+					}
+				}
+			}
+		}
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double",
+			"semicolons": "always"
+		}
+	},
+	"assist": {
+		"enabled": true,
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	},
+	"overrides": [
+		{
+			"includes": [
+				"computer/template/app/**",
+				"computer/web-bridge.js",
+				"phone/app/src/main/assets/**"
+			],
+			"javascript": {
+				"globals": ["lab", "labNative"]
+			}
+		},
+		{
+			"includes": ["relay/**"],
+			"javascript": {
+				"globals": ["WebSocketPair", "WebSocketRequestResponsePair"]
+			}
+		},
+		{
+			"includes": ["computer/codex.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"useNamingConvention": {
+							"level": "error",
+							"options": {
+								"strictCase": false,
+								"conventions": [
+									{
+										"selector": {
+											"kind": "objectLiteralProperty"
+										},
+										"match": "_?(.+)",
+										"formats": [
+											"camelCase",
+											"PascalCase",
+											"CONSTANT_CASE",
+											"snake_case"
+										]
+									},
+									{
+										"selector": {
+											"kind": "typeProperty"
+										},
+										"match": "_?(.+)",
+										"formats": [
+											"camelCase",
+											"PascalCase",
+											"CONSTANT_CASE",
+											"snake_case"
+										]
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"includes": ["computer/qr.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noBitwiseOperators": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["computer/config.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noProcessEnv": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["computer/setup.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noConsole": "off"
+					},
+					"style": {
+						"noProcessEnv": "off",
+						"useExplicitLengthCheck": "off",
+						"noCommonJs": "off"
+					}
+				}
+			}
+		}
+	]
+}

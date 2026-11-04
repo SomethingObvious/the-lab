@@ -1,0 +1,26 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "oxc", "unicorn", "import", "promise", "node"],
+	"categories": {
+		"correctness": "error",
+		"suspicious": "error",
+		"perf": "error"
+	},
+	"rules": {
+		"eslint/no-await-in-loop": "off"
+	},
+	"overrides": [
+		{
+			"files": ["phone/app/src/main/assets/bridge.js"],
+			"rules": {
+				"unicorn/require-post-message-target-origin": "off"
+			}
+		}
+	],
+	"ignorePatterns": [
+		"demos/**",
+		"**/node_modules/**",
+		"phone/build/**",
+		"phone/app/build/**"
+	]
+}

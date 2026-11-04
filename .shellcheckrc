@@ -1,0 +1,5 @@
+# Every optional check on, the same as the Backboard repos.
+enable=all
+severity=style
+shell=bash
+external-sources=true

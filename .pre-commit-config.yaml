@@ -1,0 +1,84 @@
+exclude: ^demos/
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: \.bat$
+      - id: trailing-whitespace
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        # The same Windows flag that .typos.toml allows, and lockfiles are hashes.
+        args: [--ignore-words-list=fo]
+        exclude: package-lock\.json$
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.51.1
+    hooks:
+      - id: typos
+        args: []
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: (package-lock\.json|\.secrets\.baseline)$
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [-x]
+        # Gradle writes the wrapper script and replaces it on every upgrade.
+        exclude: ^phone/gradlew$
+
+  - repo: local
+    hooks:
+      - id: no-silenced-checks
+        name: No silenced checks
+        language: pygrep
+        entry: biome-ignore|oxlint-disable|eslint-disable|@ts-ignore|@ts-expect-error|@ts-nocheck|@Suppress\(|@SuppressLint|tools:ignore
+        types_or: [javascript, ts, html, css, kotlin, xml]
+      - id: biome
+        name: Biome
+        language: system
+        entry: npx biome check --no-errors-on-unmatched --files-ignore-unknown=true
+        types_or: [javascript, ts, html, css, json]
+      - id: oxlint
+        name: oxlint
+        language: system
+        entry: npx oxlint --deny-warnings
+        types_or: [javascript, ts]
+      - id: tsc
+        name: TypeScript
+        language: system
+        entry: npm --prefix computer run check
+        files: ^computer/.*\.ts$
+        pass_filenames: false
+      - id: android
+        name: Android Lint, Kotlin and Unit Tests
+        language: system
+        # A JAVA_HOME that is only a runtime can't compile, so fall back to the JDK.
+        entry: bash -c 'cd phone && j="${JAVA_HOME:-}" && { [ -x "$j/bin/javac" ] || j="/c/Program Files/Eclipse Adoptium/jdk-21.0.12.101-hotspot"; } && JAVA_HOME="$j" ./gradlew -q :app:lintDebug :app:testDebugUnitTest'
+        files: ^phone/
+        pass_filenames: false

@@ -2,5 +2,4 @@
     <string name="app_name">The Lab</string>
     <string name="safe_short">Safe Mode</string>
     <string name="safe_long">Open in Safe Mode</string>
-    <string name="widget">The Lab</string>
 </resources>

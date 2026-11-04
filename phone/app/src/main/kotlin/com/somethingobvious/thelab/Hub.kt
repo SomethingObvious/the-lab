@@ -1,5 +1,6 @@
 package com.somethingobvious.thelab
 
+import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
@@ -13,6 +14,8 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.Log
+import androidx.core.content.edit
+import androidx.core.graphics.scale
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -45,7 +48,7 @@ object Hub {
     private const val KEEP = 2000
     private val JSON_TYPE = "application/json".toMediaType()
 
-    lateinit var app: Context
+    lateinit var app: Application
         private set
     private lateinit var prefs: SharedPreferences
     private val main = Handler(Looper.getMainLooper())
@@ -64,9 +67,9 @@ object Hub {
 
     val events = ArrayList<JSONObject>()
     private val outbox = JSONArray()
-    var link = JSONObject().put("kind", "link").put("state", "connecting")
+    var link: JSONObject = JSONObject().put("kind", "link").put("state", "connecting")
         private set
-    var status = JSONObject().put("kind", "status").put("working", false).put("label", "")
+    var status: JSONObject = JSONObject().put("kind", "status").put("working", false).put("label", "")
         private set
     // The newest event of every kind the server sends without an id, kept
     // across restarts so the page can show them while the computer is away. Any
@@ -99,10 +102,10 @@ object Hub {
     private var network: Network? = null
     private var lastId
         get() = prefs.getLong("lastId", 0)
-        set(v) = prefs.edit().putLong("lastId", v).apply()
+        set(v) = prefs.edit { putLong("lastId", v) }
     var designVersion
         get() = prefs.getString("design", null)
-        private set(v) = prefs.edit().putString("design", v).apply()
+        private set(v) = prefs.edit { putString("design", v) }
 
     val designDir get() = File(app.filesDir, "design/current")
     private val eventsFile get() = File(app.filesDir, "events.jsonl")
@@ -110,7 +113,7 @@ object Hub {
 
     fun init(context: Context) {
         if (::app.isInitialized) return
-        app = context.applicationContext
+        app = context.applicationContext as Application
         prefs = app.getSharedPreferences("lab", Context.MODE_PRIVATE)
         loadEvents()
         // The old "mac" and "shortcuts" keys go first, so a newer live: copy of
@@ -182,10 +185,11 @@ object Hub {
     fun pair(newUrl: String?, tunnel: Tunnel.Spec?, newToken: String) = onLoaded {
         val was = prefs.getString("tunnel", null)?.let { runCatching { JSONObject(it).optString("room") }.getOrNull() } ?: prefs.getString("url", null)
         val changed = (tunnel?.room ?: newUrl) != was
-        prefs.edit().apply {
+        prefs.edit {
             if (newUrl != null) putString("url", newUrl.trimEnd('/')) else remove("url")
             if (tunnel != null) putString("tunnel", tunnel.json().toString()) else remove("tunnel")
-        }.putString("token", newToken).apply()
+            putString("token", newToken)
+        }
         Tunnel.spec = tunnel
         if (changed) {
             events.clear()
@@ -193,10 +197,10 @@ object Hub {
             lastId = 0
             designVersion = null
             live.clear()
-            prefs.edit().apply { for (k in prefs.all.keys) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") remove(k) }.apply()
+            prefs.edit { for (k in prefs.all.keys) if (k.startsWith("live:") || k == "mac" || k == "shortcuts") remove(k) }
             File(app.filesDir, "design").deleteRecursively()
         }
-        Log.i(TAG, "paired with ${tunnel?.relay ?: tunnel?.lan?.firstOrNull() ?: newUrl}")
+        if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "paired with ${tunnel?.relay ?: tunnel?.lan?.firstOrNull() ?: newUrl}")
         reconnectNow()
     }
 
@@ -269,7 +273,7 @@ object Hub {
         val kind = e.optString("kind")
         if (kind == "reach") reached(e)
         live[kind] = e
-        prefs.edit().putString("live:$kind", e.toString()).apply()
+        prefs.edit { putString("live:$kind", e.toString()) }
         emit(e)
     }
 
@@ -316,7 +320,7 @@ object Hub {
         failures++
         val wait = minOf(1000L shl minOf(failures, 5), 30_000L)
         retry = Runnable { retry = null; connect() }.also { main.postDelayed(it, wait) }
-        Log.i(TAG, "link lost (${code ?: t?.javaClass?.simpleName}), retry in ${wait}ms")
+        if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "link lost (${code ?: t?.javaClass?.simpleName}), retry in ${wait}ms")
     }
 
     // His words go to disk before anything else happens to them.
@@ -554,7 +558,7 @@ object Hub {
             }
             if (!big) return src
             val scale = w.toFloat() / minOf(bm.width, bm.height)
-            val sized = if (scale < 1) Bitmap.createScaledBitmap(bm, (bm.width * scale).toInt(), (bm.height * scale).toInt(), true) else bm
+            val sized = if (scale < 1) bm.scale((bm.width * scale).toInt(), (bm.height * scale).toInt()) else bm
             val tmp = File.createTempFile("thumb", ".part", out.parentFile)
             tmp.outputStream().use { sized.compress(Bitmap.CompressFormat.WEBP_LOSSY, 85, it) }
             tmp.renameTo(out)

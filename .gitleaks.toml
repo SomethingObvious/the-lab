@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+# detect-secrets keeps a SHA-1 of each string it has already reviewed here, and
+# those hashes look like keys to gitleaks.
+[[allowlists]]
+description = "detect-secrets baseline"
+paths = ['''^\.secrets\.baseline$''']

@@ -118,7 +118,7 @@ object Tunnel {
                 it.soTimeout = 30_000
                 val sock = try { it.accept() } catch (e: IOException) { return@thread }
                 try { open(sp, sp.lan).first.let { s -> s.carry(sock); s.dead() } } catch (e: Exception) {
-                    Log.i(TAG, "tunnel: claim couldn't connect (${e.message})")
+                    if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "tunnel: claim couldn't connect (${e.message})")
                     runCatching { sock.close() }
                 }
             }
@@ -138,7 +138,7 @@ object Tunnel {
     // Anything thrown on this thread would take the whole app down.
     private fun carry(sock: Socket) {
         val s = try { session() } catch (e: Exception) {
-            Log.i(TAG, "tunnel: ${e.message}")
+            if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "tunnel: ${e.message}")
             runCatching { sock.close() }
             return
         }
@@ -158,7 +158,7 @@ object Tunnel {
         session = s
         route = how
         why = ""
-        Log.i(TAG, "tunnel: $how")
+        if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "tunnel: $how")
         return s
     } }
 

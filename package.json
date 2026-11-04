@@ -1,0 +1,13 @@
+{
+	"name": "the-lab-checks",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"lint": "biome ci . && oxlint --deny-warnings && npm --prefix computer run check",
+		"fix": "biome check --write ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.5.15",
+		"oxlint": "1.89.0"
+	}
+}

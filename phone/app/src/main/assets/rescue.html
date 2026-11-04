@@ -66,7 +66,7 @@
   <textarea id="text" rows="1" placeholder="Message the computer" aria-label="Message the computer"></textarea>
   <button type="submit" class="primary">Send</button>
 </form>
-<script>
+<script>"use strict";
   const $ = (id) => document.getElementById(id);
   const log = $('log');
   const items = [];
@@ -92,13 +92,13 @@
   const paint = () => {
     queued = false;
     const pending = outbox.map((m) => { const li = document.createElement('li'); li.className = 'you queued'; li.textContent = `${m.text}\n(waiting to send)`; return li; });
-    log.replaceChildren(...(items.length || pending.length ? [...items, ...pending] : [Object.assign(document.createElement('li'), { className: 'empty', textContent: 'Nothing here yet.' })]));
+    log.replaceChildren(...(items.length > 0 || pending.length > 0 ? [...items, ...pending] : [Object.assign(document.createElement('li'), { className: 'empty', textContent: 'Nothing here yet.' })]));
     log.scrollTop = log.scrollHeight;
   };
   // Only lines from the last half minute are read out, so the history
   // arriving all at once stays quiet.
   const say = (e, text) => {
-    if (text && e.at && Date.now() - Date.parse(e.at) < 30000) $('sr').textContent = text;
+    if (text && e.at && Date.now() - Date.parse(e.at) < 30_000) $('sr').textContent = text;
   };
   lab.subscribe((e) => {
     if (e.kind === 'reply') say(e, `The computer replied: ${e.text.slice(0, 160)}`);
@@ -114,7 +114,7 @@
         $('link').className = `link ${e.state}`;
         $('linkText').textContent = e.detail || e.state;
         $('fix').hidden = e.fix !== 'tailscale';
-        if (e.state === 'unpaired') $('why').textContent = `This phone is not paired with a computer yet.`;
+        if (e.state === 'unpaired') $('why').textContent = "This phone is not paired with a computer yet.";
         return;
       }
       case 'status': $('stop').hidden = !e.working; return;
@@ -127,11 +127,11 @@
       case 'file': add('step', `Sent you ${e.name}`); break;
       case 'done': add('done', e.stopped ? 'Stopped' : e.ok ? 'Done' : `Finished with a problem: ${e.error || ''}`); break;
       case 'ask': {
-        const li = add('ask', '', (li) => {
-          li.innerHTML = '<strong></strong>\n<span></span><div class="row"><button type="button">Deny</button><button type="button" class="primary">Allow</button></div>';
-          li.querySelector('strong').textContent = e.title;
-          li.querySelector('span').textContent = e.detail || '';
-          const [no, yes] = li.querySelectorAll('button');
+        const li = add('ask', '', (el) => {
+          el.innerHTML = '<strong></strong>\n<span></span><div class="row"><button type="button">Deny</button><button type="button" class="primary">Allow</button></div>';
+          el.querySelector('strong').textContent = e.title;
+          el.querySelector('span').textContent = e.detail || '';
+          const [no, yes] = el.querySelectorAll('button');
           yes.onclick = () => lab.answer(e.ref, true);
           no.onclick = () => lab.answer(e.ref, false);
         });
@@ -155,15 +155,15 @@
   $('fix').onclick = () => lab.fix('tailscale');
   $('retry').onclick = () => lab.retry();
   $('stop').onclick = () => lab.stop();
-  const text = $('text');
-  text.oninput = () => { text.style.height = 'auto'; text.style.height = `${text.scrollHeight}px`; };
+  const box = $('text');
+  box.oninput = () => { box.style.height = 'auto'; box.style.height = `${box.scrollHeight}px`; };
   $('form').onsubmit = (ev) => {
     ev.preventDefault();
-    const t = text.value.trim();
+    const t = box.value.trim();
     if (!t) return;
     lab.send(t);
-    text.value = '';
-    text.oninput();
+    box.value = '';
+    box.oninput();
   };
   lab.ready();
 </script>

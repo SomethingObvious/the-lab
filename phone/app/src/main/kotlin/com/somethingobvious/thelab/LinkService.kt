@@ -36,7 +36,9 @@ class LinkService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Hub.init(this)
         running = this
-        startForeground(Notifier.STATUS_ID, Notifier.status(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        // Android 13 takes the type from the manifest, which is the same one.
+        if (Build.VERSION.SDK_INT >= 34) startForeground(Notifier.STATUS_ID, Notifier.status(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING)
+        else startForeground(Notifier.STATUS_ID, Notifier.status(this))
         Hub.start()
         Retry.cancel(this)
         follow()
@@ -419,6 +421,8 @@ class PairReceiver : BroadcastReceiver() {
 
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // It's exported, so any app could send it an intent of its own.
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         Hub.init(context)
         if (Hub.paired) LinkService.start(context)
     }

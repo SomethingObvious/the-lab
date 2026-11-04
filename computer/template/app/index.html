@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>The Lab</title>
 <link rel="preload" href="fonts/RobotoFlex.woff2" as="font" type="font/woff2" crossorigin>
-<script>
+<script>"use strict";
   (() => {
     const t = new URLSearchParams(location.search).get('theme');
     if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
   })();
 </script>
 <link rel="stylesheet" href="app.css">
-<script src="app.js" defer></script>
+<script type="module" src="app.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -60,7 +60,7 @@
         <svg class="ic" aria-hidden="true"><use href="#i-more"/></svg>
       </button>
     </div>
-    <form class="head-row search-row" id="search-row" role="search" hidden>
+    <search class="head-row search-row" id="search-row" hidden><form>
       <button type="button" class="icon-btn on-head" id="close-search" aria-label="Close Search">
         <svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>
       </button>
@@ -68,13 +68,13 @@
       <button type="button" class="icon-btn on-head clear" data-clear="search" aria-label="Clear Search" hidden>
         <svg class="ic" aria-hidden="true"><use href="#i-close"/></svg>
       </button>
-    </form>
-    <div class="glance" id="glance" role="group" aria-label="Top bar"></div>
+    </form></search>
+    <fieldset class="glance" id="glance" aria-label="Top bar"></fieldset>
     <div class="glance-more" id="glance-more" hidden></div>
   </header>
 
   <div class="banner" id="banner" hidden>
-    <span class="banner-mark" aria-hidden="true"><svg viewBox="0 0 100 100"><path class="shape s-clover"/></svg><svg class="ic"><use href="#i-wifi"/></svg></span>
+    <span class="banner-mark" aria-hidden="true"><svg viewBox="0 0 100 100" aria-hidden="true"><path class="shape s-clover"/></svg><svg class="ic" aria-hidden="true"><use href="#i-wifi"/></svg></span>
     <p id="banner-text"></p>
     <div class="banner-btns">
       <button type="button" class="btn filled" id="banner-fix" hidden>Open Tailscale</button>
@@ -106,7 +106,7 @@
       <div class="files-body" id="files-body"></div>
     </section>
     <div class="now" id="now" hidden>
-      <span class="loader" id="now-mark" aria-hidden="true"><svg viewBox="0 0 100 100"><path class="shape s-burst"/></svg></span>
+      <span class="loader" id="now-mark" aria-hidden="true"><svg viewBox="0 0 100 100" aria-hidden="true"><path class="shape s-burst"/></svg></span>
       <span class="now-text"><span class="now-label" id="now-label"></span><span class="now-time" id="now-time"></span></span>
       <span class="group">
         <button type="button" class="now-btn review" id="now-jump" hidden>Review</button>
@@ -117,7 +117,7 @@
 
   <footer class="composer" id="composer">
    <div class="tray">
-    <div class="chips" id="chips" role="group" aria-label="Shortcuts"></div>
+    <fieldset class="chips" id="chips" aria-label="Shortcuts"></fieldset>
     <div class="pending" id="pending" hidden></div>
     <form class="dock" id="form">
       <div class="attach-wrap">
@@ -125,8 +125,8 @@
           <svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>
         </button>
         <div class="menu" id="attach-menu" hidden>
-          <button type="button" data-attach="photos"><span class="menu-shape s-a" aria-hidden="true"><svg class="ic"><use href="#i-image"/></svg></span>Photos</button>
-          <button type="button" data-attach="files"><span class="menu-shape s-b" aria-hidden="true"><svg class="ic"><use href="#i-doc"/></svg></span>Files</button>
+          <button type="button" data-attach="photos"><span class="menu-shape s-a" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg></span>Photos</button>
+          <button type="button" data-attach="files"><span class="menu-shape s-b" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#i-doc"/></svg></span>Files</button>
         </div>
       </div>
       <textarea id="text" rows="1" placeholder="Message your computer" aria-label="Message your computer" enterkeyhint="send"></textarea>
@@ -142,7 +142,7 @@
 <div class="scrim" id="scrim" hidden></div>
 <section class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title">
   <button type="button" class="handle" id="handle" aria-label="Close"></button>
-  <h2 id="sheet-title" tabindex="-1"></h2>
+  <h2 id="sheet-title" tabindex="-1">More</h2>
   <div id="sheet-body"></div>
   <div class="sheet-actions" id="sheet-actions"></div>
 </section>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- R8 inlines these accessors in the release build, and opening up private members to avoid them would only loosen the code. -->
+    <issue id="SyntheticAccessor" severity="ignore" />
+    <!-- The status line is in a home screen widget, where the whole bar is one tap target and text can't be selected. -->
+    <issue id="SelectableText">
+        <ignore path="src/main/res/layout/widget.xml" />
+    </issue>
+    <!-- The whole app is a page in a WebView, and it only ever loads its own assets and the design from the computer. -->
+    <issue id="SetJavaScriptEnabled" severity="ignore" />
+    <!-- targetSdk moves up only after testing the new platform behaviour on the phone. -->
+    <issue id="OldTargetApi" severity="ignore" />
+</lint>

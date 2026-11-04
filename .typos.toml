@@ -1,0 +1,5 @@
+[default.extend-words]
+# The width axis of a variable font, as font-variation-settings spells it.
+wdth = "wdth"
+# The format flag of whoami and tasklist on Windows, as in /fo csv.
+fo = "fo"

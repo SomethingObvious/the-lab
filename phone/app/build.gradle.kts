@@ -49,6 +49,20 @@ android {
 
     // Tunnel logs through android.util.Log, which does nothing on the computer.
     testOptions.unitTests.isReturnDefaultValues = true
+
+    lint {
+        warningsAsErrors = true
+        abortOnError = true
+        checkAllWarnings = true
+        checkTestSources = true
+        checkDependencies = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        allWarningsAsErrors = true
+    }
 }
 
 dependencies {
@@ -59,5 +73,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.5.1")
     implementation("com.squareup.okhttp3:okhttp-sse:5.5.1")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.json:json:20240303")
+    testImplementation("org.json:json:20260814")
 }
