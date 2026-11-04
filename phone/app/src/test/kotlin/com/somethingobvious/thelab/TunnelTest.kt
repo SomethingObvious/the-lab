@@ -84,6 +84,47 @@ class TunnelTest {
         }
     }
 
+    @Test fun findsTheComputerOnTheWifiByItsRoom() {
+        assumeTrue("set LAB_TUNNEL_TEST to run against computer/tunnel.ts", conf.isNotEmpty())
+        Tunnel.spec = null
+        assertEquals(conf.getValue("lan").split(','), Tunnel.discover(spec(), listOf("127.0.0.1")))
+        val stranger = Tunnel.Spec(null, "someone-else", spec().key, spec().pass, spec().lan)
+        assertEquals(emptyList<String>(), Tunnel.discover(stranger, listOf("127.0.0.1")))
+    }
+
+    @Test fun requestsBehindAFailedDialFailFast() {
+        assumeTrue("set LAB_TUNNEL_TEST to run against computer/tunnel.ts", conf.isNotEmpty())
+        Tunnel.direct = { true }
+        Tunnel.spec = Tunnel.Spec(null, spec().room, spec().key, spec().pass, listOf("127.0.0.1:1"))
+        assertThrows(IOException::class.java) { get("/health") }
+        assertEquals("none", Tunnel.why)
+        val t = System.nanoTime()
+        assertThrows(IOException::class.java) { get("/health") }
+        assert((System.nanoTime() - t) / 1_000_000 < 500) { "the second request dialed again" }
+        // A new network starts the dial over.
+        Tunnel.drop()
+        val t2 = System.nanoTime()
+        assertThrows(IOException::class.java) { get("/health") }
+        assert((System.nanoTime() - t2) / 1_000_000 >= 700) { "the dial after a drop was skipped" }
+    }
+
+    @Test fun theRelaySaysWhenTheComputerIsBack() {
+        assumeTrue("set LAB_TUNNEL_TEST to run against computer/tunnel.ts", conf.isNotEmpty())
+        // The test computer is on the relay, so it says "here" straight away.
+        Tunnel.spec = spec()
+        val back = java.util.concurrent.CountDownLatch(1)
+        Tunnel.await { back.countDown() }
+        assert(back.await(5, java.util.concurrent.TimeUnit.SECONDS)) { "no here for a computer that's on the relay" }
+        // A room with no computer holds the socket open and says nothing.
+        val empty = java.util.concurrent.CountDownLatch(1)
+        Tunnel.spec = Tunnel.Spec(conf["relay"], "A".repeat(43), spec().key, spec().pass, spec().lan)
+        Tunnel.await { empty.countDown() }
+        assertEquals(false, empty.await(3, java.util.concurrent.TimeUnit.SECONDS))
+        assertEquals(true, Tunnel.isWaiting)
+        Tunnel.stopWaiting()
+        assertEquals(false, Tunnel.isWaiting)
+    }
+
     @Test fun aPairingLinkWithABadAddressIsTurnedDown() {
         val good = JSONObject().put("relay", "https://relay.example.workers.dev").put("room", "r").put("key", Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(65)))
             .put("pass", Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32))).put("lan", JSONArray().put("192.168.0.18:8418"))

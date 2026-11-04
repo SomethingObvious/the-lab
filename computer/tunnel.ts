@@ -19,6 +19,7 @@ import {
 	hkdfSync,
 	randomBytes,
 } from "node:crypto";
+import { createSocket } from "node:dgram";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { networkInterfaces } from "node:os";
@@ -115,6 +116,13 @@ export function lanAddresses(port: number): string[] {
 		.map((a) => a.at)
 		.slice(0, 6);
 }
+
+const addresses = () =>
+	Object.values(networkInterfaces())
+		.flat()
+		.filter((a) => a && !a.internal)
+		.map((a) => a?.address)
+		.join(",");
 
 export const specOf = (k: Keys, relay: string | undefined, lan: string[]): Spec => ({
 	...(relay ? { relay } : {}),
@@ -376,9 +384,22 @@ export function startTunnel(o: TunnelOptions) {
 		state.lan = "on";
 	});
 
+	// A phone whose saved addresses stopped answering (the router handed this
+	// computer a new one) asks the whole Wi-Fi where it went. The answer is
+	// only the port, and the handshake still proves who it is.
+	const room = roomOf(k.secret);
+	const find = createSocket({ type: "udp4", reuseAddr: true });
+	find.on("message", (m, from) => {
+		if (m.toString() === `thelab? ${room}`)
+			find.send(`thelab! ${o.lanPort}`, from.port, from.address);
+	});
+	find.on("error", () => find.close());
+	find.bind(o.lanPort, o.lanHost ?? "0.0.0.0");
+
 	let ws: WebSocket | null = null;
 	let wait = 1000;
 	let seen = 0;
+	let timer: NodeJS.Timeout | undefined;
 	const sessions = new Map<number, Responder>();
 	const endSessions = () => {
 		for (const r of sessions.values()) r.close();
@@ -450,27 +471,52 @@ export function startTunnel(o: TunnelOptions) {
 						? "replaced by another copy of the server"
 						: `reconnecting (${ev.code || "no answer"})`;
 			if (ev.code === 4001) wait = 60_000;
-			if (!stopped) setTimeout(dialRelay, wait);
+			if (!stopped) timer = setTimeout(dialRelay, wait);
 			wait = Math.min(wait * 2, ev.code === 4001 ? 120_000 : 30_000);
 		});
 	};
 	dialRelay();
 
+	const redial = (why: string) => {
+		const dead = ws;
+		ws = null;
+		endSessions();
+		state.relay = `reconnecting (${why})`;
+		dead?.close();
+		clearTimeout(timer);
+		wait = 1000;
+		dialRelay();
+	};
+
 	// The relay answers "ping" without waking up, so silence for this long
 	// means the link died without a close.
 	const beat = setInterval(() => {
 		if (!ws || ws.readyState !== WebSocket.OPEN) return;
-		if (Date.now() - seen > 75_000) {
-			const dead = ws;
-			ws = null;
-			endSessions();
-			state.relay = "reconnecting (timed out)";
-			dead.close();
-			dialRelay();
-			return;
-		}
+		if (Date.now() - seen > 75_000) return redial("timed out");
 		ws.send("ping");
 	}, 30_000);
+
+	// A new network or a wake from sleep usually leaves the relay socket dead
+	// without a close, and the beat alone would take over a minute to notice.
+	// A ping that gets no pong in 5 s settles it, and a computer that has been
+	// waiting out a backoff dials straight away.
+	let net = addresses();
+	let tick = Date.now();
+	const watch = setInterval(() => {
+		const now = addresses();
+		const woke = Date.now() - tick > 30_000;
+		tick = Date.now();
+		if (now === net && !woke) return;
+		net = now;
+		if (stopped || !o.relay) return;
+		if (!ws) return redial(woke ? "woke up" : "network changed");
+		if (ws.readyState !== WebSocket.OPEN) return;
+		const asked = Date.now();
+		ws.send("ping");
+		setTimeout(() => {
+			if (seen < asked && ws?.readyState === WebSocket.OPEN) redial("network changed");
+		}, 5000).unref();
+	}, 10_000);
 
 	return {
 		state,
@@ -478,7 +524,10 @@ export function startTunnel(o: TunnelOptions) {
 		close() {
 			stopped = true;
 			clearInterval(beat);
+			clearInterval(watch);
+			clearTimeout(timer);
 			lan.close();
+			find.close();
 			ws?.close();
 			endSessions();
 		},

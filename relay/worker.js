@@ -10,6 +10,9 @@ const ROOM = /^[A-Za-z0-9_-]{43}$/;
 const DATA = 0;
 const LEAVE = 2;
 const PHONES = 8;
+// The computer says "ping" every 30 s, so a socket that has been quiet for
+// longer than this died without a close.
+const STALE = 100_000;
 
 const sha = async (s) => {
 	const d = new Uint8Array(
@@ -60,12 +63,30 @@ export class Room extends DurableObject {
 			}
 			for (const p of this.ctx.getWebSockets("phone"))
 				p.close(4000, "The computer restarted.");
+			for (const w of this.ctx.getWebSockets("waiting")) {
+				w.send("here");
+				w.close(1000, "The computer is back.");
+			}
 			this.ctx.acceptWebSocket(server, ["pc"]);
+			server.serializeAttachment({ at: Date.now() });
 			return new Response(null, {
 				status: 101,
 				webSocket: client,
 				headers: { "sec-websocket-protocol": "lab" },
 			});
+		}
+		// A phone that found the computer away holds this open, so it hears
+		// the moment the computer connects instead of checking back on a timer.
+		if (new URL(req.url).searchParams.has("wait")) {
+			if (this.ctx.getWebSockets("waiting").length >= PHONES)
+				return new Response("Too many phones in this room.", { status: 429 });
+			this.ctx.acceptWebSocket(server, ["waiting"]);
+			server.serializeAttachment({ waiting: true });
+			if (this.pc()) {
+				server.send("here");
+				server.close(1000, "The computer is here.");
+			}
+			return new Response(null, { status: 101, webSocket: client });
 		}
 		const phones = this.ctx.getWebSockets("phone");
 		if (phones.length >= PHONES)
@@ -85,7 +106,8 @@ export class Room extends DurableObject {
 	webSocketMessage(ws, msg) {
 		if (typeof msg === "string") return;
 		const body = new Uint8Array(msg);
-		const { peer } = ws.deserializeAttachment() ?? {};
+		const { peer, waiting } = ws.deserializeAttachment() ?? {};
+		if (waiting) return;
 		if (peer === undefined) {
 			if (body.length < 5) return;
 			const to = new DataView(body.buffer, body.byteOffset).getUint32(0);
@@ -107,11 +129,24 @@ export class Room extends DurableObject {
 		pc.send(out);
 	}
 
-	// The computer's socket, leaving out one that's closing after a takeover.
+	// The computer's socket, leaving out one that's closing after a takeover
+	// and one that stopped pinging, which is closed so the computer dials again
+	// if it's still there.
 	pc() {
-		return this.ctx
-			.getWebSockets("pc")
-			.find((s) => !s.deserializeAttachment()?.replaced);
+		const now = Date.now();
+		return this.ctx.getWebSockets("pc").find((s) => {
+			const a = s.deserializeAttachment() ?? {};
+			if (a.replaced) return false;
+			const seen =
+				this.ctx.getWebSocketAutoResponseTimestamp(s)?.getTime() ?? a.at ?? now;
+			if (now - seen < STALE) return true;
+			try {
+				s.close(4002, "No ping from the computer.");
+			} catch {
+				// It was closing already.
+			}
+			return false;
+		});
 	}
 
 	webSocketClose(ws, code) {
@@ -127,7 +162,8 @@ export class Room extends DurableObject {
 		} catch {
 			// It was closed already, which is all this wanted.
 		}
-		const { peer, replaced } = ws.deserializeAttachment() ?? {};
+		const { peer, replaced, waiting } = ws.deserializeAttachment() ?? {};
+		if (waiting) return;
 		if (peer === undefined) {
 			// The session keys went with the computer, so its phones start over.
 			// A copy that was replaced already sent them to the new one.

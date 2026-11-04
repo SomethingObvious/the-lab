@@ -663,14 +663,19 @@ async function serve() {
 		for (const e of lab.store.since(Number.isFinite(after) ? after : null))
 			res.write(`id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`);
 		res.write("event: loaded\ndata: {}\n\n");
+		// A phone that went quiet without closing would otherwise have every
+		// event pile up here. Ending it costs nothing, since it picks up from
+		// its last id when it's back.
+		const send = (s: string) =>
+			res.writableLength > 8 * 1024 * 1024 ? res.destroy() : res.write(s);
 		const off = lab.store.listen((e) =>
-			res.write(
+			send(
 				"id" in e
 					? `id: ${e.id}\ndata: ${JSON.stringify(e)}\n\n`
 					: `data: ${JSON.stringify(e)}\n\n`,
 			),
 		);
-		const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
+		const ping = setInterval(() => send(": ping\n\n"), 25_000);
 		req.on("close", () => {
 			off();
 			clearInterval(ping);
@@ -1190,6 +1195,9 @@ async function serve() {
 			json(res, 400, { error: e instanceof Error ? e.message : String(e) });
 		}
 	});
+	// Node gives a request 5 minutes to arrive, and a 100 MB upload over a
+	// slow phone connection can take longer than that.
+	server.requestTimeout = 60 * 60_000;
 	server.listen(port, "127.0.0.1", () =>
 		process.stdout.write(
 			`${new Date().toISOString()} The Lab ${pkg.version} on 127.0.0.1:${port}, home ${Home}\n`,
@@ -1203,5 +1211,5 @@ async function serve() {
 		if (JSON.stringify(now) === sentReach) return;
 		sentReach = JSON.stringify(now);
 		lab.store.live(now);
-	}, 60_000).unref();
+	}, 10_000).unref();
 }

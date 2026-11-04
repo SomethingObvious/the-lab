@@ -53,36 +53,23 @@ class LinkService : Service() {
     companion object {
         private var running: LinkService? = null
 
-        fun start(context: Context) {
+        fun start(context: Context): Boolean =
             runCatching { context.startForegroundService(Intent(context, LinkService::class.java)) }
                 .onFailure { Log.w("Lab", "service not started from here: ${it.message}") }
-        }
+                .isSuccess
 
         private val main = android.os.Handler(android.os.Looper.getMainLooper())
         private val again = Runnable { refresh() }
 
-        // A computer that's off or asleep isn't worth a notification that never
-        // goes away, so after two minutes without it the service steps down.
-        // A job checks back every 15 minutes, and once the link is back the
-        // service and its line come back with it. The phone's battery
-        // allowlist (setup adds it) lets that start happen from the background.
-        private val stepDown = Runnable {
-            // With no network of its own the phone can't tell whether the computer is there, and
-            // only a running service hears the network come back. The next link change posts this again.
-            if (!Hub.hasNetwork) return@Runnable
-            running?.let { it.stopForeground(STOP_FOREGROUND_REMOVE); it.stopSelf() }
-            if (Hub.paired) Retry.schedule(Hub.app)
-        }
-
+        // The service stays up while the phone is paired, even with the
+        // computer away, since it's what hears the network or the relay say the
+        // computer is back. Its card is a quiet one. If Android won't start it
+        // from the background, a job checks back every 15 minutes, and the
+        // battery allowlist (setup adds it) lets that job start it.
         private fun follow() {
-            val state = Hub.link.optString("state")
-            if (state == "online") {
-                main.removeCallbacks(stepDown)
-                if (running == null) start(Hub.app)
-            } else if (running != null) {
-                if (!main.hasCallbacks(stepDown)) main.postDelayed(stepDown, if (state == "unpaired") 0 else 2 * 60_000L)
-            } else if (Hub.paired) {
-                // Android turned the service down, so the job keeps checking back.
+            if (Hub.link.optString("state") == "unpaired") {
+                running?.let { it.stopForeground(STOP_FOREGROUND_REMOVE); it.stopSelf() }
+            } else if (running == null && Hub.paired && !start(Hub.app)) {
                 Retry.schedule(Hub.app)
             }
         }

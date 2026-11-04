@@ -17,10 +17,13 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
 import java.math.BigInteger
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
@@ -83,7 +86,7 @@ object Tunnel {
     @Volatile var route: String? = null
         private set
     @Volatile var spec: Spec? = null
-        set(v) { field = v; lan = emptyList(); drop() }
+        set(v) { field = v; lan = emptyList(); oldRelay = false; drop() }
     // The newest addresses the computer sent, ahead of the ones from pairing.
     @Volatile var lan: List<String> = emptyList()
 
@@ -97,6 +100,16 @@ object Tunnel {
     // and Hub drops the session once that goes quiet, so a second heartbeat only
     // wakes the radio more often.
     private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).build()
+    // The waiting socket carries nothing else, so its pings keep a mobile
+    // network from forgetting it and notice when it's gone.
+    private val waitClient = ws.newBuilder().pingInterval(4, TimeUnit.MINUTES).build()
+    // Requests that queue up behind a dial that failed get its answer for a
+    // couple of seconds, rather than each dialing again in turn.
+    @Volatile private var failed: Pair<Long, IOException>? = null
+    @Volatile private var waiting: WebSocket? = null
+    // A relay from before the waiting socket says "away" and closes it.
+    @Volatile private var oldRelay = false
+    val isWaiting get() = waiting != null
 
     fun base(): String = synchronized(lock) {
         // Android's getLoopbackAddress() is ::1, and the address OkHttp is given is 127.0.0.1.
@@ -140,8 +153,40 @@ object Tunnel {
         val old = session
         session = null
         route = null
+        failed = null
         old?.dead()
     }
+
+    // Held open on the relay while the computer is away. The relay says "here"
+    // the moment the computer connects, so the phone doesn't sit out its next
+    // retry. onBack runs on OkHttp's thread.
+    fun await(onBack: () -> Unit) {
+        val sp = spec ?: return
+        val relay = sp.relay ?: return
+        synchronized(lock) {
+            if (waiting != null || oldRelay) return
+            waiting = waitClient.newWebSocket(Request.Builder().url("${wsUrl(relay)}/r/${sp.room}?wait=1").build(), object : WebSocketListener() {
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (text == "away") oldRelay = true
+                    if (text != "here") return
+                    gone(webSocket)
+                    webSocket.close(1000, null)
+                    if (spec === sp) onBack()
+                }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { gone(webSocket); webSocket.close(1000, null) }
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = gone(webSocket)
+            })
+        }
+    }
+
+    fun stopWaiting() = synchronized(lock) {
+        waiting?.cancel()
+        waiting = null
+    }
+
+    private fun gone(w: WebSocket) = synchronized(lock) { if (waiting === w) waiting = null }
+
+    private fun wsUrl(relay: String) = relay.trimEnd('/').replaceFirst(Regex("^http"), "ws")
 
     // Anything thrown on this thread would take the whole app down.
     private fun carry(sock: Socket) {
@@ -156,8 +201,10 @@ object Tunnel {
     private fun session(): Session { synchronized(dialing) {
         val sp = spec ?: throw IOException("not paired")
         session?.takeIf { it.alive && it.spec === sp }?.let { return it }
+        failed?.let { (at, e) -> if (System.nanoTime() - at < 2_000_000_000L) throw e }
         val (s, how) = try { open(sp, lan.ifEmpty { sp.lan }) } catch (e: IOException) {
             why = when (e) { is Away -> "away"; is WrongKey -> "key"; is NoRoute -> "none"; else -> "relay" }
+            failed = System.nanoTime() to e
             throw e
         }
         // He paired again while this was dialing, so it's for the old computer.
@@ -174,19 +221,29 @@ object Tunnel {
     // means the paired computer wasn't the one that answered.
     private fun open(sp: Spec, addresses: List<String>): Pair<Session, String> {
         var wrongKey = false
-        if (direct()) for (a in addresses.take(4)) {
-            try {
-                return Session.start(TcpLink(a), sp, 2000) to "direct"
-            } catch (e: WrongKey) {
-                wrongKey = true
-                Log.i(TAG, "tunnel: $a answered with the wrong key")
-            } catch (e: Exception) {
-                Log.i(TAG, "tunnel: $a didn't answer (${e.message})")
+        if (direct()) {
+            val tried = addresses.take(4)
+            // The saved addresses first, then any the Wi-Fi says the computer has now.
+            val found = sequence {
+                yieldAll(tried)
+                yieldAll(discover(sp, broadcasts(addresses)).filter { it !in tried })
+            }
+            for (a in found) {
+                try {
+                    val s = Session.start(TcpLink(a), sp, 2000)
+                    if (a !in tried) lan = listOf(a) + addresses
+                    return s to "direct"
+                } catch (e: WrongKey) {
+                    wrongKey = true
+                    Log.i(TAG, "tunnel: $a answered with the wrong key")
+                } catch (e: Exception) {
+                    Log.i(TAG, "tunnel: $a didn't answer (${e.message})")
+                }
             }
         }
         val relay = sp.relay ?: throw if (wrongKey) WrongKey() else NoRoute()
         try {
-            return Session.start(WsLink("${relay.trimEnd('/').replaceFirst(Regex("^http"), "ws")}/r/${sp.room}", ws), sp, 10_000) to "relay"
+            return Session.start(WsLink("${wsUrl(relay)}/r/${sp.room}", ws), sp, 10_000) to "relay"
         } catch (e: Away) {
             throw e
         } catch (e: Exception) {
@@ -196,6 +253,45 @@ object Tunnel {
 
     // A test on the computer has no Android network to ask.
     internal var direct: () -> Boolean = ::local
+
+    // The whole Wi-Fi, and the part of it each saved address was on, since a
+    // new address from the router is nearly always on the same one.
+    private fun broadcasts(addresses: List<String>) = listOf("255.255.255.255") +
+        addresses.map { it.substringBeforeLast(':') }.filterNot { it.startsWith("100.") }.map { it.substringBeforeLast('.') + ".255" }.distinct()
+
+    // Asks the Wi-Fi where the computer went, for when the router gave it a
+    // new address. computer/tunnel.ts answers with its port, and the
+    // handshake after still proves which computer it is.
+    internal fun discover(sp: Spec, hosts: List<String>): List<String> = runCatching {
+        DatagramSocket().use { u ->
+            u.broadcast = true
+            u.soTimeout = 200
+            onWifi(u)
+            val ask = "thelab? ${sp.room}".toByteArray()
+            val ports = (lan + sp.lan).mapNotNull { it.substringAfterLast(':').toIntOrNull() }.distinct().ifEmpty { listOf(8418) }
+            for (h in hosts) for (p in ports) runCatching { u.send(DatagramPacket(ask, ask.size, InetAddress.getByName(h), p)) }
+            val found = LinkedHashSet<String>()
+            val buf = ByteArray(64)
+            val end = System.nanoTime() + 800_000_000L
+            while (System.nanoTime() < end) {
+                val pk = DatagramPacket(buf, buf.size)
+                try { u.receive(pk) } catch (_: SocketTimeoutException) { continue }
+                val text = String(pk.data, 0, pk.length)
+                val port = text.removePrefix("thelab! ").toIntOrNull()?.takeIf { text.startsWith("thelab! ") && it in 1..65535 } ?: continue
+                val at = "${pk.address.hostAddress}:$port"
+                // Only the paired computer knows the room, so the first answer will do.
+                if (ADDRESS.matches(at)) { found.add(at); break }
+            }
+            found.toList()
+        }
+    }.getOrDefault(emptyList())
+
+    // With Tailscale on, the default network is the VPN, which a broadcast can't cross.
+    private fun onWifi(u: DatagramSocket) = runCatching {
+        val cm = Hub.app.getSystemService(ConnectivityManager::class.java)
+        val n = cm.activeNetwork ?: return@runCatching
+        if (cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) n.bindSocket(u)
+    }
 
     // On mobile data a local address can only time out, so it isn't tried.
     // Tailscale shows as a VPN, and its addresses are worth trying too.

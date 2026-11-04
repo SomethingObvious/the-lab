@@ -12,6 +12,7 @@ import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
 import androidx.core.content.edit
@@ -93,6 +94,7 @@ object Hub {
     // Whether the default network has a VPN and is validated, the two changes worth redialing for.
     private var shape: Pair<Boolean, Boolean>? = null
     private var retry: Runnable? = null
+    private var suspected = 0L
     private var flushing = false
     private var syncing = false
     private var started = false
@@ -133,10 +135,25 @@ object Hub {
         app.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 main.post {
-                    // A new network can bring a direct route, or take the old one away.
-                    if (Hub.network != null && Hub.network != network && Tunnel.spec != null) Tunnel.drop()
+                    // A new network can bring a direct route, or take the old one
+                    // away, so the link starts over on it straight away.
+                    val changed = Hub.network != null && Hub.network != network
                     Hub.network = network
-                    if (link.optString("state") != "online") reconnectNow()
+                    if (changed) Tunnel.drop()
+                    if (changed || link.optString("state") != "online") reconnectNow()
+                }
+            }
+            override fun onLost(network: Network) {
+                main.post {
+                    if (hasNetwork || !paired) return@post
+                    // Nothing gets through until a network is back, and onAvailable redials then.
+                    retry?.let { main.removeCallbacks(it) }
+                    retry = null
+                    source?.cancel()
+                    source = null
+                    Tunnel.drop()
+                    Tunnel.stopWaiting()
+                    setLink("offline", "This phone is offline. It reconnects by itself when it's back online.")
                 }
             }
             override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
@@ -280,6 +297,7 @@ object Hub {
                 return
             }
             failures = 0
+            Tunnel.stopWaiting()
             setLink("online", "Connected to the computer")
             e.optJSONObject("status")?.let { setStatus(it) }
             e.optJSONObject("mac")?.let { setLive(it) }
@@ -343,7 +361,7 @@ object Hub {
         val caps = cm.getNetworkCapabilities(cm.activeNetwork)
         when {
             code == 401 -> setLink("unpaired", "The computer doesn't recognise this phone any more. $PAIR_AGAIN")
-            caps == null -> setLink("offline", "This phone is offline.")
+            caps == null -> setLink("offline", "This phone is offline. It reconnects by itself when it's back online.")
             Tunnel.spec != null -> setLink("offline", when (Tunnel.why) {
                 "away" -> "The computer isn't connected right now. It may be asleep, switched off or offline."
                 "relay" -> "Can't reach the computer from here right now. It still works when this phone is on the same Wi-Fi as the computer."
@@ -358,9 +376,32 @@ object Hub {
         }
         if (code == 401) return
         failures++
-        val wait = minOf(1000L shl minOf(failures, 5), 30_000L)
+        // With no network, or no relay and the phone off the Wi-Fi, nothing can
+        // get through until the network changes, and the callback redials then.
+        if (caps == null || (Tunnel.spec != null && Tunnel.spec?.relay == null && !Tunnel.direct())) return
+        if (Tunnel.why == "away") Tunnel.await { main.post { comeBack() } }
+        val wait = backoff(failures, Tunnel.isWaiting)
         retry = Runnable { retry = null; connect() }.also { main.postDelayed(it, wait) }
         if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "link lost (${code ?: t?.javaClass?.simpleName}), retry in ${wait}ms")
+    }
+
+    // The relay said the computer just connected, so there's no waiting out the retry.
+    private fun comeBack() {
+        if (!paired || link.optString("state") == "online") return
+        if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "the computer is back on the relay")
+        retry?.let { main.removeCallbacks(it) }
+        retry = null
+        connect()
+    }
+
+    // A request that couldn't get through says the link is probably dead, and
+    // the stream alone can take a minute to notice.
+    private fun suspect() {
+        val now = SystemClock.elapsedRealtime()
+        if (link.optString("state") != "online" || now - suspected < 10_000) return
+        suspected = now
+        Tunnel.drop()
+        reconnectNow()
     }
 
     // His words go to disk before anything else happens to them.
@@ -431,7 +472,7 @@ object Hub {
         val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
             .method(method, if (method == "GET") null else (body ?: "{}").toRequestBody(JSON_TYPE)).build()
         (if (path == "/models" || path == "/check") slow else quick).newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { done(null, "Couldn't reach the computer. Try again once it's back.") } }
+            override fun onFailure(call: Call, e: IOException) { main.post { suspect(); done(null, "Couldn't reach the computer. Try again once it's back.") } }
             override fun onResponse(call: Call, response: Response) {
                 val code = response.code
                 val text = response.use { it.body.string() }
@@ -504,10 +545,17 @@ object Hub {
             val req = Request.Builder().url("$base/upload?name=${URLEncoder.encode(name, "UTF-8")}")
                 .header("Authorization", "Bearer $token")
                 .post(tmp.asRequestBody(type.toMediaTypeOrNull())).build()
+            // A second go after a drop, on whatever link the first failure brought up.
             val (code, text) = try {
                 client.newCall(req).execute().use { it.code to it.body.string() }
             } catch (e: IOException) {
-                throw IOException("Couldn't reach the computer, so $name wasn't attached.", e)
+                main.post { suspect() }
+                Thread.sleep(3000)
+                try {
+                    client.newCall(req).execute().use { it.code to it.body.string() }
+                } catch (e2: IOException) {
+                    throw IOException("Couldn't reach the computer, so $name wasn't attached.", e2)
+                }
             }
             if (code != 200) throw IOException(runCatching { JSONObject(text).getString("error") }.getOrDefault("The computer didn't take $name. Try again in a minute."))
             val j = JSONObject(text)
@@ -523,7 +571,7 @@ object Hub {
         val req = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
             .post(body.toString().toRequestBody(JSON_TYPE)).build()
         via.newCall(req).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) { main.post { done(-1) } }
+            override fun onFailure(call: Call, e: IOException) { main.post { suspect(); done(-1) } }
             override fun onResponse(call: Call, response: Response) {
                 val code = response.code
                 response.close()
@@ -644,6 +692,20 @@ internal fun sendOutcome(code: Int): SendOutcome = when {
     code in 200..299 -> SendOutcome.SENT
     code in 400..499 && code != 401 && code != 408 && code != 429 -> SendOutcome.REFUSED
     else -> SendOutcome.RETRY
+}
+
+// Quick at first, for a blip, then every 30 s, then once a minute. While the
+// relay is holding a socket to say when the computer is back, every 5 minutes
+// is only a fallback. The spread keeps a phone and the computer from
+// retrying in lockstep.
+internal fun backoff(failures: Int, waiting: Boolean, spread: Double = Math.random()): Long {
+    val base = when {
+        failures < 5 -> 1000L shl failures.coerceAtLeast(1)
+        failures < 10 -> 30_000L
+        waiting -> 300_000L
+        else -> 60_000L
+    }
+    return (base * (0.8 + 0.4 * spread)).toLong()
 }
 
 // A torn last line from a process killed mid-write is skipped.

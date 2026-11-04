@@ -821,6 +821,25 @@ test("the tunnel carries HTTP and refuses a wrong pass", async () => {
 		),
 		/wrong key/,
 	);
+
+	// A phone looking for the computer on the Wi-Fi hears the port back, and
+	// one that doesn't know the room hears nothing.
+	const { createSocket } = await import("node:dgram");
+	const ask2 = (msg: string) =>
+		new Promise<string>((ok) => {
+			const u = createSocket("udp4");
+			let open = true;
+			const done = (v: string) => {
+				if (open) u.close();
+				open = false;
+				ok(v);
+			};
+			u.on("message", (m) => done(m.toString()));
+			setTimeout(() => done(""), 500);
+			u.send(msg, lanPort, "127.0.0.1");
+		});
+	assert.equal(await ask2(`thelab? ${spec.room}`), `thelab! ${lanPort}`);
+	assert.equal(await ask2("thelab? someone-else"), "");
 	t.close();
 	server.close();
 });

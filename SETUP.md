@@ -17,7 +17,7 @@ Every command in `computer/setup.ts` can be run again safely, so if something fa
 - A relay on Cloudflare's free plan, unless he was given the address of one that's already up.
 - The Lab on the phone, built on this computer and installed over a USB cable.
 
-Nothing is exposed to the internet. The server itself listens only on the computer, and the phone reaches it through an encrypted tunnel. The tunnel listens on the home Wi-Fi so the phone can come straight in when they share one, and goes through the relay otherwise. The keys come from pairing and never leave the two devices, so neither the Wi-Fi nor the relay can read or change anything that passes.
+Nothing is exposed to the internet. The server itself listens only on the computer, and the phone reaches it through an encrypted tunnel. The tunnel listens on the home Wi-Fi so the phone can come straight in when they share one, and goes through the relay otherwise. It also answers a phone on the Wi-Fi that asks where the computer went, with nothing but its port, so a new address from the router doesn't break the link. The keys come from pairing and never leave the two devices, so neither the Wi-Fi nor the relay can read or change anything that passes.
 
 ## 1. Node and the Source
 
