@@ -195,6 +195,7 @@ export function launchers(dir: string) {
 		["trash", fileURLToPath(import.meta.url)],
 		["check-app", fileURLToPath(new URL("./design.ts", import.meta.url))],
 		["report", fileURLToPath(new URL("./report.ts", import.meta.url))],
+		["recall", fileURLToPath(new URL("./recall.ts", import.meta.url))],
 	] as const) {
 		writeFileSync(
 			join(dir, name),
