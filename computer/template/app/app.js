@@ -1548,6 +1548,15 @@ const call = (method, path, body) =>
 					"This version of the app is too old for that. Update it from the computer.",
 				),
 			);
+// The computer only sends a reading by itself once a minute, so while the app
+// is on screen it asks for one every few seconds.
+setInterval(() => {
+	if (!document.hidden && link.state === "online")
+		call("GET", "/mac").catch(() => {
+			// The next one is 5 s away, and the last reading stays on screen.
+		});
+}, 5000);
+
 const offline = (err) =>
 	`<p class="hint">${esc(err?.message && !/fetch|network/i.test(err.message) ? err.message : "Couldn't reach the computer. Try again once it's back.")}</p>`;
 const closeBtn = '<button type="button" data-close>Close</button>';

@@ -119,6 +119,19 @@ async function memory(): Promise<{ free: number; total: number }> {
 	return { free: free || freemem(), total: totalmem() };
 }
 
+// Settings and Finder count what macOS can purge (caches, local snapshots) as
+// free, and The Lab should agree with them. statfs leaves it out.
+const FINDER_FREE = `ObjC.import("Foundation"); const k = $.NSURLVolumeAvailableCapacityForImportantUsageKey; ObjC.unwrap($.NSURL.fileURLWithPath($.NSHomeDirectory()).resourceValuesForKeysError($.NSArray.arrayWithObject(k), null).objectForKey(k)).toString()`;
+async function diskFree(fs: { bavail: number; bsize: number }): Promise<number> {
+	const plain = fs.bavail * fs.bsize;
+	if (!MAC) return plain;
+	const out = await run("osascript", ["-l", "JavaScript", "-e", FINDER_FREE]).catch(
+		() => null,
+	);
+	const n = Number(out?.stdout.trim());
+	return n > 0 ? n : plain;
+}
+
 export async function mac(): Promise<Mac> {
 	if (!name)
 		name = MAC
@@ -145,7 +158,7 @@ export async function mac(): Promise<Mac> {
 		name: config().name?.trim() || name,
 		os: MAC ? "mac" : WIN ? "windows" : "linux",
 		battery,
-		disk: { free: fs.bavail * fs.bsize, total: fs.blocks * fs.bsize },
+		disk: { free: await diskFree(fs), total: fs.blocks * fs.bsize },
 		memory: await memory(),
 		cpu: await cpu(),
 		uptime: Math.round(uptime()),

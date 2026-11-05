@@ -1562,6 +1562,15 @@ async function serve() {
 		],
 		["POST /name", rename],
 		[
+			"GET /mac",
+			async (_req, res) => {
+				// Someone has the app in front of them, so every change goes out.
+				macNow = await mac().catch(() => macNow);
+				if (macNow) lab.store.live(macNow);
+				return json(res, 200, {});
+			},
+		],
+		[
 			"GET /check",
 			async (_req, res) => {
 				const items = await check();
