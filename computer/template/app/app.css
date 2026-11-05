@@ -1722,6 +1722,26 @@ mark {
 	color: var(--on-primary-c);
 	padding-inline: 12px 16px;
 }
+.chip.mode {
+	background: var(--surface);
+	color: var(--ink);
+	padding-inline: 12px 16px;
+}
+.chip.mode[data-level="plan"] {
+	background: var(--work-c);
+	color: var(--on-work-c);
+}
+.chip.mode[data-level="bypass"] {
+	background: var(--fail-c);
+	color: var(--on-fail-c);
+}
+.mode-ask {
+	margin-top: 16px;
+}
+.mode-ask lab-ask {
+	display: block;
+	margin-top: 10px;
+}
 .chip-sub {
 	font-weight: var(--fw-body);
 	opacity: 0.8;

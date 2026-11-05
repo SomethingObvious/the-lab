@@ -14,14 +14,14 @@ import {
 import type { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { env, platform } from "node:process";
+import process, { env, platform } from "node:process";
 import { Readable } from "node:stream";
 import { after, test } from "node:test";
 import { setTimeout as wait } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { words } from "./config.ts";
 import { checkApp, Design } from "./design.ts";
-import { judge, needsOk, segments } from "./guard.ts";
+import { inMode, judge, needsOk, segments } from "./guard.ts";
 import type { Ev, Live } from "./lab.ts";
 import { parseBattery } from "./mac.ts";
 import { CAP, parse, render, suspect } from "./memory.ts";
@@ -1836,6 +1836,135 @@ test("only the shells answer, and pairing opens only as a page", async () => {
 	assert.notEqual(shown.status, 403);
 	assert.match(String(shown.headers["content-security-policy"]), /^sandbox;/);
 	assert.equal(shown.headers["x-frame-options"], "DENY");
+});
+
+// ---------- permission modes ----------
+
+const inModeFor = (
+	mode: "plan" | "manual" | "auto" | "bypass",
+	tool: string,
+	input: object,
+) => inMode(mode, tool, judge(tool, input as Record<string, unknown>, W), W, false);
+
+test("each mode decides which calls ask first", () => {
+	const read = ["Read", { file_path: "/Users/me/TheLab/notes.md" }] as const;
+	const edit = ["Write", { file_path: "/Users/me/TheLab/notes.md" }] as const;
+	const brew = ["Bash", { command: "brew install ffmpeg" }] as const;
+	assert.deepEqual(
+		(["plan", "manual", "auto", "bypass"] as const).map((m) => [
+			inModeFor(m, ...read),
+			inModeFor(m, ...edit),
+			inModeFor(m, ...brew),
+			inModeFor(m, "Task", {}),
+		]),
+		[
+			["go", "plan", "plan", "go"],
+			["go", "ask", "ask", "go"],
+			["go", "go", "ask", "go"],
+			["go", "go", "go", "go"],
+		],
+	);
+	// A secret is never read without asking, except in Bypass.
+	const key = ["Read", { file_path: "/Users/me/.ssh/id_ed25519" }] as const;
+	assert.deepEqual(
+		(["plan", "manual", "auto", "bypass"] as const).map((m) => inModeFor(m, ...key)),
+		["ask", "ask", "ask", "go"],
+	);
+});
+
+test("a mode that asks less waits for an Allow on the shell's card", async () => {
+	const json = { "content-type": "application/json" };
+	const page = { ...cookie, origin: ownOrigin };
+	const post = async (mode: string, headers: Record<string, string> = bearer) => {
+		const r = await ask("/mode", {
+			method: "POST",
+			headers: { ...headers, ...json },
+			body: JSON.stringify({ mode }),
+		});
+		return { status: r.status, ...JSON.parse(r.text) };
+	};
+	const answer = async (ref: string, allow: boolean) =>
+		(
+			await ask("/answer", {
+				method: "POST",
+				headers: { ...bearer, ...json },
+				body: JSON.stringify({ ref, allow }),
+			})
+		).status;
+	assert.equal((await post("yolo")).error, 'That isn\'t a mode: "yolo".');
+	assert.deepEqual(await post("plan", page), { status: 200, mode: "plan" });
+	const asked = await post("bypass", page);
+	assert.deepEqual(asked, {
+		status: 202,
+		mode: "plan",
+		asking: "bypass",
+		ref: "mode-bypass",
+	});
+	const card = await ask("/asks/mode-bypass", { headers: bearer });
+	assert.equal(JSON.parse(card.text).title, "Let it do everything without asking?");
+	assert.equal(await answer("mode-bypass", false), 200);
+	assert.equal((await post("plan")).mode, "plan");
+	assert.equal((await post("auto", page)).status, 202);
+	assert.equal(await answer("mode-auto", true), 200);
+	assert.deepEqual(await post("auto"), { status: 200, mode: "auto" });
+});
+
+// Says which policy and sandbox each turn ran under, then asks to run
+// FAKE_CMD, and says what came back.
+const MODEFAKE = String.raw`
+const rl = require('readline').createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'model/list') return out({ id: m.id, result: { data: [{ model: 'fake', isDefault: true }] } });
+  if (m.method === 'account/read') return out({ id: m.id, result: { account: { type: 'chatgpt' }, requiresOpenaiAuth: true } });
+  if (m.method === 'thread/start') return out({ id: m.id, result: { thread: { id: 'thread-7' }, model: 'fake' } });
+  if (m.method === 'turn/start') {
+    out({ id: m.id, result: { turn: { id: 't1', status: 'inProgress' } } });
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a0', phase: 'commentary', text: m.params.approvalPolicy + ' ' + m.params.sandboxPolicy.type } } });
+    return out({ id: 900, method: 'item/commandExecution/requestApproval', params: { itemId: 'c2', command: process.env.FAKE_CMD, reason: 'Needs it' } });
+  }
+  if (m.id === 900) {
+    out({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'a1', phase: 'final_answer', text: m.result.decision } } });
+    return out({ method: 'turn/completed', params: { turn: { id: 't1', status: 'completed', durationMs: 5, error: null } } });
+  }
+});
+`;
+
+test("codex runs each turn under the mode he picked", async () => {
+	const cases = [
+		["plan", "touch notes.md", "on-request readOnly", 0, "decline"],
+		["manual", "touch notes.md", "untrusted workspaceWrite", 1, "accept"],
+		["auto", "touch notes.md", "on-request workspaceWrite", 0, "accept"],
+		["auto", "brew install ffmpeg", "on-request workspaceWrite", 1, "accept"],
+		["bypass", "brew install ffmpeg", "on-request workspaceWrite", 0, "accept"],
+		["bypass", "rm -rf ~/Downloads/old", "on-request workspaceWrite", 0, "decline"],
+	] as const;
+	for (const [mode, cmd, policy, asks, decision] of cases) {
+		env["FAKE_CMD"] = cmd;
+		const { lab, seen, pick } = await codexLab(MODEFAKE);
+		try {
+			lab.setMode(mode);
+			lab.store.listen((e) => {
+				if (e.kind === "ask") setTimeout(() => lab.answer(String(e["ref"]), true), 10);
+			});
+			lab.send("Make a note", crypto.randomUUID());
+			await until(() => pick("done").length > 0);
+			const said = seen.find(
+				(e) => e.kind === "status" && field(e, "label") === policy,
+			);
+			assert.ok(said, `${mode}: ran under ${policy}`);
+			assert.equal(pick("ask").length, asks, `${mode} ${cmd}`);
+			assert.deepEqual(
+				pick("reply").map((e) => field(e, "text")),
+				[decision],
+				`${mode} ${cmd}`,
+			);
+		} finally {
+			lab.close();
+		}
+	}
 });
 
 // ---------- updater ----------

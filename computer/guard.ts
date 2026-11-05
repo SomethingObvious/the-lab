@@ -2959,3 +2959,28 @@ export function needsOk(j: Judgement, w: Where, tainted: boolean): boolean {
 	// and any program or code the guard can't see into, asks first.
 	return tainted && (j.leaves || j.runs === true);
 }
+
+// How much it asks, which he picks on the phone. Plan changes nothing, Manual
+// asks before anything but reading, Auto asks before what matters (needsOk)
+// and Bypass asks before nothing. The never-allow list and the Trash rule hold
+// in all four, as they're checked before the mode is.
+export const ASK_MODES = ["plan", "manual", "auto", "bypass"] as const;
+export type AskMode = (typeof ASK_MODES)[number];
+
+// Subagents and skills change nothing themselves, and their own calls come
+// through the same checks.
+const inert = (tool: string, j: Judgement) =>
+	(j.effect === "read" && !j.leaves) || ["Agent", "Task", "Skill"].includes(tool);
+
+export function inMode(
+	mode: AskMode,
+	tool: string,
+	j: Judgement,
+	w: Where,
+	tainted: boolean,
+): "go" | "ask" | "plan" {
+	if (mode === "bypass") return "go";
+	if (mode === "manual") return inert(tool, j) && !j.secret ? "go" : "ask";
+	if (mode === "plan" && !inert(tool, j)) return "plan";
+	return needsOk(j, w, tainted) ? "ask" : "go";
+}

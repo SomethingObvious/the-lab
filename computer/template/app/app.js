@@ -438,6 +438,12 @@ function announce(e, t) {
 		);
 }
 
+function modeMoved(was, now) {
+	if (was === now) return;
+	drawChips();
+	if (sheetKind === "modes") drawModes();
+}
+
 function take(e) {
 	switch (e.kind) {
 		case "link": {
@@ -449,7 +455,9 @@ function take(e) {
 		}
 		case "status": {
 			const flip = status.working !== e.working;
+			const was = status.mode;
 			status = e;
+			modeMoved(was, e.mode);
 			want.now = true;
 			if (flip) {
 				want.side = true;
@@ -1567,6 +1575,12 @@ const Settings = [
 	{ type: "open", label: "Model", hint: () => modelName(), open: () => openModels() },
 	thinking,
 	{
+		type: "open",
+		label: "Permissions",
+		hint: () => modeName(),
+		open: () => openModes(),
+	},
+	{
 		key: "replies",
 		type: "choice",
 		label: "Replies",
@@ -1775,6 +1789,59 @@ function openSettings() {
 		`<div class="set-list">${Settings.map((r) => guard(`the ${r.label || r.head} setting`, () => settingRow(r), "")).join("")}</div>`,
 		closeBtn,
 	);
+}
+
+// The computer keeps the mode, and one that asks less only takes effect once
+// he taps Allow on the card the phone or the window draws in the sheet.
+const modes = [
+	[
+		"plan",
+		"Plan",
+		"It looks around and tells you its plan, but doesn't change, run or send anything.",
+	],
+	["manual", "Manual", "It asks before it changes, runs or sends anything."],
+	[
+		"auto",
+		"Auto",
+		"It asks before it deletes, sends or installs anything. Everyday work goes ahead.",
+	],
+	[
+		"bypass",
+		"Bypass",
+		"It does everything without asking. The never-allow list still holds, and what it deletes still goes to the Trash.",
+	],
+];
+const modeNow = () => (modes.some((m) => m[0] === status.mode) ? status.mode : "auto");
+const modeLabel = (id) => modes.find((m) => m[0] === id)?.[1] ?? id;
+const modeName = () => modeLabel(modeNow());
+function openModes() {
+	openSheet("modes", "Permissions", "", closeBtn);
+	drawModes();
+}
+// `asking` is the server's answer to a change that waits for his Allow.
+function drawModes(asking) {
+	const on = modeNow();
+	refocus(
+		$("sheet-body"),
+		() => {
+			setHTML(
+				$("sheet-body"),
+				`<p class="hint">How much the agent asks before it does things. A change starts with its next step.</p>
+        <div class="model-list" role="radiogroup" aria-label="Permissions">${modes.map(([id, name, about]) => `<button type="button" role="radio" class="model-row" aria-checked="${id === on}" data-mode="${id}"><span class="radio" aria-hidden="true"></span><span><b>${name}</b><span>${id === "auto" ? `Default. ${about}` : about}</span></span></button>`).join("")}</div>
+        ${asking?.ref ? `<div class="mode-ask"><p class="hint">${esc(modeLabel(asking.asking))} asks less than ${esc(modeLabel(on))}, so it needs your OK first.</p><lab-ask ref="${esc(asking.ref)}"><p class="hint">Switch to it in The Lab on your phone or in The Lab window, where you can say OK.</p></lab-ask></div>` : ""}`,
+			);
+		},
+		() => $("sheet-title"),
+	);
+	if (asking?.ref) sheet.querySelector("lab-ask")?.scrollIntoView({ block: "nearest" });
+}
+async function pickMode(id) {
+	try {
+		const r = await call("POST", "/mode", { mode: id });
+		if (sheetKind === "modes") drawModes(r);
+	} catch (err) {
+		toast(err?.message || "That didn't reach the computer.", true);
+	}
 }
 
 // The list comes from whatever provider the agent is set up with, so it's
@@ -2131,7 +2198,8 @@ function drawChips() {
 	const c = $("chips");
 	const listed = shortcuts.length > 0 && settings.chips !== false;
 	const model = settings.modelChip !== false;
-	c.hidden = !(listed || model);
+	const mode = model || modeNow() !== "auto";
+	c.hidden = !(listed || model || mode);
 	const name = modelName();
 	const effort = effortLabel();
 	refocus(
@@ -2139,9 +2207,13 @@ function drawChips() {
 		() => {
 			setHTML(
 				c,
-				(model
-					? `<button type="button" class="chip model" id="model-chip" aria-label="Model, ${esc(name)}${effort ? `, ${esc(effortTerm())} ${esc(effort)}` : ""}">${icon("star")}${esc(name)}${effort ? `<span class="chip-sub">${esc(effort)}</span>` : ""}</button>`
-					: "") + (listed ? shortcutChips() : ""),
+				(mode
+					? `<button type="button" class="chip mode" id="mode-chip" data-level="${modeNow()}" aria-label="Permissions, ${modeName()}">${icon("shield")}${modeName()}</button>`
+					: "") +
+					(model
+						? `<button type="button" class="chip model" id="model-chip" aria-label="Model, ${esc(name)}${effort ? `, ${esc(effortTerm())} ${esc(effort)}` : ""}">${icon("star")}${esc(name)}${effort ? `<span class="chip-sub">${esc(effort)}</span>` : ""}</button>`
+						: "") +
+					(listed ? shortcutChips() : ""),
 			);
 		},
 		() => text,
@@ -3360,6 +3432,7 @@ function clickSettings(d) {
 	if (d.setkey) pickSetting(d.setkey, d.setval);
 	else if (d.setopen) guard("a setting", () => Settings[Number(d.setopen)].open());
 	else if (d.model) pickModel(d.model);
+	else if (d.mode) pickMode(d.mode);
 	else if (d.effort !== undefined) pickEffort(d.effort);
 	else if (d.modelother !== undefined) pickOtherModel();
 	else if (d.updatecheck !== undefined) askUpdate("check");
@@ -3404,6 +3477,8 @@ function clickById(id) {
 			return openManage();
 		case "model-chip":
 			return openModels();
+		case "mode-chip":
+			return openModes();
 		case "older":
 			return more();
 		case "handle":

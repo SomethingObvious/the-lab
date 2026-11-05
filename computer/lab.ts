@@ -38,7 +38,15 @@ import { z } from "zod";
 import { Codex } from "./codex.ts";
 import { saveFile, setting, WIN, words } from "./config.ts";
 import { checkApp, published } from "./design.ts";
-import { type Judgement, judge, needsOk, segments, type Where } from "./guard.ts";
+import {
+	ASK_MODES,
+	type AskMode,
+	inMode,
+	type Judgement,
+	judge,
+	segments,
+	type Where,
+} from "./guard.ts";
 import { awake, type Mac, snapshot } from "./mac.ts";
 import { CAP, diff, type Memory, parse, render, suspect } from "./memory.ts";
 import { scheduleProblem } from "./schedule.ts";
@@ -195,6 +203,9 @@ export interface State {
 	// The last model list, so the app can name the default model without
 	// starting the agent just to ask.
 	models?: Models;
+	// How much it asks. Kept here, where the agent can't write, rather than
+	// in settings.json in his Lab folder.
+	mode?: AskMode;
 }
 
 class Channel implements AsyncIterable<SDKUserMessage> {
@@ -275,6 +286,55 @@ export const DENIED: Record<By, string> = {
 	timeout:
 		"Nobody answered within 5 minutes, so it was not allowed. Carry on with anything that does not need it, and say in your reply what is still waiting on him.",
 	stop: "He stopped the task.",
+};
+
+export const PLAN_DENIED =
+	"He has The Lab in Plan mode, so nothing gets changed, run or sent right now. Look around as much as you need, then reply with your plan in plain words, and he'll switch modes when he wants it done.";
+
+const MODE_NOTES: Record<AskMode, string> = {
+	plan: "Plan mode. Nothing gets changed, run or sent, so look around as much as you need and reply with a plan in plain words. He switches modes when he wants it done.",
+	manual: "Manual mode, so he's asked before anything but reading.",
+	auto: "Auto mode, so he's only asked before deleting, sending, installing or changing settings.",
+	bypass:
+		"Bypass mode, so nothing asks him first and he isn't checking each step. Take extra care. The never-allow list still holds.",
+};
+
+const MODE_SAID: Record<AskMode, string> = {
+	plan: "Plan mode is on. It looks around and tells you its plan, but doesn't change, run or send anything.",
+	manual: "Manual mode is on. It asks before it changes, runs or sends anything.",
+	auto: "Auto mode is on. It asks before it deletes, sends or installs anything.",
+	bypass: "Bypass mode is on. It does everything without asking you first.",
+};
+
+const MODE_CARDS: Record<AskMode, Card> = {
+	plan: { title: "Only make a plan?", detail: "", facts: [] },
+	manual: {
+		title: "Let it work again, asking before each step?",
+		detail: "",
+		facts: [
+			"It asks before it changes, runs or sends anything.",
+			"Reading and looking around still go ahead.",
+		],
+	},
+	auto: {
+		title: "Let it get on with everyday work?",
+		detail: "",
+		facts: [
+			"It still asks before it deletes, sends or installs anything.",
+			"Reading, edits and work in your Lab folder go ahead without asking.",
+		],
+	},
+	bypass: {
+		title: "Let it do everything without asking?",
+		detail: "",
+		facts: [
+			"It won't ask before deleting, sending or installing anything, even after reading an email or a web page.",
+			words(
+				"The never-allow list still holds, and what it deletes still goes to the Trash.",
+			),
+			"It stays this way until you change it.",
+		],
+	},
 };
 
 // The first thing in a new conversation. `text` is for a design that only
@@ -544,10 +604,11 @@ export class Lab {
 	readonly where: Where;
 	readonly trashCmd: string;
 	readonly memoryFile: string;
-	status: { working: boolean; label: string; since: string; mode?: string } = {
+	status: { working: boolean; label: string; since: string; mode: AskMode } = {
 		working: false,
 		label: "",
 		since: new Date().toISOString(),
+		mode: "auto",
 	};
 
 	constructor(opts: LabOptions) {
@@ -581,6 +642,7 @@ export class Lab {
 				saveFile(`${this.stateFile}.bad`, raw);
 			}
 		}
+		this.status.mode = this.mode;
 		try {
 			this.rules = JSON.parse(readFileSync(this.rulesFile, "utf8"));
 		} catch {
@@ -776,6 +838,39 @@ export class Lab {
 		return this.asks.has(ref) ? this.cards.get(ref) : undefined;
 	}
 
+	get mode(): AskMode {
+		const m = this.state.mode;
+		return ASK_MODES.find((x) => x === m) ?? "auto";
+	}
+
+	setMode(mode: AskMode) {
+		if (mode === this.mode) return;
+		this.state.mode = mode;
+		this.save();
+		this.status = { ...this.status, mode };
+		this.store.live({ kind: "status", ...this.status });
+		this.unnote("He switched The Lab to ");
+		this.note(`He switched The Lab to ${MODE_NOTES[mode]}`);
+		this.store.add({ kind: "notice", text: MODE_SAID[mode] });
+	}
+
+	// A mode that asks less only takes effect once he says so on a card the
+	// phone or the window draws, so the page can't turn it up for him.
+	askMode(mode: AskMode): string {
+		const ref = `mode-${mode}`;
+		if (this.asks.has(ref)) return ref;
+		this.cards.set(ref, MODE_CARDS[mode]);
+		const timer = setTimeout(() => finish(false), ASK_MS);
+		const finish = (allow: boolean) => {
+			if (!this.asks.delete(ref)) return;
+			clearTimeout(timer);
+			this.cards.delete(ref);
+			if (allow) this.setMode(mode);
+		};
+		this.asks.set(ref, finish);
+		return ref;
+	}
+
 	answer(ref: string, allow: boolean, always = false): boolean {
 		const finish = this.asks.get(ref);
 		if (!finish) return false;
@@ -947,12 +1042,22 @@ export class Lab {
 			this.hushed.add(ref);
 			return decide("deny", mem);
 		}
+		const mode = this.mode;
+		const ruled = inMode(mode, tool, j, w, Boolean(this.taint));
+		if (ruled === "plan") {
+			this.hushed.add(ref);
+			return decide("deny", PLAN_DENIED);
+		}
 		if (
 			(tool === "Bash" || tool === "PowerShell") &&
 			this.allowedBefore(String(args["command"] ?? ""), String(input.cwd ?? ""))
 		)
 			return decide("allow");
-		if (needsOk(j, w, Boolean(this.taint))) {
+		if (mode !== "auto" && ruled === "go") {
+			if (j.effect === "delete" || j.effect === "system") await this.snap(60_000);
+			return decide("allow");
+		}
+		if (ruled === "ask") {
 			if (j.effect === "delete" || j.effect === "system") await this.snap(60_000);
 			const why = args["description"];
 			const { allow, by } = await this.waitFor(
@@ -1477,7 +1582,6 @@ export class Lab {
 				if (m.subtype === "init") {
 					this.state.sessionId = m.session_id;
 					this.save();
-					this.status.mode = m.permissionMode;
 					this.modelInUse = m.model;
 					process.stdout.write(
 						`session ${m.session_id} model=${m.model} mode=${m.permissionMode}\n`,

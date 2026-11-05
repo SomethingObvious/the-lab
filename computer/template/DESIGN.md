@@ -361,7 +361,7 @@ Saturated violet and four fixed pastels on a cool lilac paper, with green, amber
 - **Link Violet** (`link`): links, text buttons, list markers, the "From you" and "From the computer" tags.
 
 ### Secondary
-- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header widgets (each widget picks one as its tone), the marks on the welcome card, cycle across the shortcut chips in that order with lilac fourth (the model chip in front of them is `primary-c` with a star and doesn't count), and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every widget colour while the computer is offline. A widget can also take `deep`, which is `head-deep` with `on-head`.
+- **Pink, Mint, Sun and Lilac** (`pink`, `mint`, `sun`, `lilac`, each with its `on-` ink): the same in both themes on purpose. They fill the header widgets (each widget picks one as its tone), the marks on the welcome card, cycle across the shortcut chips in that order with lilac fourth (the mode and model chips in front of them don't count: the mode chip is `surface` with a shield, `work-c` in Plan and `fail-c` in Bypass, and the model chip is `primary-c` with a star), and fill the attach menu and file icons. Sun is also the search highlight and the focus ring inside the header. Lilac replaces every widget colour while the computer is offline. A widget can also take `deep`, which is `head-deep` with `on-head`.
 
 ### Tertiary
 - **Work Green** (`work`, container `work-c`): the live run card and the working loaders.
@@ -550,7 +550,7 @@ Keep the whole card on screen, uncovered and at full opacity while it waits, wit
 A 72 px `toolbar` pill with a 52 px loader, the current step and "Working for 0:07", and Stop on the right. While a request waits on him the whole bar turns `ask` amber, the loader becomes a still burst on a dark disc, the label says Needs Your OK, and Review appears joined to Stop. Review jumps to the approval card.
 
 ### Composer
-The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the model chip and the shortcut chips on top, any attachments waiting to send, then a row with the round attach button, the message field and the send shape. Send is a 56 px violet cookie with an up arrow, and a pale circle when there's nothing to send. Attach opens a menu with a mint circle for Photos and a pink rounded square for Files.
+The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the mode chip, the model chip and the shortcut chips on top, any attachments waiting to send, then a row with the round attach button, the message field and the send shape. Send is a 56 px violet cookie with an up arrow, and a pale circle when there's nothing to send. Attach opens a menu with a mint circle for Photos and a pink rounded square for Files.
 
 ### Messages
 His messages are `primary` bubbles on the right, at most 86% wide. Tapping one opens a split button, Save as Shortcut with a chevron that holds Send Again and Copy. Messages still waiting to send turn `surface-2` and `dim` with a clock. Replies are `surface` bubbles on the left (92% wide at most) with Markdown, `link` list markers and mono code. Files arrive as `surface` pills with a pink flower icon, photos as images with the reply tail. A message the server sent from `schedules.json` shows its label and a clock in the `meta` line under the bubble.

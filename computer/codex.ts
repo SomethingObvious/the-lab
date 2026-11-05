@@ -9,7 +9,7 @@ import { basename, delimiter, join } from "node:path";
 import process from "node:process";
 import { createInterface } from "node:readline";
 import { setting } from "./config.ts";
-import { type Judgement, judge, needsOk } from "./guard.ts";
+import { inMode, type Judgement, judge } from "./guard.ts";
 import {
 	type Card,
 	cleanEnv,
@@ -406,18 +406,22 @@ export class Codex {
 						threadId,
 						input: this.input(m),
 						cwd: this.home,
-						approvalPolicy: "on-request",
+						// Manual has Codex ask about everything it doesn't know is harmless.
+						approvalPolicy: this.lab.mode === "manual" ? "untrusted" : "on-request",
 						// Only his Lab folder is writable and the network is off, so anything
 						// touching the rest of the computer or the internet comes back as an
 						// approval request, where the server's guard decides it. Instructions
 						// alone don't hold an agent to a rule, the sandbox does.
-						sandboxPolicy: {
-							type: "workspaceWrite",
-							writableRoots: [this.home],
-							networkAccess: false,
-							excludeTmpdirEnvVar: false,
-							excludeSlashTmp: false,
-						},
+						sandboxPolicy:
+							this.lab.mode === "plan"
+								? { type: "readOnly", networkAccess: false }
+								: {
+										type: "workspaceWrite",
+										writableRoots: [this.home],
+										networkAccess: false,
+										excludeTmpdirEnvVar: false,
+										excludeSlashTmp: false,
+									},
 						...(model ? { model } : {}),
 						...(effort ? { effort } : {}),
 					});
@@ -834,11 +838,16 @@ export class Codex {
 			lab.hushed.add(ref);
 			return { decision: "decline" };
 		}
+		const mode = lab.mode;
+		const ruled = inMode(mode, SHELL, j, where, Boolean(lab.taint));
+		if (ruled === "plan") return { decision: "decline" };
 		const risky = j.effect === "delete" || j.effect === "system" || j.effect === "run";
 		// It only asks because the sandbox would refuse it, so a program or code
 		// the guard can't see into, or a path it can't know, goes to him too.
 		const asks =
-			needsOk(j, where, Boolean(lab.taint)) || j.effect === "run" || j.unsure === true;
+			mode === "auto"
+				? ruled === "ask" || j.effect === "run" || j.unsure === true
+				: ruled === "ask";
 		if (lab.allowedBefore(cmd, cwd) || !asks) {
 			if (risky) await lab.snap(60_000);
 			return { decision: "accept" };
@@ -860,7 +869,7 @@ export class Codex {
 		const lab = this.lab;
 		const paths = p.itemId === undefined ? undefined : this.changes.get(p.itemId);
 		// One whose paths aren't known can't be checked, so it doesn't go ahead.
-		if (!paths?.length) return { decision: "decline" };
+		if (!paths?.length || lab.mode === "plan") return { decision: "decline" };
 		const j = paths
 			.map((f) => judge("Edit", { file_path: f }, lab.where))
 			.find((x) => x.block);
@@ -882,10 +891,13 @@ export class Codex {
 			leaves: Boolean(p.permissions?.network),
 			unsure: true,
 		};
-		const allow = await this.ask(String(p.itemId), "Bash", {
-			...lab.card("Bash", {}, j, p.reason ? String(p.reason) : undefined),
-			detail: JSON.stringify(p.permissions, null, 2),
-		});
+		const allow =
+			lab.mode !== "plan" &&
+			(lab.mode === "bypass" ||
+				(await this.ask(String(p.itemId), "Bash", {
+					...lab.card("Bash", {}, j, p.reason ? String(p.reason) : undefined),
+					detail: JSON.stringify(p.permissions, null, 2),
+				})));
 		const { network, fileSystem } = p.permissions ?? {};
 		return {
 			permissions: allow

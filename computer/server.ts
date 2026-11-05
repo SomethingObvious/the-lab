@@ -31,6 +31,7 @@ import {
 	WIN,
 	words,
 } from "./config.ts";
+import { ASK_MODES } from "./guard.ts";
 import { EFFORTS, type Live } from "./lab.ts";
 import { awake, type Mac } from "./mac.ts";
 import {
@@ -1533,6 +1534,23 @@ async function serve() {
 				),
 		],
 		["POST /model", chooseModel],
+		[
+			"POST /mode",
+			async (req, res) => {
+				const { mode } = await readBody(req);
+				const to = ASK_MODES.find((m) => m === mode);
+				if (!to)
+					return json(res, 400, {
+						error: `That isn't a mode: ${JSON.stringify(mode)}.`,
+					});
+				// Asking more takes effect now. Asking less waits for his Allow.
+				if (ASK_MODES.indexOf(to) <= ASK_MODES.indexOf(lab.mode)) {
+					lab.setMode(to);
+					return json(res, 200, { mode: to });
+				}
+				return json(res, 202, { mode: lab.mode, asking: to, ref: lab.askMode(to) });
+			},
+		],
 		["POST /app-error", appError],
 		["GET /folders", (_req, res) => json(res, 200, folders)],
 		[
@@ -1618,7 +1636,7 @@ async function serve() {
 			appDir,
 			resolve(appDir, `.${path === "/" ? "/index.html" : path}`),
 		);
-		if (!p || !statSync(p).isFile())
+		if (!(p && statSync(p).isFile()))
 			return json(res, 404, { error: `No such file: ${path}` });
 		if (p.endsWith("index.html")) {
 			const page = readFileSync(p, "utf8").replace(
