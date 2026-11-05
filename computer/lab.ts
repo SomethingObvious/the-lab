@@ -295,7 +295,7 @@ export const PLAN_DENIED =
 const MODE_NOTES: Record<AskMode, string> = {
 	plan: "Plan mode. Nothing gets changed, run or sent, so look around as much as you need and reply with a plan in plain words. He switches modes when he wants it done.",
 	manual: "Manual mode, so he's asked before anything but reading.",
-	auto: "Auto mode, so he's only asked before deleting, sending, installing or changing settings.",
+	auto: "Auto mode, so he's only asked before you send something to someone, change a setting or delete for good. Installs, ordinary pushes and stopping a program go ahead unless you've read a web page or an email in this task.",
 	bypass:
 		"Bypass mode, so nothing asks him first and he isn't checking each step. Take extra care. The never-allow list still holds.",
 };
@@ -303,7 +303,7 @@ const MODE_NOTES: Record<AskMode, string> = {
 const MODE_SAID: Record<AskMode, string> = {
 	plan: "Plan mode is on. It looks around and tells you its plan, but doesn't change, run or send anything.",
 	manual: "Manual mode is on. It asks before it changes, runs or sends anything.",
-	auto: "Auto mode is on. It asks before it deletes, sends or installs anything.",
+	auto: "Auto mode is on. It asks before it sends something to someone, changes a setting or deletes for good.",
 	bypass: "Bypass mode is on. It does everything without asking you first.",
 };
 
@@ -321,7 +321,7 @@ const MODE_CARDS: Record<AskMode, Card> = {
 		title: "Let it get on with everyday work?",
 		detail: "",
 		facts: [
-			"It still asks before it deletes, sends or installs anything.",
+			"It still asks before it sends something to someone, changes a setting or deletes for good.",
 			"Reading, edits and work in your Lab folder go ahead without asking.",
 		],
 	},
@@ -344,7 +344,7 @@ const WELCOME = {
 	kind: "notice",
 	first: true,
 	title: "Before You Start",
-	text: "The Lab works while your computer is awake, asks before it deletes, sends or installs anything, and puts what it deletes in the Trash.",
+	text: "The Lab works while your computer is awake, asks before it sends something to someone, changes a setting or deletes for good, and puts what it deletes in the Trash.",
 	points: [
 		{
 			icon: "bolt",
@@ -352,7 +352,7 @@ const WELCOME = {
 		},
 		{
 			icon: "shield",
-			text: "It asks you here before it deletes, sends or installs anything.",
+			text: "It asks you here before it sends something to someone, changes a setting or deletes for good.",
 		},
 		{
 			icon: "trash",
@@ -1161,7 +1161,7 @@ export class Lab {
 			this.allowedBefore(String(args["command"] ?? ""), String(input.cwd ?? ""))
 		)
 			return decide("allow");
-		if (mode !== "auto" && ruled === "go") {
+		if (ruled === "go") {
 			if (j.effect === "delete" || j.effect === "system") await this.snap(60_000);
 			return decide("allow");
 		}
@@ -1177,7 +1177,6 @@ export class Lab {
 			if (!allow) this.hushed.add(ref);
 			return allow ? decide("allow") : decide("deny", DENIED[by]);
 		}
-		if (j.effect === "read" && !j.secret) return decide("allow");
 		return {};
 	}
 
@@ -1508,9 +1507,7 @@ export class Lab {
 		const q = query({
 			prompt: channel,
 			options: {
-				// Only his Lab folder is the agent's own. Changes anywhere else go
-				// through its permission checks, and deletes, sends and installs
-				// through the gate below.
+				// Every call is decided by the gate below, in every mode.
 				cwd: this.opts.home,
 				permissionMode: "auto",
 				...(this.state.sessionId === undefined ? {} : { resume: this.state.sessionId }),
@@ -2076,5 +2073,5 @@ export class Lab {
 
 const PROMPT = (trash: string) =>
 	words(
-		`You are talking to the owner of this computer through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app. Delete files with ${trash} PATH..., which moves them to the Trash, never with rm. Write web addresses out in full rather than hiding them behind link text.`,
+		`You are talking to the owner of this computer through The Lab, an app on his phone. He reads your replies on the phone, often away from the computer, so lead with the answer and keep formatting light. Your steps show up on his phone live, so you don't need to narrate them. He gave you this computer so that things get done while he's away from it, and a question can sit unread for hours, so do the work rather than asking whether to. If a request could mean a couple of things, take the likeliest reading, do it and say what you assumed. Don't stop at a plan or a list of options when you could finish, and carry on through the obvious next steps, like installing what a task needs or fixing what you just broke. The Lab stops you and asks him by itself when something needs his OK, so go ahead and try it, and never ask for permission in your reply. Only ask him something when you can't go on without an answer that only he has. Send him a file when he asks for one, or for a screenshot or anything easier to look at than describe, the way CLAUDE.md in the working directory says. Read CLAUDE.md before changing the app. Delete files with ${trash} PATH..., which moves them to the Trash, never with rm. Write web addresses out in full rather than hiding them behind link text.`,
 	);

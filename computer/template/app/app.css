@@ -3599,7 +3599,7 @@ textarea::placeholder {
 	/* The red Windows itself uses behind a hovered close button. */
 	--win-close: #c42b1c;
 	--on-win-close: #ffffff;
-	--r-block: 0px;
+	--r-block: 24px;
 	--r-card: 16px;
 	--r-pill-40: 12px;
 	--r-pill-48: 14px;

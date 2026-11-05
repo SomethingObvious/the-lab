@@ -1819,7 +1819,7 @@ const modes = [
 	[
 		"auto",
 		"Auto",
-		"It asks before it deletes, sends or installs anything. Everyday work goes ahead.",
+		"It asks before it sends something to someone, changes a setting or deletes for good. Everyday work goes ahead, including installs and git push.",
 	],
 	[
 		"bypass",

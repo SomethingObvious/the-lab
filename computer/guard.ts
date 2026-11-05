@@ -30,6 +30,8 @@ export interface Judgement {
 	unsure?: boolean;
 	// A shell command runs a program or code whose effect can't be read from the line.
 	runs?: boolean;
+	// Everyday work that only needs his OK once a web page or an email could be behind it.
+	routine?: boolean;
 }
 
 // `user` is the home folder, `home` the agent's Lab folder and `lab` the
@@ -2041,24 +2043,29 @@ function reporting({ cmd, argv, j }: Call): Judgement | undefined {
 	};
 }
 
+// A remote named as an address could be anywhere, one already set up isn't.
+const setUpRemote = (remote?: string) => !remote || /^[\w.-]+$/.test(remote);
+
+function gitPush(argv: string[], rest: string[], j: Judgement): Judgement {
+	const force =
+		argv.some((a) => /^(-f|--force.*)$/.test(a)) || rest.some((a) => a.startsWith("+"));
+	return {
+		...j,
+		effect: "send",
+		leaves: true,
+		routine: !force && setUpRemote(rest[1]),
+		undo: force ? "no" : "yes",
+		touches: [rest[1] ?? "origin"],
+		plain: force
+			? "Force-push code, replacing what's online"
+			: `Push code to ${rest[1] ?? "origin"}`,
+	};
+}
+
 function sending({ cmd, sub, argv, rest, line, j }: Call): Judgement | undefined {
 	if (cmd === "send-mailmessage")
 		return { ...j, effect: "send", leaves: true, undo: "no", plain: "Send an email" };
-	if (cmd === "git" && sub === "push") {
-		const force =
-			argv.some((a) => /^(-f|--force.*)$/.test(a)) ||
-			rest.some((a) => a.startsWith("+"));
-		return {
-			...j,
-			effect: "send",
-			leaves: true,
-			undo: force ? "no" : "yes",
-			touches: [rest[1] ?? "origin"],
-			plain: force
-				? "Force-push code, replacing what's online"
-				: `Push code to ${rest[1] ?? "origin"}`,
-		};
-	}
+	if (cmd === "git" && sub === "push") return gitPush(argv, rest, j);
 	if (
 		cmd === "gh" &&
 		/^(pr|issue|release|gist|repo|api)$/.test(sub) &&
@@ -2126,7 +2133,11 @@ function appleScript({ cmd, line, j }: Call): Judgement | undefined {
 }
 
 // Installing and settings.
-function installing({ cmd, sub, argv, rest, j }: Call): Judgement | undefined {
+function installing({ cmd, sub, argv, rest, sudo, j }: Call): Judgement | undefined {
+	const everyday =
+		!sudo &&
+		/^(i|install|add)$/.test(sub) &&
+		/^(brew|npm|pip3?|pipx|gem|winget|choco|scoop)$/.test(cmd);
 	const installs =
 		(cmd === "brew" &&
 			/^(install|uninstall|reinstall|upgrade|remove|rm|tap|untap|services)$/.test(
@@ -2149,6 +2160,7 @@ function installing({ cmd, sub, argv, rest, j }: Call): Judgement | undefined {
 			...j,
 			effect: "system",
 			undo: "yes",
+			routine: everyday,
 			plain: /^(uninstall|remove|rm)$/.test(sub)
 				? `Uninstall ${what}`
 				: `Install ${what}${cmd === "brew" ? " with Homebrew" : ""}`,
@@ -2223,7 +2235,7 @@ function systemChange({ cmd, rest, line, sudo, j }: Call): Judgement | undefined
 		cmd === "killall" || cmd === "pkill"
 			? `Quit ${rest.join(", ")}`
 			: (SYSTEM_PLAIN.get(cmd) ?? `Change a system setting (${cmd})`);
-	return { ...j, effect: "system", plain };
+	return { ...j, effect: "system", routine: /^(kill|taskkill)$/.test(cmd), plain };
 }
 
 // find and the commands that only read, unless their options write or run something.
@@ -2300,7 +2312,12 @@ function ordinary(c: Call, named: Target[]): Judgement {
 		};
 	}
 	if (seg.ps && PS_SYSTEM.test(cmd))
-		return { ...j, effect: "system", plain: `Change a system setting (${c.head})` };
+		return {
+			...j,
+			effect: "system",
+			routine: cmd === "stop-process",
+			plain: `Change a system setting (${c.head})`,
+		};
 	return {
 		...j,
 		effect: seg.out.length > 0 ? "change" : "run",
@@ -2585,6 +2602,7 @@ function combine(parts: Judgement[]): Judgement {
 	out.secret = parts.some((p) => p.secret);
 	out.leaves = parts.some((p) => p.leaves);
 	out.unsure = parts.some((p) => p.unsure);
+	out.routine = parts.every((p) => p.routine || !["send", "system"].includes(p.effect));
 	const source = parts.find((p) => p.source)?.source;
 	if (source !== undefined) out.source = source;
 	return out;
@@ -2706,6 +2724,7 @@ export function judgeShell(line: string, w: Where, ps = false): Judgement {
 			/\b(iex|invoke-expression)\b/i.test(line))
 	) {
 		out.effect = "system";
+		out.routine = false;
 		out.plain = `Download a script from ${fetched.touches[0]} and run it`;
 	}
 	return out;
@@ -2947,7 +2966,8 @@ export function judge(
 // teaches him to tap Allow without reading.
 export function needsOk(j: Judgement, w: Where, tainted: boolean): boolean {
 	if (j.block) return false;
-	if (j.secret || j.effect === "send" || j.effect === "system") return true;
+	if (j.secret) return true;
+	if (j.effect === "send" || j.effect === "system") return !j.routine || tainted;
 	// Moving named files to the Trash goes ahead, as he can drag them back.
 	if (j.effect === "delete")
 		return (

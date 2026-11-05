@@ -825,6 +825,7 @@ export class Codex {
 					touches: [host ?? ""],
 					undo: null,
 					leaves: true,
+					routine: true,
 				};
 		if (j.source && !lab.taint) lab.taint = j.source;
 		if (j.block) {
@@ -841,13 +842,7 @@ export class Codex {
 		const ruled = inMode(mode, SHELL, j, where, Boolean(lab.taint));
 		if (ruled === "plan") return { decision: "decline" };
 		const risky = j.effect === "delete" || j.effect === "system" || j.effect === "run";
-		// It only asks because the sandbox would refuse it, so a program or code
-		// the guard can't see into, or a path it can't know, goes to him too.
-		const asks =
-			mode === "auto"
-				? ruled === "ask" || j.effect === "run" || j.unsure === true
-				: ruled === "ask";
-		if (lab.allowedBefore(cmd, cwd) || !asks) {
+		if (lab.allowedBefore(cmd, cwd) || ruled !== "ask") {
 			if (risky) await lab.snap(60_000);
 			return { decision: "accept" };
 		}

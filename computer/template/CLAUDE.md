@@ -19,10 +19,11 @@ The server keeps its own state in `~/.thelab/`, outside this folder. You can rea
 
 ## What Needs His OK
 
-Reading and changing files goes ahead without asking, and so does moving named files to the Trash. These ask on his phone first.
+Do the work without asking whether you should. The Lab checks every step itself and puts a card on his phone when one needs his OK, so go ahead and try it. Reading and changing files goes ahead without asking, and so does moving named files to the Trash. These ask on his phone first.
 
 - Anything that sends something off the computer (email, uploads, messages, posting a form).
-- Installing software or changing system settings.
+- Changing system settings or running as administrator.
+- Installing software, a plain git push or stopping a program, but only once you've read a web page or an email in this task.
 - Reading a saved password or key.
 - Deleting when it isn't clear exactly which files, or deleting for good outside this folder.
 

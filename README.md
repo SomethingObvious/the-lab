@@ -18,7 +18,7 @@ You pick how much the agent asks, and you can switch from the phone at any time.
 
 - Plan looks around and tells you its plan, but doesn't change, run or send anything.
 - Manual asks before it changes, runs or sends anything.
-- Auto, the default, goes ahead with everyday work and asks before it sends anything off the computer, installs software, changes settings or deletes something it can't put in the Trash.
+- Auto, the default, goes ahead with everyday work, including installs and a plain git push, and asks before it sends something to someone, changes settings or deletes something it can't put in the Trash. Once it has read a web page or an email in a task, installs, pushes and any program it runs ask too.
 - Bypass does everything without asking.
 
 Switching to a mode that asks less needs your OK, so the agent can't loosen its own rules. Each request says in plain words what the step does and whether it can be undone, worked out from the command itself rather than from what the agent says about it. Deleted files go to the Trash (the Recycle Bin on Windows), and on a Mac the server takes a Time Machine local snapshot before each task, so Put Things Back on the phone can undo a task that went wrong.
