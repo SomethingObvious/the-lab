@@ -4,7 +4,7 @@
 // suite before it goes in, and the supervisor in server.ts puts the old one
 // back if the new server won't stay up.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	cpSync,
@@ -468,28 +468,9 @@ const newer = (a: string, b: string) => {
 	return false;
 };
 
-// The repository is private for now, so GitHub only answers with a token.
-// gh's is used when it's signed in, and a public repository needs none.
-function token(): string | undefined {
-	for (const gh of WIN ? ["gh"] : ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "gh"]) {
-		const r = spawnSync(gh, ["auth", "token"], {
-			encoding: "utf8",
-			windowsHide: true,
-			timeout: 5000,
-		});
-		if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
-	}
-	return setting("GH_TOKEN") ?? setting("GITHUB_TOKEN");
-}
-
 async function github(path: string): Promise<Response> {
-	const key = token();
 	return await fetch(`https://api.github.com/repos/${REPO}${path}`, {
-		headers: {
-			accept: "application/vnd.github+json",
-			"user-agent": "the-lab",
-			...(key ? { authorization: `Bearer ${key}` } : {}),
-		},
+		headers: { accept: "application/vnd.github+json", "user-agent": "the-lab" },
 		signal: AbortSignal.timeout(60_000),
 	});
 }
@@ -497,10 +478,6 @@ async function github(path: string): Promise<Response> {
 // The newest release tag, if it's newer than `current`.
 export async function latest(current: string): Promise<string | null> {
 	const r = await github("/tags?per_page=50");
-	if (r.status === 404)
-		throw new Error(
-			"GitHub didn't show The Lab's releases. The repository is private, so gh has to be signed in to an account that can see it.",
-		);
 	if (!r.ok) throw new Error(`GitHub answered ${r.status} when asked for releases.`);
 	const tags = ((await r.json()) as { name: string }[])
 		.map((t) => /^v(\d+\.\d+\.\d+)$/.exec(t.name)?.[1])
