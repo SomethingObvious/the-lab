@@ -1269,6 +1269,26 @@ test("a state.json cut short by a power cut still starts", async () => {
 	lab.close();
 });
 
+test("Carry On after a restart names the task that was cut off", async () => {
+	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
+	const dir = join(root, ".thelab");
+	mkdirSync(dir);
+	writeFileSync(
+		join(dir, "state.json"),
+		JSON.stringify({
+			open: { text: "Ping it 30 times", at: new Date().toISOString() },
+		}),
+	);
+	const { Lab } = await import("./lab.ts");
+	const lab = new Lab({ home: root, dir, snapshots: false });
+	const notice = lab.store.events.findLast((e) => e.kind === "notice");
+	assert.match(
+		String((notice?.["action"] as { send?: string } | undefined)?.send),
+		/"Ping it 30 times", so it didn't finish/,
+	);
+	lab.close();
+});
+
 test("the server starts with app/ gone and keeps the last version", () => {
 	const root = mkdtempSync(join(tmpdir(), "lab-test-"));
 	const app = join(root, "app");
@@ -2540,6 +2560,7 @@ test("send_to_phone won't send The Lab's own files or keys", async () => {
 	writeFileSync(join(root, "server.pem"), "dummy");
 	writeFileSync(join(root, "notes.txt"), "milk");
 	writeFileSync(join(dir, "files", "shot.png"), "png");
+	writeFileSync(join(root, "Screenshot at 4.35\u202fPM.png"), "png");
 	symlinkSync(dir, join(root, "peek"), "junction");
 	const sent = (p: string) => !("isError" in lab.sendFile(p));
 	assert.equal(sent(join(dir, "config.json")), false);
@@ -2551,9 +2572,10 @@ test("send_to_phone won't send The Lab's own files or keys", async () => {
 	);
 	assert.equal(sent(join(root, "notes.txt")), true);
 	assert.equal(sent(join(dir, "files", "shot.png")), true);
+	assert.equal(sent(join(root, "Screenshot at 4.35 PM.png")), true);
 	assert.deepEqual(
 		seen.filter((e) => e.kind === "file").map((e) => field(e, "name")),
-		["notes.txt", "shot.png"],
+		["notes.txt", "shot.png", "Screenshot at 4.35\u202fPM.png"],
 	);
 	lab.close();
 });

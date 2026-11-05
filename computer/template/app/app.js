@@ -2187,7 +2187,7 @@ function openRestore(t) {
 	openSheet(
 		"restore",
 		`Put Things Back to ${at}?`,
-		`<p class="hint">The agent puts back what it changed or deleted in this task. Deleted things come back from the Trash first, then anything else from the Time Machine snapshot taken at ${at}. What you changed yourself since then stays as it is.</p>`,
+		`<p class="hint">The agent puts back what it changed or deleted in this task. Deleted things come back from the Trash first, then anything else from the Time Machine snapshot taken at ${at}, and what you changed yourself since then stays as it is.</p>`,
 		`<button type="button" data-close>Cancel</button><button type="button" class="primary" data-restoreok="${esc(t.id)}">Put Things Back</button>`,
 	);
 }
@@ -2530,7 +2530,7 @@ function jump(id) {
 	target.classList.remove("flash");
 	void target.offsetWidth;
 	target.classList.add("flash");
-	focusSoft(el.matches(".ask") ? el.querySelector(".allow") : target);
+	focusSoft(el.querySelector("lab-ask") || target);
 }
 
 // Requests pane, unfolded

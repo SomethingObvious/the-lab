@@ -16,7 +16,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import process, { env } from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -516,6 +516,31 @@ const FOLD = WIN || process.platform === "darwin";
 const pathKey = (p: string) => (FOLD ? resolve(p).toLowerCase() : resolve(p));
 const samePath = (a: string, b: string) => pathKey(a) === pathKey(b);
 const inside = (p: string, dir: string) => pathKey(p).startsWith(pathKey(dir) + sep);
+// macOS puts a narrow no-break space before AM and PM in screenshot names,
+// and the agent writes it back as a plain space.
+const plainSpaces = (s: string) =>
+	s.normalize("NFC").replaceAll(/[\u00a0\u202f]/g, " ");
+function onDisk(path: string): string {
+	if (existsSync(path)) return path;
+	try {
+		const hit = readdirSync(dirname(path)).find(
+			(n) => plainSpaces(n) === plainSpaces(basename(path)),
+		);
+		return hit ? join(dirname(path), hit) : path;
+	} catch {
+		return path;
+	}
+}
+
+// A folder as written and as it really is, since a link's real path only
+// matches the second (macOS puts /var under /private).
+function withReal(dir: string): string[] {
+	try {
+		return [dir, realpathSync(dir)];
+	} catch {
+		return [dir];
+	}
+}
 
 // Every file a command names, with a hash of what's in it. A script that
 // runs from his folder, like `bash fix.sh` or `crontab jobs.txt`, can be
@@ -663,7 +688,8 @@ export class Lab {
 				text: `The server on the computer restarted partway through "${clip(this.state.open.text, 120)}". Nothing was redone.`,
 				action: {
 					label: "Carry On",
-					send: "Carry on with what you were doing before the restart. Check what already got done first.",
+					// Without the request and the cut, the agent tends to assume the task finished.
+					send: `The server restarted partway through "${clip(this.state.open.text, 300)}", so it didn't finish. Check what already got done, then carry on.`,
 				},
 			});
 			this.state.open = null;
@@ -1786,15 +1812,16 @@ export class Lab {
 			// Checked as written.
 		}
 		const user = homedir();
+		const open = withReal(this.filesDir);
 		const shut = [
 			this.opts.dir,
 			join(user, ".thelab"),
 			join(user, ".ssh"),
 			join(user, ".claude"),
 			join(user, ".codex"),
-		];
+		].flatMap(withReal);
 		for (const p of new Set([src, real])) {
-			if (inside(p, this.filesDir)) continue;
+			if (open.some((d) => inside(p, d))) continue;
 			const dir = shut.find((d) => inside(p, d));
 			if (dir) return `${src} is in ${dir}`;
 			if (judge("Read", { file_path: p }, this.where).secret)
@@ -1804,7 +1831,7 @@ export class Lab {
 	}
 
 	sendFile(path: string, caption?: string) {
-		const src = resolve(path);
+		const src = onDisk(resolve(path));
 		if (!(existsSync(src) && statSync(src).isFile()))
 			return toolError(`There is no file at ${src}.`);
 		const shut = this.unsendable(src);
