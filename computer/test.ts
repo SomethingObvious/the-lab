@@ -2074,6 +2074,30 @@ const inModeFor = (
 	input: object,
 ) => inMode(mode, tool, judge(tool, input as Record<string, unknown>, W), W, false);
 
+test("recall finds past messages by every word", async () => {
+	const { recalled } = await import("./recall.ts");
+	const lines = [
+		JSON.stringify({
+			kind: "you",
+			at: "2026-11-01T09:00:00",
+			text: "Find my Tax Return",
+		}),
+		JSON.stringify({
+			kind: "reply",
+			at: "2026-11-01T09:01:00",
+			text: "Your tax folder is here",
+		}),
+		JSON.stringify({ kind: "step", at: "2026-11-01T09:02:00", text: "tax return" }),
+		"not json",
+	];
+	assert.deepEqual(recalled(lines, ["tax", "return"]), [
+		"2026-11-01T09:00 He said: Find my Tax Return",
+	]);
+	assert.equal(recalled(lines, ["tax"]).length, 2);
+	assert.equal(verdict("recall tax return"), "go");
+	assert.equal(verdict("recall tax return", true), "go");
+});
+
 test("each mode decides which calls ask first", () => {
 	const read = ["Read", { file_path: "/Users/me/TheLab/notes.md" }] as const;
 	const edit = ["Write", { file_path: "/Users/me/TheLab/notes.md" }] as const;

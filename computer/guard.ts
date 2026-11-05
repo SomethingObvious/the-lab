@@ -46,6 +46,7 @@ export interface Where {
 }
 
 const READ = new Set([
+	"recall",
 	"ls",
 	"cat",
 	"head",
