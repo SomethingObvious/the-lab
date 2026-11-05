@@ -42,7 +42,7 @@ const DefaultSettings = {
 let settings = { ...DefaultSettings };
 
 // Every shape is the same 96 point polar outline, so CSS can morph any one
-// into any other by transitioning `d`.
+// into any other by transitioning `clip-path`.
 const Shapes = {
 	circle: [0, 0],
 	cookie: [9, 0.075],
@@ -69,16 +69,15 @@ const css = document.createElement("style");
 css.textContent = `:root{${Object.entries(P)
 	.map(([k, v]) => `--sh-${k}:${v}`)
 	.join(";")}}
-.shape{d:${P.circle}}
+.shape{clip-path:${P.circle}}
 ${Object.keys(P)
-	.map((k) => `.s-${k}{d:${P[k]}}`)
-	.join("\n")}
-@keyframes morph{0%,100%{d:${P.burst}}25%{d:${P.cookie}}50%{d:${P.pentagon}}75%{d:${P.clover}}}`;
+	.map((k) => `.s-${k}{clip-path:${P[k]}}`)
+	.join("\n")}`;
 document.head.append(css);
 const shape = (name, id) =>
-	`<svg viewBox="0 0 100 100" aria-hidden="true"><path class="shape s-${name}"${id ? ` id="${id}"` : ""}/></svg>`;
+	`<svg viewBox="0 0 100 100" aria-hidden="true"><rect class="shape s-${name}"${id ? ` id="${id}"` : ""} width="100" height="100"/></svg>`;
 const loader = () =>
-	`<svg viewBox="0 0 100 100" aria-hidden="true"><path class="shape"/></svg>`;
+	`<svg viewBox="0 0 100 100" aria-hidden="true"><rect class="shape" width="100" height="100"/></svg>`;
 
 function inline(s) {
 	return (
@@ -1486,8 +1485,8 @@ posture();
 
 let tick = null;
 // While it works the toolbar mark springs to the next shape every other
-// second. Each change is a transition on `d`, so it only lays out while
-// it moves, where a looping morph lays out every frame.
+// second. Each change is a transition on `clip-path`, so it only paints
+// while it moves, where a looping morph paints every frame.
 const Cycle = ["burst", "cookie", "pentagon", "clover"];
 let beat = 0;
 let tickFor = "";

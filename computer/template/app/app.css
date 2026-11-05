@@ -233,10 +233,19 @@ button {
 	inset: -4px 0;
 }
 
-/* Shapes are drawn from one path each, so they can morph into one another. */
+/* A browser without linear() drops every animation that names --spring, and this
+   keeps the overshoot in the Mac window on Safari older than 17.2. */
+@supports not (transition-timing-function: linear(0, 1)) {
+	:root {
+		--spring: cubic-bezier(0.3, 1.4, 0.5, 1);
+	}
+}
+
+/* A square clipped to one outline each, so they can morph into one another. WebKit
+   has no d property, and this draws the same in every engine. */
 .shape {
 	fill: currentColor;
-	transition: d 0.65s var(--spring);
+	transition: clip-path 0.65s var(--spring);
 }
 
 .app {
@@ -1414,7 +1423,7 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 /* Kept below the shape classes, so the toolbar mark can step through them. */
 :where(.loader) .shape {
-	d: var(--sh-pentagon);
+	clip-path: var(--sh-pentagon);
 }
 .now.asking .loader {
 	background: var(--on-ask);
@@ -1918,10 +1927,10 @@ textarea::placeholder {
 	transition: color 0.3s var(--ease);
 }
 .send .shape {
-	d: var(--sh-circle);
+	clip-path: var(--sh-circle);
 }
 .state.go .shape {
-	d: var(--sh-pentagon);
+	clip-path: var(--sh-pentagon);
 }
 .file .fi svg:first-child {
 	position: absolute;
@@ -1930,7 +1939,7 @@ textarea::placeholder {
 	height: 100%;
 }
 .send:not(:disabled) .shape {
-	d: var(--sh-cookie);
+	clip-path: var(--sh-cookie);
 }
 .send:not(:disabled) > svg:first-child {
 	transform: rotate(40deg);
@@ -3501,11 +3510,11 @@ textarea::placeholder {
 	color: var(--ask-ink);
 }
 .step.live .dotk .shape {
-	d: var(--sh-pentagon);
+	clip-path: var(--sh-pentagon);
 }
 .now.asking .loader .shape {
 	animation: none;
-	d: var(--sh-burst);
+	clip-path: var(--sh-burst);
 }
 .round.tonal[aria-expanded="true"] .ic {
 	transform: rotate(45deg);
@@ -3568,10 +3577,10 @@ textarea::placeholder {
 	.state.go .shape,
 	.step.live .dotk .shape {
 		animation: none !important;
-		d: var(--sh-pentagon);
+		clip-path: var(--sh-pentagon);
 	}
 	.now.asking .loader .shape {
-		d: var(--sh-burst);
+		clip-path: var(--sh-burst);
 	}
 	.flash {
 		animation: flash 1.6s steps(1, end) !important;

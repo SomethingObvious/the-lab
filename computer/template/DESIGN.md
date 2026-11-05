@@ -470,7 +470,7 @@ Two kinds of shape. Rounded rectangles do the containing, and a small library of
 Everything is rounded, nothing is square. Pills take half their height (20 px at 40 high, 24 at 48, 26 at 52, 28 at 56). Cards and bubbles use 28 px, the approval card and sheet 32 px, the header's bottom edge, the tray and the toolbar 36 px. Message bubbles keep one 8 px tail corner: bottom right for his, top left for the computer's replies and photos. Grouped lists (search results, the file list, the shortcut editor) round only the group's outer corners to 24 or 28 px and keep 8 px between items. Connected button pairs (Review and Stop, the split button) round their outer ends fully and their inner ends to 6 or 10 px.
 
 ### State Shapes
-Each shape is the same 96 point outline (`--sh-circle`, `--sh-cookie` and so on, generated at the top of `app.js`), so any one can morph into any other with a transition on `d`. Each shape means a state, wherever it appears.
+Each shape is the same 96 point outline (`--sh-circle`, `--sh-cookie` and so on, generated at the top of `app.js`), so any one can morph into any other with a transition on `clip-path`. Each one is a square clipped to its outline rather than an SVG path, as WebKit has no `d` property and the Mac window would draw nothing. Each shape means a state, wherever it appears.
 
 - **Cookie** (9 soft lobes): done (green, with a check), and the send button when there's something to send, turned 40 degrees.
 - **Burst** (12 points): waiting on him (the approval mark, a waiting run, the toolbar loader while asking).

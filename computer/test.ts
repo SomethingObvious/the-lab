@@ -467,6 +467,15 @@ async function signInLab(engine: "claude" | "codex") {
 	return { lab, signIn, end };
 }
 
+const templateApp = (name: string) =>
+	readFileSync(new URL(`./template/app/${name}`, import.meta.url), "utf8");
+
+test("no shape relies on the d property, which WebKit doesn't have", () => {
+	assert.doesNotMatch(templateApp("app.css"), /(?:^|[\s;{])d:\s|transition: d\s/m);
+	assert.doesNotMatch(templateApp("app.js"), /\{d:\$\{|<path class="shape/);
+	assert.doesNotMatch(templateApp("index.html"), /<path class="shape/);
+});
+
 test("a lost sign-in offers Sign In, then what it cut off, once", async () => {
 	const { lab, end } = await signInLab("codex");
 	env["FAKE_READ"] = JSON.stringify({ account: null, requiresOpenaiAuth: true });
