@@ -28,6 +28,7 @@ export const DEFAULTS: Settings = {
 	chips: true,
 	digest: true,
 	motion: "full",
+	speakReplies: "voice",
 	model: null,
 	modelChip: true,
 	effort: null,

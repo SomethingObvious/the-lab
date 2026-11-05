@@ -1858,6 +1858,9 @@ mark {
 .round .ic {
 	transition: transform 0.45s var(--spring);
 }
+.dock:has(#send:not(:disabled)) #talk {
+	display: none;
+}
 .round.tonal {
 	background: var(--surface);
 	color: var(--ink);

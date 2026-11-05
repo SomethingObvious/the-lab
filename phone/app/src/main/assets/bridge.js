@@ -205,6 +205,9 @@
 		check: () => ask("check", {}).then((t) => JSON.parse(t)),
 		undoDesign: () => call("undo"),
 		open: (url) => call("open", { url }),
+		listen: () => ask("listen", {}),
+		speak: (text) => call("speak", { text }),
+		hush: () => call("hush"),
 		// { w } asks for a copy whose short side is at least w pixels.
 		fileUrl: (url, opts) => {
 			const w = Math.round(opts?.w || 0);

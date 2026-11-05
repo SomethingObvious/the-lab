@@ -2098,6 +2098,84 @@ test("recall finds past messages by every word", async () => {
 	assert.equal(verdict("recall tax return", true), "go");
 });
 
+test("the box runs in one kept container or over ssh", async () => {
+	const { creating, inside, parsed } = await import("./box.ts");
+	assert.deepEqual(parsed(["python3", "-V"]), {
+		image: "ubuntu:24.04",
+		ssh: "",
+		stop: false,
+		command: "python3 -V",
+	});
+	assert.equal(parsed(["--image", "node:24", "ls"]).image, "node:24");
+	assert.equal(parsed(["--ssh", "me@host", "uptime"]).ssh, "me@host");
+	assert.equal(parsed(["--stop"]).stop, true);
+	assert.throws(() => parsed(["--ssh"]), /which machine/);
+	assert.deepEqual(creating("node:24", "/x").args.slice(4, 7), ["-v", "/x:/lab", "-w"]);
+	assert.deepEqual(inside("ls").args.slice(-3), ["sh", "-lc", "ls"]);
+	assert.equal(verdict("box python3 -V"), "go");
+	assert.equal(verdict("box python3 -V", true), "ask");
+	assert.equal(verdict("box --ssh me@host uptime"), "ask");
+});
+
+test("insights count messages, steps and tools for the days asked", async () => {
+	const { insights } = await import("./commands.ts");
+	const now = Date.parse("2026-11-05T12:00:00Z");
+	const events = [
+		{ kind: "you", at: "2026-11-05T10:00:00Z" },
+		{ kind: "step", tool: "Bash", at: "2026-11-05T10:00:01Z" },
+		{ kind: "step", tool: "Bash", at: "2026-11-05T10:00:02Z" },
+		{ kind: "step", tool: "Edit", at: "2026-11-05T10:00:03Z" },
+		{ kind: "done", ok: true, ms: 120_000, at: "2026-11-05T10:02:00Z" },
+		{ kind: "you", at: "2026-10-01T10:00:00Z" },
+		{ kind: "done", ok: false, ms: 0, at: "2026-10-01T10:00:00Z" },
+	];
+	assert.equal(
+		insights(events, 1, now),
+		"Today: 1 message, 3 steps, 2 minutes of work.\n\n0 tasks failed and 0 stopped.\n\nMost used: Bash 2, Edit 1.",
+	);
+	assert.match(insights(events, 60, now), /^The last 60 days: 2 messages/);
+	assert.match(insights(events, 60, now), /1 task failed/);
+});
+
+test("chat commands answer without reaching the agent", async () => {
+	const { lab, pick } = await codexLab(MODEFAKE);
+	const texts = () => pick("reply").map((e) => String(field(e, "text")));
+	const said = (text: string) =>
+		lab.command(text, crypto.randomUUID(), (m) => m === "good");
+	try {
+		assert.equal(said("/help"), true);
+		assert.match(texts().at(-1) ?? "", /\/retry sends/);
+		assert.equal(said("/model good"), true);
+		assert.equal(texts().at(-1), "The next message uses good.");
+		assert.equal(said("/model bad"), true);
+		assert.equal(texts().at(-1), "That isn't a model name: bad.");
+		assert.equal(said("/personality Be brief."), true);
+		assert.equal(said("/personality"), true);
+		assert.equal(texts().at(-1), "Be brief.");
+		assert.equal(said("/retry"), true);
+		assert.equal(texts().at(-1), "There's nothing to send again.");
+		assert.equal(said("/nonsense"), false);
+		assert.equal(said("not a command"), false);
+		lab.state.threadId = "old";
+		assert.equal(said("/new"), true);
+		assert.equal(lab.state.threadId, undefined);
+	} finally {
+		lab.close();
+	}
+});
+
+test("naming a bot that exists tells the agent to answer as it", async () => {
+	const { botsIn, botNote, namesIn } = await import("./commands.ts");
+	const root = mkdtempSync(join(tmpdir(), "lab-bots-"));
+	mkdirSync(join(root, "bots"));
+	writeFileSync(join(root, "bots", "editor.md"), "Fixes prose.");
+	writeFileSync(join(root, "bots", "editor.notes.md"), "Notes.");
+	assert.deepEqual(botsIn("@editor look at this", root), ["editor"]);
+	assert.deepEqual(botsIn("mail me@editor.com and @nobody", root), []);
+	assert.deepEqual(namesIn(join(root, "bots")), ["editor"]);
+	assert.match(botNote(["editor"]), /talking to editor/);
+});
+
 test("each mode decides which calls ask first", () => {
 	const read = ["Read", { file_path: "/Users/me/TheLab/notes.md" }] as const;
 	const edit = ["Write", { file_path: "/Users/me/TheLab/notes.md" }] as const;

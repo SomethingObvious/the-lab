@@ -32,6 +32,7 @@ const DefaultSettings = {
 	chips: true,
 	digest: true,
 	motion: "full",
+	speakReplies: "voice",
 	model: null,
 	modelChip: true,
 	effort: null,
@@ -419,10 +420,14 @@ function flush() {
 
 // History is older than this, so only live events are read out.
 const fresh = (e) => booted && Date.now() - Date.parse(e.at) < 30_000;
+// Whether his last message was spoken, so the answer can be too.
+let talked = false;
 function announce(e, t) {
 	if (e.kind === "ask") say(`Needs your OK: ${e.title}`);
 	else if (e.kind === "reply") {
 		const p = plain(e.text);
+		const aloud = settings.speakReplies;
+		if (aloud === "always" || (aloud === "voice" && talked)) lab.speak?.(p);
 		say(`The computer replied: ${p.length > 160 ? `${p.slice(0, 157)}...` : p}`);
 	} else if (e.kind === "file") say(`The computer sent ${e.name}.`);
 	else if (e.kind === "failed")
@@ -1702,6 +1707,16 @@ const Settings = [
 		],
 	},
 	{ head: "Conversation" },
+	{
+		key: "speakReplies",
+		type: "choice",
+		label: "Read Replies Aloud",
+		options: [
+			["voice", "After Talking"],
+			["always", "Always"],
+			["never", "Never"],
+		],
+	},
 	{
 		key: "steps",
 		type: "choice",
@@ -3708,9 +3723,25 @@ text.addEventListener("keydown", (ev) => {
 		$("form").requestSubmit();
 	}
 });
+$("talk").hidden = !lab.listen;
+// The mic leaves too little room for the long version on a phone.
+if (lab.listen) text.placeholder = "Message";
+$("talk").addEventListener("click", async () => {
+	lab.hush?.();
+	try {
+		const heard = (await lab.listen()).trim();
+		if (!heard) return;
+		talked = true;
+		send(heard);
+		toBottom();
+	} catch (e) {
+		toast(e.message, true);
+	}
+});
 $("form").addEventListener("submit", (ev) => {
 	ev.preventDefault();
 	if ($("send").disabled) return;
+	talked = false;
 	send(text.value.trim(), pending);
 	text.value = "";
 	keep("");

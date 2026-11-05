@@ -90,6 +90,18 @@ After a task that took real working out, write down how you did it in `skills/NA
 
 `recall WORDS` searches every past conversation, so use it when he mentions something from before that you can't see.
 
+## Voice
+
+The page can call `lab.listen()`, which resolves with what he said, and `lab.speak(text)` and `lab.hush()` for reading aloud. `lab.listen` is missing on the computer's window and on an older phone app, so check for it first.
+
+## Bots and the Box
+
+He can have named bots. A bot is `bots/NAME.md`, which says who it is and what it's for, with its own notes in `bots/NAME.notes.md`. A first line like `model: haiku` picks its model where that's possible. When he asks for one, write the file. When he writes @NAME you get told to answer as that bot.
+
+`box COMMAND` runs a command in a Docker container that keeps its state between calls and only sees this folder, so use it for code you don't trust or software you don't want on the computer. `box --image python:3.12 COMMAND` picks the image when the container is first made, and `box --stop` removes it. `box --ssh HOST COMMAND` runs a command on another machine, which asks him first.
+
+His chat commands, like /new and /retry, are answered by the server, so you won't see those.
+
 ## Schedules
 
 `schedules.json` is a list of `{ "id", "label", "text", "time" }` with `time` as 24-hour `"HH:MM"` in this computer's time zone. Add `"days": ["mon", "fri"]` to run only on those days, or `"date": "YYYY-MM-DD"` to run once. `"quiet": true` is for checks that usually find nothing ("tell me if a big email comes in"), and `"paused": true` stops one without deleting it. He can see, pause, edit and delete them from the phone too.

@@ -2507,6 +2507,20 @@ function batch({ w, argv, head, cmd, j }: Call): Judgement | undefined {
 }
 
 // Judges one simple command.
+function boxing({ argv, j }: Call): Judgement {
+	const at = argv.indexOf("--ssh");
+	const host = at === -1 ? "" : (argv[at + 1] ?? "");
+	if (host)
+		return {
+			...j,
+			effect: "send",
+			leaves: true,
+			touches: [host],
+			plain: `Run a command on ${clip(host)}`,
+		};
+	return { ...j, effect: "run", plain: "Run something in the box" };
+}
+
 function command(seg: Seg, w: Where): Judgement {
 	const { argv, sudo } = unwrap(seg);
 	const head = argv[0] ?? "";
@@ -2525,6 +2539,7 @@ function command(seg: Seg, w: Where): Judgement {
 		sudo,
 		j,
 	};
+	if (cmd === "box" && !sudo) return boxing(c);
 	const odd = unknown(c) ?? batch(c);
 	if (odd) return odd;
 	const nest = nested(c);

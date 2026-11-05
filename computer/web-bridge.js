@@ -220,6 +220,28 @@
 				: null,
 		// Shows a file the phone or the agent sent in Explorer or the Finder.
 		reveal: (url) => host({ reveal: url }),
+		// A Mac's WebKit can kill an app that starts recognition without its
+		// own usage strings, so the desktop window only ever speaks.
+		listen:
+			globalThis.labShell !== "desktop" && globalThis.webkitSpeechRecognition
+				? () =>
+						new Promise((done, fail) => {
+							const heard = new globalThis.webkitSpeechRecognition();
+							heard.addEventListener("result", (e) =>
+								done(e.results[0]?.[0]?.transcript ?? ""),
+							);
+							heard.addEventListener("error", (e) =>
+								fail(new Error(`Couldn't hear that: ${e.error}.`)),
+							);
+							heard.addEventListener("end", () => done(""));
+							heard.start();
+						})
+				: undefined,
+		speak: (text) => {
+			speechSynthesis.cancel();
+			speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+		},
+		hush: () => speechSynthesis.cancel(),
 		upload: (files) => upload("/upload", files),
 		toPhone: (files) => upload("/to-phone", files),
 		subscribe(fn) {

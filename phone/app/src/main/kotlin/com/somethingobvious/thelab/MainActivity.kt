@@ -8,6 +8,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.PowerManager
 import android.provider.Settings
+import android.speech.RecognizerIntent
+import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -69,6 +71,8 @@ class MainActivity : Activity() {
     private var rescueReason: String? = null
     private var ready = false
     private var picking: String? = null
+    private var listening: String? = null
+    private var voice: TextToSpeech? = null
     // Only <lab-ask> knows it, so only it can answer an Allow card.
     private var askKey = ""
     private val askScript by lazy { assets.open("ask.js").bufferedReader().use { it.readText() } }
@@ -394,6 +398,7 @@ class MainActivity : Activity() {
         Hub.resetListeners.remove(onReset)
         unlisten?.invoke()
         web?.destroy()
+        voice?.shutdown()
         pairDialog?.dismiss()
         super.onDestroy()
     }
@@ -604,6 +609,9 @@ class MainActivity : Activity() {
             "theme" -> applyTheme(m)
             "back" -> wantsBack(m.optBoolean("on"))
             "open" -> open(m.optString("url"))
+            "listen" -> listen(m.optString("id"))
+            "speak" -> speak(m.optString("text"))
+            "hush" -> voice?.stop()
             "fix" -> fix(m.optString("fix"))
             "statusCard" -> m.optString("mode").takeIf { it in setOf("always", "tasks", "never") }?.let {
                 getSharedPreferences("lab", MODE_PRIVATE).edit { putString("statusCard", it) }
@@ -733,6 +741,34 @@ class MainActivity : Activity() {
         send(r)
     }
 
+    // The system's own speech screen, so the mic never runs without him seeing
+    // it, whatever the page does, and the app needs no microphone permission.
+    private fun listen(id: String) {
+        listening?.let { answer(it, "") }
+        listening = id
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        try { startActivityForResult(intent, LISTEN) } catch (_: ActivityNotFoundException) {
+            listening = null
+            answer(id, null, "There's nothing on this phone that can turn speech into text.")
+        }
+    }
+
+    private fun speak(text: String) {
+        val said = text.take(TextToSpeech.getMaxSpeechInputLength() - 1)
+        if (said.isBlank()) return
+        val ready = voice
+        if (ready != null) {
+            ready.speak(said, TextToSpeech.QUEUE_FLUSH, null, "reply")
+            return
+        }
+        var made: TextToSpeech? = null
+        made = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) made?.speak(said, TextToSpeech.QUEUE_FLUSH, null, "reply")
+        }
+        voice = made
+    }
+
     private fun pick(id: String, kind: String) {
         picking?.let { answer(it, JSONArray()) }
         picking = id
@@ -751,6 +787,12 @@ class MainActivity : Activity() {
 
     @Deprecated("Activity has no other way to get a picker result without AndroidX Activity")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode == LISTEN) {
+            val id = listening ?: return
+            listening = null
+            val heard = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            return answer(id, if (resultCode == RESULT_OK) heard.orEmpty() else "")
+        }
         if (requestCode != PICK) return super.onActivityResult(requestCode, resultCode, data)
         val id = picking
         if (id == null && !pickedBefore) return
@@ -825,6 +867,7 @@ class MainActivity : Activity() {
         const val SAFE = "com.somethingobvious.thelab.SAFE"
         const val COMPOSE = "com.somethingobvious.thelab.COMPOSE"
         const val PICK = 7
+        const val LISTEN = 8
         // As many files as one message can carry.
         const val MAX_FILES = 20
     }

@@ -298,6 +298,9 @@ const PORT_TAKEN = 98;
 // How long a pairing link from setup works.
 const PAIR_LINK = 120_000;
 
+const isModelName = (model: unknown) =>
+	model === null || (typeof model === "string" && /^[\w.:/@[\]-]{1,120}$/.test(model));
+
 if (setting("LAB_CHILD")) serve();
 else supervise();
 
@@ -1226,9 +1229,13 @@ async function serve() {
 			return json(res, 400, {
 				error: `cid must be a UUID, got ${JSON.stringify(cid)}.`,
 			});
-		return json(res, 202, {
-			accepted: lab.send(text.trim(), cid.toLowerCase(), attached),
-		});
+		const said = text.trim();
+		const id = cid.toLowerCase();
+		const command =
+			attached.length === 0 &&
+			said.startsWith("/") &&
+			lab.command(said, id, namedModel);
+		return json(res, 202, { accepted: command || lab.send(said, id, attached) });
 	};
 
 	const memory: Route = async (req, res) => {
@@ -1282,15 +1289,7 @@ async function serve() {
 		});
 	};
 
-	const chooseModel: Route = async (req, res) => {
-		const { model } = await readBody(req);
-		if (
-			model !== null &&
-			(typeof model !== "string" || !/^[\w.:/@[\]-]{1,120}$/.test(model))
-		)
-			return json(res, 400, {
-				error: `That isn't a model name: ${JSON.stringify(model)}.`,
-			});
+	const saveModel = (model: string | null) => {
 		settings =
 			cleanSettings({
 				...settings,
@@ -1299,8 +1298,21 @@ async function serve() {
 			}) ?? settings;
 		writeJson(settingsFile, settings);
 		pushSettings();
+	};
+	const chooseModel: Route = async (req, res) => {
+		const { model } = await readBody(req);
+		if (!isModelName(model))
+			return json(res, 400, {
+				error: `That isn't a model name: ${JSON.stringify(model)}.`,
+			});
+		saveModel(model as string | null);
 		return json(res, 200, { chosen: settings["model"] });
 	};
+	function namedModel(model: string) {
+		if (!isModelName(model)) return false;
+		saveModel(model);
+		return true;
+	}
 
 	const appError: Route = async (req, res) => {
 		const { message, where, version, fatal } = await readBody(req);

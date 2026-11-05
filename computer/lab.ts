@@ -36,6 +36,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { Codex } from "./codex.ts";
+import { botNote, botsIn, HELP, insights, namesIn } from "./commands.ts";
 import { saveFile, setting, WIN, words } from "./config.ts";
 import { checkApp, published } from "./design.ts";
 import {
@@ -194,7 +195,7 @@ export class Store {
 
 export interface State {
 	sessionId?: string | undefined;
-	threadId?: string;
+	threadId?: string | undefined;
 	open?: { text: string; at: string } | null;
 	memoryPaused?: boolean;
 	login?: string;
@@ -788,10 +789,13 @@ export class Lab {
 				: text;
 		if (scheduled)
 			content = `This is "${scheduled.label}", ${scheduled.about ?? "a scheduled message from schedules.json"}, not something he just typed. He may not be looking at the phone, so finish it and reply with the result.${scheduled.quiet ? " If there is nothing worth telling him, reply with exactly [SILENT] and he won't be notified." : ""}\n\n${content}`;
+		const bots = botsIn(text, this.opts.home);
+		if (bots.length > 0) this.notes.push(botNote(bots));
 		const notes = [...this.notes, this.memoryNote(), REPLIES[this.replies]]
 			.filter(Boolean)
 			.join(" ");
-		if (notes) content = `(${notes})\n\n${content}`;
+		// The engine only sees a slash command when it's the whole message.
+		if (notes && text !== "/compact") content = `(${notes})\n\n${content}`;
 		this.notes = [];
 		this.setStatus(true, "Reading your message");
 		if (this.opts.engine === "codex") {
@@ -1090,6 +1094,117 @@ export class Lab {
 			...(this.taint ? { from: `This came up after reading ${this.taint}.` } : {}),
 			...(offer ? { always: { command, cwd: cwd ?? this.opts.home } } : {}),
 		};
+	}
+
+	// A chat command the server answers itself. Anything else starting with a
+	// slash goes to the agent, as it may be one of the engine's own.
+	command(text: string, cid: string, setModel: (name: string) => boolean): boolean {
+		const [, name = "", rest = ""] = /^\/([\w-]+)(?:\s+([\s\S]*))?$/.exec(text) ?? [];
+		if (!name) return false;
+		if (this.seen.has(cid)) return true;
+		if (name === "compress" && this.opts.engine !== "codex")
+			return this.send("/compact", cid);
+		if (name === "retry") return this.retry(text, cid);
+		if (namesIn(join(this.opts.home, "skills")).includes(name))
+			return this.send(`Follow skills/${name}.md.${rest ? ` ${rest}` : ""}`, cid);
+		const answer = this.answerTo(name, rest.trim(), setModel);
+		if (answer === null) return false;
+		this.answered(text, cid, answer);
+		return true;
+	}
+
+	private answered(text: string, cid: string, answer: string) {
+		this.seen.add(cid);
+		this.store.add({ kind: "you", text, cid }, true);
+		this.store.add({ kind: "reply", text: answer }, true);
+		this.store.add({ kind: "done", ok: true, stopped: false, ms: 0 }, true);
+	}
+
+	private retry(text: string, cid: string) {
+		const last = this.store.events.findLast(
+			(e) =>
+				e.kind === "you" && !String(e["text"] ?? "").startsWith("/") && !e["scheduled"],
+		);
+		if (!last) this.answered(text, cid, "There's nothing to send again.");
+		else if (this.status.working)
+			this.answered(text, cid, "It's still working. Use /stop first.");
+		else
+			return this.send(
+				String(last["text"] ?? ""),
+				cid,
+				(last["files"] as Attached[]) ?? [],
+			);
+		return true;
+	}
+
+	private answerTo(
+		name: string,
+		rest: string,
+		setModel: (model: string) => boolean,
+	): string | null {
+		const listed = (folder: string, none: string) => {
+			const names = namesIn(join(this.opts.home, folder));
+			return names.length > 0 ? names.join(", ") : none;
+		};
+		switch (name) {
+			case "help":
+				return HELP;
+			case "new":
+				return this.fresh();
+			case "stop":
+				if (!this.status.working) return "It isn't doing anything right now.";
+				this.stop();
+				return "Stopped.";
+			case "undo":
+				this.note(
+					"He took back his last message, so ignore it and your answer to it from here on.",
+				);
+				return "It'll ignore your last message and its answer.";
+			case "compress":
+				return "Codex shrinks the conversation by itself when it needs to.";
+			case "status":
+				return `${this.planName}, on ${this.opts.model ?? "the default model"}, in ${this.mode} mode. ${this.status.working ? "It's working." : "It's idle."}`;
+			case "usage":
+				return insights(this.store.events, 1);
+			case "insights":
+				return insights(this.store.events, Math.max(1, Number.parseInt(rest, 10) || 7));
+			case "model":
+				if (!rest) return `It's on ${this.opts.model ?? "the default model"}.`;
+				return setModel(rest)
+					? `The next message uses ${rest}.`
+					: `That isn't a model name: ${rest}.`;
+			case "personality":
+				return this.personality(rest);
+			case "skills":
+				return listed("skills", "It hasn't written any skills down yet.");
+			case "bots":
+				return listed("bots", "There aren't any bots yet. Ask it to make one.");
+			default:
+				return null;
+		}
+	}
+
+	private fresh() {
+		if (this.status.working) return "It's still working. Use /stop first.";
+		this.state.sessionId = undefined;
+		this.state.threadId = undefined;
+		this.codex?.close();
+		this.codex = null;
+		this.q?.close();
+		this.save();
+		return "Started a new conversation. Its memory stays.";
+	}
+
+	private personality(text: string) {
+		const file = join(this.opts.home, "personality.md");
+		if (text) {
+			if (!saveFile(file, `${text}\n`)) return "Couldn't save that. Try again.";
+			this.note("He changed personality.md, so read it again and follow it.");
+			return "Saved. It'll follow that from the next message.";
+		}
+		return existsSync(file)
+			? readFileSync(file, "utf8").trim() || "It's empty."
+			: "There's no personality set. Add one with /personality and how it should talk.";
 	}
 
 	// Records a call the guard refused, and stops the task after three

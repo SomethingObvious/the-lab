@@ -23,6 +23,20 @@ You pick how much the agent asks, and you can switch from the phone at any time.
 
 Switching to a mode that asks less needs your OK, so the agent can't loosen its own rules. Each request says in plain words what the step does and whether it can be undone, worked out from the command itself rather than from what the agent says about it. Deleted files go to the Trash (the Recycle Bin on Windows), and on a Mac the server takes a Time Machine local snapshot before each task, so Put Things Back on the phone can undo a task that went wrong.
 
+## Talk to It
+
+On the phone, the mic button next to the message box uses Android's own speech screen, so the app never holds the microphone. Replies to something you said get read back, which Read Replies Aloud in Settings can change to always or never. The computer's window can read replies aloud, but it has no mic button.
+
+## Chat Commands
+
+Type /help for the list. /new starts a new conversation, /retry sends your last message again, /usage and /insights show what it has been doing, and /model, /personality, /skills and /bots do what they say. Anything else starting with a slash goes to the agent.
+
+## Bots and the Box
+
+A bot is a file in `~/TheLab/bots` that says who it is, and asking the agent is the easiest way to make one. Write @name in a message and it answers as that bot, with that bot's own notes. Bots share one conversation and one engine for now.
+
+The agent can run commands in a Docker container that only sees the Lab folder, or on another machine over SSH, using the `box` command. Docker or SSH has to be set up on the computer already, and SSH asks you first.
+
 ## Change the App by Asking
 
 The app's interface is a web page kept on the computer in `~/TheLab/app`. Ask for a change ("make the send button orange") and the agent edits that page, and the phone picks it up within a couple of seconds. A change that doesn't parse never reaches the phone. If one still fails to open there, the server puts the version before it back by itself and the phone shows a built-in safe screen with an undo button.
