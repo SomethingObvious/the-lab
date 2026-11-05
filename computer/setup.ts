@@ -47,10 +47,10 @@ import {
 	tailscaleState,
 } from "./checks.ts";
 import { codexBin } from "./codex.ts";
-import { config, home, labDir, setConfig, setting } from "./config.ts";
+import { agentAppName, config, home, labDir, setConfig, setting } from "./config.ts";
 import { verify } from "./report.ts";
 import { launchers } from "./trash.ts";
-import { keys, lanAddresses, specOf } from "./tunnel.ts";
+import { keys, lanAddresses, relayProblem, specOf } from "./tunnel.ts";
 import {
 	batch,
 	fitTemplate,
@@ -72,6 +72,7 @@ const PLIST = join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
 const MAC = process.platform === "darwin";
 const WIN = process.platform === "win32";
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const WATCHDOG = "The Lab Watchdog";
 const args = process.argv.slice(3);
 const flag = (name: string) => {
 	const i = args.indexOf(`--${name}`);
@@ -278,7 +279,7 @@ async function macApp(): Promise<string> {
 		rmSync(join(TOOLS, "node"), { force: true });
 		symlinkSync(join(TOOLS, file.replace(/\.tar\.gz$/, "")), join(TOOLS, "node"));
 	}
-	const app = join(LAB, "The Lab.app");
+	const app = agentApp();
 	const exe = join(app, "Contents", "MacOS", "TheLab");
 	// Kept outside the bundle, since a file the signature doesn't cover would break it.
 	const from = join(LAB, "app-node");
@@ -307,8 +308,8 @@ async function macApp(): Promise<string> {
   <key>CFBundleExecutable</key><string>TheLab</string>
   <key>CFBundleIconFile</key><string>TheLab</string>
   <key>CFBundleIdentifier</key><string>${LABEL}</string>
-  <key>CFBundleName</key><string>The Lab</string>
-  <key>CFBundleDisplayName</key><string>The Lab</string>
+  <key>CFBundleName</key><string>${agentAppName()}</string>
+  <key>CFBundleDisplayName</key><string>${agentAppName()}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSBackgroundOnly</key><true/>
 </dict>
@@ -321,6 +322,8 @@ async function macApp(): Promise<string> {
 	writeFileSync(from, source);
 	return exe;
 }
+
+const agentApp = () => join(LAB, `${agentAppName()}.app`);
 
 async function computer() {
 	workspace();
@@ -390,6 +393,31 @@ async function computer() {
 			"/f",
 		]);
 		if (!reg.ok) fail(`Couldn't add The Lab to the sign-in items: ${reg.out}`);
+		// Nothing else brings the server back on Windows if its supervisor is
+		// killed, as the Run entry only fires at sign-in. A copy started while
+		// one is running sees that and stops by itself. It isn't worth failing
+		// setup over, since the server runs fine without it.
+		const watchdog = join(LAB, "watchdog.cmd");
+		writeFileSync(
+			watchdog,
+			`@echo off\r\ncurl.exe -s -m 5 http://127.0.0.1:${config().port}/health >nul\r\nif errorlevel 1 "${start}"\r\n`,
+		);
+		const task = run("schtasks", [
+			"/Create",
+			"/F",
+			"/TN",
+			WATCHDOG,
+			"/SC",
+			"MINUTE",
+			"/MO",
+			"5",
+			"/TR",
+			`conhost.exe --headless cmd.exe /c "${watchdog}"`,
+		]);
+		if (!task.ok)
+			say(
+				`The Lab won't restart itself if it's killed outright, only at the next sign-in, as Windows wouldn't add the check for it: ${task.out}`,
+			);
 		// Spawned straight from node, conhost --headless exits before running
 		// start.cmd, so it goes through Start-Process the way the Run entry does.
 		if (!(await health()))
@@ -455,7 +483,7 @@ async function folderAccess() {
 	await ask();
 	if (waiting()) {
 		say(
-			"macOS is asking whether The Lab may see the Desktop, Documents and Downloads folders. He clicks Allow on each. This waits for him.",
+			`macOS is asking whether ${agentAppName()} may see the Desktop, Documents and Downloads folders. He clicks Allow on each. This waits for him.`,
 		);
 		for (let until = Date.now() + 180_000; waiting() && Date.now() < until; ) {
 			await sleep(1000);
@@ -471,17 +499,17 @@ async function folderAccess() {
 		await fix(
 			false,
 			"Privacy_FilesAndFolders",
-			`The Lab was turned down for ${folders}, so the agent can't see what's in there. System Settings is open at Files and Folders. He finds The Lab in the list and switches on ${folders}. This waits for him.`,
-			`The agent still can't see ${folders}. Switch on ${folders} under The Lab in System Settings, Privacy & Security, Files and Folders, then run node setup.ts computer again.`,
+			`${agentAppName()} was turned down for ${folders}, so the agent can't see what's in there. System Settings is open at Files and Folders. He finds ${agentAppName()} in the list and switches on ${folders}. This waits for him.`,
+			`The agent still can't see ${folders}. Switch on ${folders} under ${agentAppName()} in System Settings, Privacy & Security, Files and Folders, then run node setup.ts computer again.`,
 		);
 	if (refused(true).length) {
 		// The Lab isn't in the Full Disk Access list until he adds it, so Finder shows him the app to drag in.
-		run("open", ["-R", join(LAB, "The Lab.app")]);
+		run("open", ["-R", agentApp()]);
 		await fix(
 			true,
 			"Privacy_AllFiles",
-			"The agent can't open the Trash, so it can't put back what it deleted. System Settings is open at Full Disk Access, and a Finder window shows The Lab. He drags The Lab from Finder into the Full Disk Access list, confirms with his password or Touch ID, and checks its switch is on. This waits for him.",
-			"The agent still can't open the Trash. Add The Lab under System Settings, Privacy & Security, Full Disk Access, then run node setup.ts computer again.",
+			`The agent can't open the Trash, so it can't put back what it deleted. System Settings is open at Full Disk Access, and a Finder window shows ${agentAppName()}. He drags ${agentAppName()} from Finder into the Full Disk Access list, confirms with his password or Touch ID, and checks its switch is on. This waits for him.`,
+			`The agent still can't open the Trash. Add ${agentAppName()} under System Settings, Privacy & Security, Full Disk Access, then run node setup.ts computer again.`,
 		);
 	}
 	say("The Lab can see the Desktop, Documents and Downloads folders and the Trash.");
@@ -545,7 +573,7 @@ async function relay() {
 		if (r.status !== 0 || !url)
 			fail("The relay didn't go up. The wrangler output above says why.");
 	}
-	if (!/^https:\/\/[\w.-]+(:\d+)?\/?$/.test(url))
+	if (relayProblem(url) || !/^https?:\/\/[\w.-]+(:\d+)?\/?$/.test(url))
 		fail(
 			`The relay address should look like https://the-lab-relay.name.workers.dev, not ${url}.`,
 		);
@@ -937,7 +965,7 @@ async function firewall(
 	if (!sameWifi || (await route(since)) === "direct") return;
 	if (!WIN) {
 		say(
-			"The phone is on the same Wi-Fi but can't come straight in, so it goes through the relay, which is slower. The Mac's firewall is probably blocking The Lab. In System Settings, Network, Firewall, Options, set The Lab to allow incoming connections.",
+			`The phone is on the same Wi-Fi but can't come straight in, so it goes through the relay, which is slower. The Mac's firewall is probably blocking ${agentAppName()}. In System Settings, Network, Firewall, Options, set ${agentAppName()} to allow incoming connections.`,
 		);
 		return;
 	}
@@ -1076,7 +1104,10 @@ async function stop() {
 function remove() {
 	stopServer();
 	if (MAC) rmSync(PLIST, { force: true });
-	else if (WIN) run("reg", ["delete", RUN_KEY, "/v", "TheLab", "/f"]);
+	else if (WIN) {
+		run("reg", ["delete", RUN_KEY, "/v", "TheLab", "/f"]);
+		run("schtasks", ["/Delete", "/F", "/TN", WATCHDOG]);
+	}
 	say(
 		`The Lab no longer runs on this computer. Still here, for him to keep or delete: his workspace (${HOME}), his conversation and the downloaded tools (${LAB}, about 1 GB with the phone tools) and the app on the phone.`,
 	);

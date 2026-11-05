@@ -2025,6 +2025,7 @@ function openMenu() {
       ${menuRow("schedules", "clock", "Schedules", "Messages the computer sends itself on a timer")}
       ${menuRow("allowed", "shield", "Always Allowed", "Commands that run without asking")}
       ${menuRow("check", "check", "Check My Setup", "Whether the computer and this phone are ready")}
+      ${lab.chooseComputer ? menuRow("computers", "phone", "Your Computers", "Switch, add or forget one") : ""}
       ${menuRow("rename", "edit", "Rename This Computer", mac ? `It's called ${esc(mac.name)} on this phone` : "What this phone calls it")}
       ${lab.platform === "desktop" ? menuRow("pair", "wifi", "Pair a Phone", "A code to scan with the phone's camera") : ""}
     </ul>`,
@@ -3201,6 +3202,7 @@ function clickMenu(d) {
 		else if (d.menu === "rename") openRename();
 		else if (d.menu === "settings") openSettings();
 		else if (d.menu === "pair") lab.open("/pair-phone");
+		else if (d.menu === "computers") lab.chooseComputer();
 		return true;
 	}
 	if (d.forget) {

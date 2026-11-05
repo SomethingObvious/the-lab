@@ -116,6 +116,8 @@ export function published(history: string): string | undefined {
 export function checkApp(dir: string, only?: string, base?: string): string | null {
 	if (!existsSync(join(dir, "index.html")))
 		return "app/index.html is missing, and the phone needs it to open the app.";
+	if (statSync(join(dir, "index.html")).size === 0)
+		return "app/index.html is empty, and the phone needs it to open the app.";
 	for (const f of only ? [only] : walk(dir)) {
 		const name = `app/${relative(dir, f).split(sep).join("/")}`;
 		if (!existsSync(f)) continue;

@@ -23,6 +23,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { tailscaleState } from "./checks.ts";
 import {
+	agentAppName,
 	config,
 	home,
 	labDir,
@@ -297,6 +298,15 @@ const INSTALL = 75;
 const PORT_TAKEN = 98;
 // How long a pairing link from setup works.
 const PAIR_LINK = 120_000;
+const HEALTH_EVERY = 30_000;
+const HUNG_MISSES = 5;
+
+const answering = () =>
+	fetch(`http://127.0.0.1:${config().port}/health`, {
+		signal: AbortSignal.timeout(10_000),
+	})
+		.then((r) => r.ok)
+		.catch(() => false);
 
 const isModelName = (model: unknown) =>
 	model === null || (typeof model === "string" && /^[\w.:/@[\]-]{1,120}$/.test(model));
@@ -355,9 +365,15 @@ function supervise() {
 			child = null;
 			later(started, `the server couldn't start (${e.message})`);
 		});
-		c.on("exit", (code, signal) => {
+		c.on("exit", async (code, signal) => {
 			child = null;
 			const at = new Date().toISOString();
+			// A second copy started by the watchdog or by hand has nothing to do
+			// while the first is answering, so it leaves rather than retrying forever.
+			if (code === PORT_TAKEN && (await answering())) {
+				console.error(`${at} The Lab is already running, so this copy is stopping`);
+				process.exit(0);
+			}
 			if (code === INSTALL) {
 				try {
 					console.error(`${at} installed v${apply(SOURCE, labDir())}`);
@@ -388,6 +404,20 @@ function supervise() {
 		});
 	};
 	run();
+	// A server that's stuck rather than stopped never exits by itself. A task
+	// can hold it up for a while, so it takes a few misses in a row.
+	let misses = 0;
+	setInterval(async () => {
+		if (!child) misses = 0;
+		else if (await answering()) misses = 0;
+		else if (++misses >= HUNG_MISSES) {
+			console.error(
+				`${new Date().toISOString()} the server stopped answering, so it's being restarted`,
+			);
+			misses = 0;
+			child?.kill("SIGKILL");
+		}
+	}, HEALTH_EVERY);
 	for (const sig of ["SIGINT", "SIGTERM"] as const) {
 		process.on(sig, () => {
 			child?.kill(sig);
@@ -993,17 +1023,34 @@ async function serve() {
 		out.push(...reachChecks(checks.tailscaleState), ...(await computerChecks()));
 		return out;
 	};
+	let relayVersion: "new" | "old" | "unknown" = "unknown";
+	if (relay)
+		void (async () => {
+			try {
+				const r = await fetch(relay, { signal: AbortSignal.timeout(15_000) });
+				relayVersion = (await r.text()).startsWith("The Lab relay 2") ? "new" : "old";
+			} catch {
+				relayVersion = "unknown";
+			}
+		})();
 	// How the phone can reach the computer.
 	const reachChecks = (state: typeof tailscaleState) => {
 		const out: Check[] = [];
 		const t = tunnel.state;
-		if (t.relay === "connected")
+		if (t.relay === "connected") {
 			out.push({
 				ok: true,
 				title:
 					"Connected to the relay, so the phone can reach the computer from anywhere",
 			});
-		else if (t.relay === "off")
+			if (relayVersion === "old")
+				out.push({
+					ok: false,
+					title: "The relay is an older version",
+					detail:
+						"It still works. Ask the agent on the computer to run node setup.ts relay, which puts up the newer, tougher one.",
+				});
+		} else if (t.relay === "off")
 			out.push({
 				ok: false,
 				title: "No relay is set up",
@@ -1075,14 +1122,13 @@ async function serve() {
 			out.push({
 				ok: false,
 				title: `The agent can't see your ${refused.join(" or ")} folder${refused.length > 1 ? "s" : ""}`,
-				detail: `On the Mac, open System Settings, Privacy & Security, Files and Folders, and switch ${refused.length > 1 ? "them" : "it"} on under The Lab.`,
+				detail: `On the Mac, open System Settings, Privacy & Security, Files and Folders, and switch ${refused.length > 1 ? "them" : "it"} on under ${agentAppName()}.`,
 			});
 		if (folders[".Trash"] === "refused")
 			out.push({
 				ok: false,
 				title: "The agent can't put things back from the Trash",
-				detail:
-					"On the Mac, open System Settings, Privacy & Security, Full Disk Access, and switch on The Lab.",
+				detail: `On the Mac, open System Settings, Privacy & Security, Full Disk Access, and switch on ${agentAppName()}.`,
 			});
 		const mem = lab.memory();
 		if (mem.chars > mem.cap * 0.8)

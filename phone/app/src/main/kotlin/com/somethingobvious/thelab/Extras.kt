@@ -40,12 +40,12 @@ class Widget : AppWidgetProvider() {
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(ComponentName(context, Widget::class.java))
             if (ids.isEmpty()) return
-            val working = Hub.link.optString("state") == "online" && Hub.status.optBoolean("working")
+            val working = Hub.on.link.optString("state") == "online" && Hub.on.status.optBoolean("working")
             val line = when {
-                !Hub.paired -> "Not paired yet"
-                Hub.link.optString("state") != "online" -> "Can't reach the computer right now"
-                working && Hub.status.optString("label") == "Waiting for you" -> "Needs your OK"
-                working -> Hub.status.optString("label").ifBlank { "Working" }
+                !Hub.on.paired -> "Not paired yet"
+                Hub.on.link.optString("state") != "online" -> "Can't reach the computer right now"
+                working && Hub.on.status.optString("label") == "Waiting for you" -> "Needs your OK"
+                working -> Hub.on.status.optString("label").ifBlank { "Working" }
                 else -> "Ready"
             }
             val views = RemoteViews(context.packageName, R.layout.widget).apply {

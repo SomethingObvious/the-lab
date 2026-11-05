@@ -35,6 +35,7 @@ import java.security.spec.ECPublicKeySpec
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.KeyAgreement
@@ -48,22 +49,7 @@ import kotlin.concurrent.thread
 // connection to that port is carried, sealed, to the computer: straight over
 // the local network when one of its addresses answers, through the relay
 // otherwise. Nothing outside this phone and the computer can read it.
-object Tunnel {
-    private const val TAG = "Lab"
-    private const val HELLO: Byte = 1
-    private const val WELCOME: Byte = 2
-    private const val OPEN: Byte = 1
-    private const val DATA: Byte = 2
-    private const val END: Byte = 3
-    private const val ACK: Byte = 4
-    private const val CHUNK = 32 * 1024
-    private const val WINDOW = 1024 * 1024
-    private const val ACK_EVERY = 64 * 1024
-    private const val MAX_PACKET = 256 * 1024
-    private val LABEL = "the lab tunnel 1".toByteArray()
-    private val RELAY = Regex("^https?://[A-Za-z0-9.-]+(:\\d{1,5})?/?$")
-    private val ADDRESS = Regex("^[0-9.]{7,15}:\\d{1,5}$")
-    private val LOOPBACK = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+class Tunnel {
 
     class Spec(val relay: String?, val room: String, val key: ByteArray, val pass: ByteArray, val lan: List<String>) {
         fun json(): JSONObject = JSONObject().put("relay", relay ?: JSONObject.NULL).put("room", room)
@@ -96,13 +82,6 @@ object Tunnel {
     private val lock = java.lang.Object()
     private var server: ServerSocket? = null
     @Volatile private var session: Session? = null
-    // No pings of its own. The event stream's ping crosses this socket every 25 s,
-    // and Hub drops the session once that goes quiet, so a second heartbeat only
-    // wakes the radio more often.
-    private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).build()
-    // The waiting socket carries nothing else, so its pings keep a mobile
-    // network from forgetting it and notice when it's gone.
-    private val waitClient = ws.newBuilder().pingInterval(4, TimeUnit.MINUTES).build()
     // Requests that queue up behind a dial that failed get its answer for a
     // couple of seconds, rather than each dialing again in turn.
     @Volatile private var failed: Pair<Long, IOException>? = null
@@ -155,6 +134,17 @@ object Tunnel {
         route = null
         failed = null
         old?.dead()
+    }
+
+    // For a new network, when the old route may be fine for a little longer.
+    // New connections pick a route again, and whatever is under way, like an
+    // upload, gets to finish if it can rather than failing at once.
+    fun retire() {
+        val old = session
+        session = null
+        route = null
+        failed = null
+        old?.retire()
     }
 
     // Held open on the relay while the computer is away. The relay says "here"
@@ -217,43 +207,88 @@ object Tunnel {
         return s
     } }
 
-    // The direct addresses first, then the relay. A wrong key on either
-    // means the paired computer wasn't the one that answered.
+    // Direct gets a head start and then the relay joins in, so a Wi-Fi the
+    // computer isn't on costs a moment rather than every address timing out. A
+    // wrong key on either means the paired computer wasn't the one that answered.
     private fun open(sp: Spec, addresses: List<String>): Pair<Session, String> {
-        var wrongKey = false
-        if (direct()) {
-            val tried = addresses.take(4)
-            // The saved addresses first, then any the Wi-Fi says the computer has now.
-            val found = sequence {
-                yieldAll(tried)
-                yieldAll(discover(sp, broadcasts(addresses)).filter { it !in tried })
-            }
-            for (a in found) {
-                try {
-                    val s = Session.start(TcpLink(a), sp, 2000)
-                    // Only for the paired computer, never for a claim to another one.
-                    if (a !in tried && sp === spec) lan = listOf(a) + addresses
-                    return s to "direct"
-                } catch (e: WrongKey) {
-                    wrongKey = true
-                    Log.i(TAG, "tunnel: $a answered with the wrong key")
-                } catch (e: Exception) {
-                    Log.i(TAG, "tunnel: $a didn't answer (${e.message})")
-                }
-            }
+        if (!direct()) return throughRelay(sp)
+        val done = LinkedBlockingQueue<Result<Pair<Session, String>>>()
+        val taken = AtomicBoolean()
+        fun race(dial: () -> Pair<Session, String>) = thread(name = "tunnel-dial", isDaemon = true) {
+            val r = runCatching(dial)
+            done.put(r)
+            // The other route won, so nothing will ever use this one.
+            if (taken.get() && done.remove(r)) r.getOrNull()?.first?.dead()
         }
-        val relay = sp.relay ?: throw if (wrongKey) WrongKey() else NoRoute()
-        try {
-            return Session.start(WsLink("${wsUrl(relay)}/r/${sp.room}", ws), sp, 10_000) to "relay"
-        } catch (e: Away) {
-            throw e
-        } catch (e: Exception) {
-            throw if (wrongKey || e is WrongKey) WrongKey() else e as? IOException ?: IOException(e.message)
+        fun leftovers() { taken.set(true); generateSequence { done.poll() }.forEach { it.getOrNull()?.first?.dead() } }
+        race { straight(sp, addresses) }
+        var racing = 1
+        var relayIn = sp.relay == null
+        val errors = ArrayList<Throwable>()
+        while (true) {
+            val r = done.poll(if (relayIn) 30_000 else HEAD_START, TimeUnit.MILLISECONDS)
+            if (r == null && relayIn) { leftovers(); throw IOException("no route answered") }
+            r?.getOrNull()?.let { leftovers(); return it }
+            if (r != null) { r.exceptionOrNull()?.let { errors.add(it) }; racing-- }
+            if (!relayIn) { relayIn = true; racing++; race { throughRelay(sp) } }
+            else if (racing == 0) throw worst(errors)
         }
     }
 
+    private fun worst(errors: List<Throwable>): IOException {
+        val e = errors.firstOrNull { it is Away } ?: errors.firstOrNull { it is WrongKey } ?: errors.firstOrNull { it !is NoRoute } ?: NoRoute()
+        return e as? IOException ?: IOException(e.message)
+    }
+
+    private fun throughRelay(sp: Spec): Pair<Session, String> {
+        val relay = sp.relay ?: throw NoRoute()
+        return Session.start(WsLink("${wsUrl(relay)}/r/${sp.room}", ws), sp, 10_000) to "relay"
+    }
+
+    // The saved addresses first, then any the Wi-Fi says the computer has now.
+    private fun straight(sp: Spec, addresses: List<String>): Pair<Session, String> {
+        var wrongKey = false
+        val tried = addresses.take(4)
+        val found = sequence {
+            yieldAll(tried)
+            yieldAll(discover(sp, broadcasts(addresses)).filter { it !in tried })
+        }
+        for (a in found) {
+            try {
+                val s = Session.start(TcpLink(a), sp, 2000)
+                // Only for the paired computer, never for a claim to another one.
+                if (a !in tried && sp === spec) lan = listOf(a) + addresses
+                return s to "direct"
+            } catch (e: WrongKey) {
+                wrongKey = true
+                if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "tunnel: $a answered with the wrong key")
+            } catch (e: Exception) {
+                if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "tunnel: $a didn't answer (${e.message})")
+            }
+        }
+        throw if (wrongKey) WrongKey() else NoRoute()
+    }
+
+    // Moves off the relay when the computer has become reachable straight over
+    // this network, which needs no change of network to happen. Blocking.
+    fun upgrade(): Boolean {
+        val sp = spec ?: return false
+        if (route != "relay" || !direct()) return false
+        val s = try { straight(sp, lan.ifEmpty { sp.lan }).first } catch (e: Exception) { return false }
+        synchronized(dialing) {
+            if (spec !== sp) { s.dead(); return false }
+            val old = session
+            session = s
+            route = "direct"
+            failed = null
+            old?.retire()
+        }
+        if (Log.isLoggable(TAG, Log.INFO)) Log.i(TAG, "tunnel: moved to direct")
+        return true
+    }
+
     // A test on the computer has no Android network to ask.
-    internal var direct: () -> Boolean = ::local
+    internal var direct: () -> Boolean = { local() }
 
     // The whole Wi-Fi, and the part of it each saved address was on, since a
     // new address from the router is nearly always on the same one.
@@ -388,7 +423,6 @@ object Tunnel {
         var unacked = 0L
         val inbox = LinkedBlockingQueue<ByteArray>()
     }
-    private val ENDED = ByteArray(0)
 
     private class Session(private val link: Link, val spec: Spec, p2c: ByteArray, c2p: ByteArray) {
         private val out = Box(p2c)
@@ -475,6 +509,12 @@ object Tunnel {
             link.send(out.seal(f))
         }
 
+        fun retire() = thread(name = "tunnel-retire", isDaemon = true) {
+            val end = System.nanoTime() + RETIRE_NANOS
+            while (alive && streams.isNotEmpty() && System.nanoTime() < end) Thread.sleep(500)
+            dead()
+        }
+
         fun dead() {
             if (!alive) return
             alive = false
@@ -509,31 +549,59 @@ object Tunnel {
         }
     }
 
-    private fun point(k: ECPublicKey): ByteArray {
-        fun fixed(n: BigInteger) = n.toByteArray().let { b -> if (b.size > 32) b.copyOfRange(b.size - 32, b.size) else ByteArray(32 - b.size) + b }
-        return byteArrayOf(4) + fixed(k.w.affineX) + fixed(k.w.affineY)
-    }
+    companion object {
+        private const val TAG = "Lab"
+        private const val HELLO: Byte = 1
+        private const val WELCOME: Byte = 2
+        private const val OPEN: Byte = 1
+        private const val DATA: Byte = 2
+        private const val END: Byte = 3
+        private const val ACK: Byte = 4
+        private const val CHUNK = 32 * 1024
+        private const val WINDOW = 1024 * 1024
+        private const val ACK_EVERY = 64 * 1024
+        private const val MAX_PACKET = 256 * 1024
+        private val LABEL = "the lab tunnel 1".toByteArray()
+        private val RELAY = Regex("^https?://[A-Za-z0-9.-]+(:\\d{1,5})?/?$")
+        private val ADDRESS = Regex("^[0-9.]{7,15}:\\d{1,5}$")
+        private val LOOPBACK = InetAddress.getByAddress(byteArrayOf(127, 0, 0, 1))
+        private val ENDED = ByteArray(0)
+        private const val HEAD_START = 1200L
+        private const val RETIRE_NANOS = 60_000_000_000L
+        // No pings of its own. The event stream's ping crosses this socket every 25 s,
+        // and Hub drops the session once that goes quiet, so a second heartbeat only
+        // wakes the radio more often.
+        private val ws = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.SECONDS).build()
+        // The waiting socket carries nothing else, so its pings keep a mobile
+        // network from forgetting it and notice when it's gone.
+        private val waitClient = ws.newBuilder().pingInterval(4, TimeUnit.MINUTES).build()
 
-    private fun key(raw: ByteArray, params: ECParameterSpec) =
-        KeyFactory.getInstance("EC").generatePublic(ECPublicKeySpec(ECPoint(BigInteger(1, raw.copyOfRange(1, 33)), BigInteger(1, raw.copyOfRange(33, 65))), params))
-
-    private fun hkdf(salt: ByteArray, ikm: ByteArray, info: ByteArray, len: Int): ByteArray {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(salt, "HmacSHA256"))
-        val prk = mac.doFinal(ikm)
-        mac.init(SecretKeySpec(prk, "HmacSHA256"))
-        val out = ByteArrayOutputStream()
-        var t = ByteArray(0)
-        var i = 1
-        while (out.size() < len) {
-            mac.update(t); mac.update(info); mac.update(i.toByte())
-            t = mac.doFinal()
-            out.write(t)
-            i++
+        private fun point(k: ECPublicKey): ByteArray {
+            fun fixed(n: BigInteger) = n.toByteArray().let { b -> if (b.size > 32) b.copyOfRange(b.size - 32, b.size) else ByteArray(32 - b.size) + b }
+            return byteArrayOf(4) + fixed(k.w.affineX) + fixed(k.w.affineY)
         }
-        return out.toByteArray().copyOf(len)
-    }
 
-    private fun b64(b: ByteArray) = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(b)
-    private fun unb64(s: String) = java.util.Base64.getUrlDecoder().decode(s)
+        private fun key(raw: ByteArray, params: ECParameterSpec) =
+            KeyFactory.getInstance("EC").generatePublic(ECPublicKeySpec(ECPoint(BigInteger(1, raw.copyOfRange(1, 33)), BigInteger(1, raw.copyOfRange(33, 65))), params))
+
+        private fun hkdf(salt: ByteArray, ikm: ByteArray, info: ByteArray, len: Int): ByteArray {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(salt, "HmacSHA256"))
+            val prk = mac.doFinal(ikm)
+            mac.init(SecretKeySpec(prk, "HmacSHA256"))
+            val out = ByteArrayOutputStream()
+            var t = ByteArray(0)
+            var i = 1
+            while (out.size() < len) {
+                mac.update(t); mac.update(info); mac.update(i.toByte())
+                t = mac.doFinal()
+                out.write(t)
+                i++
+            }
+            return out.toByteArray().copyOf(len)
+        }
+
+        private fun b64(b: ByteArray) = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(b)
+        private fun unb64(s: String) = java.util.Base64.getUrlDecoder().decode(s)
+    }
 }

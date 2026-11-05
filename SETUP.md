@@ -81,7 +81,7 @@ It builds a small native window around the system's own web view, opens it off s
 The computer asks for permission once or twice as the server starts, so he should be at the screen for it.
 
 - On Windows, a Windows Security window asks whether Node.js may communicate on private networks. **He clicks Allow.** That's the encrypted tunnel that lets the phone come straight in over the Wi-Fi. Without it the phone still works through the relay, and if he clicks Cancel by mistake, step 5 notices and fixes it with one Yes. In Task Manager's Startup apps the server shows up as Console Window Host, from Microsoft, because that's what starts it without a window. Tell him it's The Lab so he doesn't turn it off.
-- On a Mac, it asks whether The Lab may access the Desktop, Documents and Downloads folders. **He clicks Allow on each**, or the agent can't see the files he asks about. The step waits for his answers. If he clicks Don't Allow, it opens System Settings at Files and Folders and waits while he switches them on under The Lab. Then it opens System Settings at Full Disk Access, with a Finder window showing The Lab. **He drags The Lab into the list and confirms with his password or Touch ID.** That lets the agent put deleted files back from the Trash and from Time Machine snapshots. In System Settings, General, Login Items, the server shows up as The Lab under Allow in the Background.
+- On a Mac, it asks whether The Lab Agent (the part of The Lab that runs the agent, listed apart from the window in the Mac's privacy lists) may access the Desktop, Documents and Downloads folders. **He clicks Allow on each**, or the agent can't see the files he asks about. The step waits for his answers. If he clicks Don't Allow, it opens System Settings at Files and Folders and waits while he switches them on under The Lab. Then it opens System Settings at Full Disk Access, with a Finder window showing The Lab. **He drags The Lab into the list and confirms with his password or Touch ID.** That lets the agent put deleted files back from the Trash and from Time Machine snapshots. In System Settings, General, Login Items, the server shows up as The Lab under Allow in the Background.
 
 ## 4. The Relay
 
@@ -125,6 +125,8 @@ The first run downloads Java and the Android build tools into `~/.thelab/tools` 
 He can turn USB debugging back off afterwards if he likes, though leaving it on makes updates easier.
 
 If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the computer that works once for 10 minutes. He points the phone's camera at it, taps the link it finds and then Pair, and no cable is needed. The link opens The Lab directly, so nothing in it goes through the relay. It only works once The Lab is on the phone, so a new phone still needs `node setup.ts phone` over the cable first.
+
+One phone can hold several computers. Run this setup on the other computer as well, and the phone asks whether to add it, with the first computer left as it was. Both stay connected at once, each with its own design and history, and he switches between them under Your Computers in the menu or by long-pressing the app icon. A computer can have up to 8 phones.
 
 ### Tailscale (Optional)
 

@@ -68,7 +68,9 @@ function run({ bin, args }: Plan, quiet = false) {
 	if (r.error) {
 		const missing = (r.error as NodeJS.ErrnoException).code === "ENOENT";
 		throw new Error(
-			missing ? `${bin} isn't installed on this computer.` : r.error.message,
+			missing
+				? `${bin} isn't installed on this computer. ${bin === "docker" ? "Install Docker Desktop from https://www.docker.com/products/docker-desktop and open it once, or run the command here without the box." : "Install OpenSSH, or check the machine's address."}`
+				: r.error.message,
 		);
 	}
 	return { code: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };

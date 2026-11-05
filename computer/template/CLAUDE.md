@@ -126,6 +126,7 @@ The page talks to the phone and the server only through `window.lab`, which is t
 | `lab.undoDesign()` | Restores the previous version of `app/`. |
 | `lab.open(url)` | Opens a link, or a file from a `file` event, in the right app on the phone. |
 | `lab.fileUrl(url, { w })` | Turns a file's `url` into one an `<img>` can load. With `w`, it's a smaller copy whose short side is at least `w` pixels, so use about twice the CSS size for thumbnails. |
+| `lab.chooseComputer()` | Opens the phone's own list of paired computers, where he switches, adds or forgets one. Missing except on the phone. Each computer has its own design, so this one only changes what this computer's page shows. |
 | `lab.fix(fix)` | Opens whatever fixes a `link` problem or a Check My Setup item (`fix` comes from the event or the item). |
 | `lab.retry()` | Tries to reconnect now. |
 | `lab.safeMode()` | Switches to the phone's safe screen. |

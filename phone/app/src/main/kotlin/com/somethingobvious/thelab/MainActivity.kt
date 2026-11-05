@@ -111,6 +111,15 @@ class MainActivity : Activity() {
         if (rescueReason == null) { if (visible) load() else stale = true }
     }
     private val onReset = { if (visible) load() else stale = true }
+    // Another computer's design, on its own address, in a fresh WebView.
+    private val onSwitch = {
+        rescueReason = null
+        autoRescue = false
+        slow = false
+        deaths = 0
+        ready = false
+        if (visible) build() else drop()
+    }
     // A pick that was open when the screen was rebuilt, whose page is gone.
     private var pickedBefore = false
     // A hidden WebView never runs requestAnimationFrame, so the page can't
@@ -182,6 +191,7 @@ class MainActivity : Activity() {
         }
         Hub.designListeners.add(onDesign)
         Hub.resetListeners.add(onReset)
+        Hub.switchListeners.add(onSwitch)
         if (Hub.paired) LinkService.start(this)
         build()
         if (savedInstanceState == null) intent?.let { arrive(it) }
@@ -202,7 +212,11 @@ class MainActivity : Activity() {
 
     // Shares, the tile, the widget, the assistant gesture and the pairing link.
     private fun arrive(intent: Intent) {
+        // A notification or a share to one computer in particular.
+        val shortcut = intent.getStringExtra(Intent.EXTRA_SHORTCUT_ID)?.takeIf { it.startsWith("mac") }?.removePrefix("mac")?.removePrefix("-")?.ifEmpty { "main" }
+        (intent.getStringExtra("computer") ?: shortcut)?.let { Hub.switchTo(it) }
         when (intent.action) {
+            COMPUTERS -> chooseComputer()
             COMPOSE, Intent.ACTION_ASSIST -> toCompose(JSONObject().put("kind", "compose").put("text", ""))
             Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> shared(intent)
             Intent.ACTION_VIEW -> intent.data?.takeIf { it.scheme == "thelab" && it.host == "pair" }?.let { pairFrom(it) }
@@ -248,7 +262,7 @@ class MainActivity : Activity() {
         Hub.later {
             val out = JSONArray()
             val error = try {
-                for (u in uris.take(MAX_FILES)) out.put(Hub.upload(u))
+                for (u in uris.take(MAX_FILES)) out.put(Hub.on.upload(u))
                 if (uris.size > MAX_FILES) "Only the first $MAX_FILES files were attached. Send the rest in another message." else null
             } catch (e: IOException) { e.message ?: fallback }
             Hub.onMain { done(out, error) }
@@ -283,10 +297,10 @@ class MainActivity : Activity() {
 
     // The computer's checks, then this phone's own.
     private fun check(id: String) {
-        Hub.request("GET", "/check", null) { text, err ->
+        Hub.on.request("GET", "/check", null) { text, err ->
             val items = text?.let { runCatching { JSONObject(it).getJSONArray("items") }.getOrNull() }
                 ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the computer")
-                    .put("detail", err ?: if (Tunnel.spec != null) "Check the computer is awake and online." else "Check the computer is awake and Tailscale is on."))
+                    .put("detail", err ?: if (Hub.on.tunnel.spec != null) "Check the computer is awake and online." else "Check the computer is awake and Tailscale is on."))
             if (!notificationsOn())
                 items.put(JSONObject().put("ok", false).put("title", "Notifications are off for The Lab").put("detail", "You won't hear when it needs your OK.").put("fix", "notifications"))
             else items.put(JSONObject().put("ok", true).put("title", "This phone shows The Lab's notifications"))
@@ -296,7 +310,7 @@ class MainActivity : Activity() {
             else items.put(JSONObject().put("ok", true).put("title", "The Lab can stay connected in the background"))
             val cm = getSystemService(ConnectivityManager::class.java)
             val vpn = cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
-            if (Tunnel.spec != null) when (Tunnel.route) {
+            if (Hub.on.tunnel.spec != null) when (Hub.on.tunnel.route) {
                 "direct" -> items.put(JSONObject().put("ok", true).put("title", "Connected straight to the computer over this network"))
                 "relay" -> items.put(JSONObject().put("ok", true).put("title", "Connected to the computer through the relay"))
             }
@@ -325,7 +339,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         Hub.foreground = true
-        Notifier.clearReplies(this)
+        Notifier.clearReplies(this, Hub.on)
         if (Hub.pendingPair != null) confirmPair()
         else if (Hub.paired) {
             Hub.reconnectNow()
@@ -340,11 +354,11 @@ class MainActivity : Activity() {
         if (pairDialog?.isShowing == true) return
         val drop = { if (Hub.pendingPair === p) Hub.pendingPair = null; Notifier.pairAnswered(this) }
         pairDialog = AlertDialog.Builder(this)
-            .setTitle("Switch to Another Computer?")
-            .setMessage("Something on this phone asked The Lab to pair with a different computer from the one it uses now. Only say yes if you're setting The Lab up on your own computer right now. Switching clears this phone's history and unsent messages for the old one.")
+            .setTitle("Add Another Computer?")
+            .setMessage("Something on this phone asked The Lab to pair with a computer it doesn't know yet. Only say yes if you're setting The Lab up on your own computer right now. The computers you already have stay as they are.")
             .setNegativeButton("Cancel") { _, _ -> drop() }
             .setOnCancelListener { drop() }
-            .setPositiveButton("Switch") { _, _ ->
+            .setPositiveButton("Add") { _, _ ->
                 if (Hub.pendingPair !== p) return@setPositiveButton
                 Notifier.pairAnswered(this)
                 Hub.pair(p.url, p.tunnel, p.token)
@@ -352,6 +366,32 @@ class MainActivity : Activity() {
                 rescueReason = null
                 load()
             }
+            .show()
+    }
+
+    // In the app rather than on the page, so it's there and can be trusted
+    // whatever the agent has made of this computer's design.
+    private fun chooseComputer() {
+        val all = Hub.pairedComputers
+        val names = all.map { c -> "${c.name}${if (c === Hub.on) " (this one)" else ""}\n${if (c.waiting) "Needs your OK" else if (c.working) "Working" else if (c.link.optString("state") == "online") "Ready" else "Can't reach it right now"}" }
+        AlertDialog.Builder(this)
+            .setTitle("Your Computers")
+            .setItems(names.toTypedArray()) { _, i -> Hub.switchTo(all[i].id) }
+            .setNeutralButton("Add Another") { _, _ ->
+                AlertDialog.Builder(this).setTitle("Add a Computer")
+                    .setMessage("Set up The Lab on the other computer, or ask its agent to show the pairing code, then point this phone's camera at the code. The computers you already have stay as they are.")
+                    .setPositiveButton("OK", null).show()
+            }
+            .apply { if (all.isNotEmpty()) setNegativeButton("Forget This One") { _, _ -> confirmForget() } }
+            .show()
+    }
+
+    private fun confirmForget() {
+        val c = Hub.on
+        AlertDialog.Builder(this).setTitle("Forget ${c.name}?")
+            .setMessage("This phone's copy of its history and any unsent messages go. Nothing changes on the computer, and you can pair it again later.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Forget") { _, _ -> Hub.forget(c) }
             .show()
     }
 
@@ -396,6 +436,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         Hub.designListeners.remove(onDesign)
         Hub.resetListeners.remove(onReset)
+        Hub.switchListeners.remove(onSwitch)
         unlisten?.invoke()
         web?.destroy()
         voice?.shutdown()
@@ -413,13 +454,15 @@ class MainActivity : Activity() {
 
     private fun build() {
         drop()
+        val computer = Hub.on
         val loader = WebViewAssetLoader.Builder()
-            .addPathHandler("/app/", WebViewAssetLoader.InternalStoragePathHandler(this, Hub.designDir.apply { mkdirs() }))
+            .setDomain(computer.host)
+            .addPathHandler("/app/", WebViewAssetLoader.InternalStoragePathHandler(this, Hub.on.designDir.apply { mkdirs() }))
             .addPathHandler("/shell/", WebViewAssetLoader.AssetsPathHandler(this))
             .addPathHandler("/files/") { path ->
                 // lab.fileUrl(url, { w }) asks for /files/w360/name.
                 val sized = Regex("^w(\\d{2,4})/(.+)$").find(path)
-                val f = (if (sized != null) Hub.thumb(sized.groupValues[2], sized.groupValues[1].toInt().coerceIn(48, 2048)) else Hub.fetchFile(path))
+                val f = (if (sized != null) Hub.on.thumb(sized.groupValues[2], sized.groupValues[1].toInt().coerceIn(48, 2048)) else Hub.on.fetchFile(path))
                     ?: return@addPathHandler null
                 WebResourceResponse(mime(f.name), null, FileInputStream(f))
             }
@@ -454,7 +497,7 @@ class MainActivity : Activity() {
                 }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                if (request.url.host == HOST) return false
+                if (request.url.host == computer.host) return false
                 openExternal(request.url)
                 return true
             }
@@ -472,11 +515,11 @@ class MainActivity : Activity() {
             // A fresh key for each WebView, and ask.js first, so it holds the
             // built-ins it needs before anything else on the page runs.
             askKey = ByteArray(16).also { SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
-            WebViewCompat.addDocumentStartJavaScript(w, askScript.replace("__LAB_ASK_KEY__", askKey), setOf(ORIGIN))
-            WebViewCompat.addDocumentStartJavaScript(w, assets.open("bridge.js").bufferedReader().readText(), setOf(ORIGIN))
+            WebViewCompat.addDocumentStartJavaScript(w, askScript.replace("__LAB_ASK_KEY__", askKey), setOf(computer.origin))
+            WebViewCompat.addDocumentStartJavaScript(w, assets.open("bridge.js").bufferedReader().readText(), setOf(computer.origin))
         }
         if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
-            WebViewCompat.addWebMessageListener(w, "labNative", setOf(ORIGIN)) { _, message, _, isMainFrame, reply ->
+            WebViewCompat.addWebMessageListener(w, "labNative", setOf(computer.origin)) { _, message, _, isMainFrame, reply ->
                 if (isMainFrame) handle(message.data ?: return@addWebMessageListener, reply)
             }
         }
@@ -492,12 +535,12 @@ class MainActivity : Activity() {
         pageError = null
         wantsBack(false)
         frame.removeCallbacks(watchdog)
-        val hasDesign = Hub.designDir.resolve("index.html").exists()
-        showingApp = !(rescueReason != null || !hasDesign || !Hub.paired)
+        val hasDesign = Hub.on.designDir.resolve("index.html").exists()
+        showingApp = !(rescueReason != null || !hasDesign || !Hub.on.paired)
         if (!showingApp) {
-            w.loadUrl("$ORIGIN/shell/rescue.html")
+            w.loadUrl("${Hub.on.origin}/shell/rescue.html")
         } else {
-            w.loadUrl("$ORIGIN/app/index.html")
+            w.loadUrl("${Hub.on.origin}/app/index.html")
             if (visible) frame.postDelayed(watchdog, patience)
         }
     }
@@ -514,11 +557,11 @@ class MainActivity : Activity() {
         autoRescue = true
         // A version that has opened before is more likely a slow or busy
         // phone than a broken design, so it isn't undone.
-        if (Hub.designVersion != null && Hub.designVersion == Hub.designOpened) {
+        if (Hub.on.designVersion != null && Hub.on.designVersion == Hub.on.designOpened) {
             rescueReason = "The design didn't finish opening this time, so this is the safe screen. It has opened fine before, so it stays as it is. Tap Back to My Design to try it again."
             return
         }
-        Hub.reportBroken(why)
+        Hub.on.reportBroken(why)
         rescueReason = "The design didn't finish loading, so this is the safe screen. The computer is putting the version before it back."
     }
 
@@ -540,16 +583,16 @@ class MainActivity : Activity() {
                 unlisten = null
                 // The header and chips draw from this straight away, and the
                 // history follows once it's off the disk.
-                val batch = JSONArray().put(Hub.link).put(Hub.status).put(Hub.outboxEvent()).put(insets).put(fold)
-                for (e in Hub.live.values) batch.put(e)
-                val hasDesign = Hub.designDir.resolve("index.html").exists()
-                val reason = rescueReason ?: if (!hasDesign && Hub.paired) "Your design hasn't arrived from the computer yet. It loads as soon as the computer is reachable." else null
+                val batch = JSONArray().put(Hub.on.link).put(Hub.on.status).put(Hub.on.outboxEvent()).put(insets).put(fold).put(Hub.computersEvent())
+                for (e in Hub.on.live.values) batch.put(e)
+                val hasDesign = Hub.on.designDir.resolve("index.html").exists()
+                val reason = rescueReason ?: if (!hasDesign && Hub.on.paired) "Your design hasn't arrived from the computer yet. It loads as soon as the computer is reachable." else null
                 if (reason != null) batch.put(JSONObject().put("kind", "rescue").put("reason", reason).put("hasDesign", hasDesign && rescueReason != null))
                 post(reply, JSONObject().put("batch", batch).toString())
-                Hub.onLoaded {
+                Hub.on.onLoaded {
                     if (port !== reply) return@onLoaded
                     val history = JSONArray()
-                    for (e in Hub.events) history.put(e)
+                    for (e in Hub.on.events) history.put(e)
                     history.put(JSONObject().put("kind", "loaded"))
                     post(reply, JSONObject().put("batch", history).toString())
                     unlisten = Hub.listen { send(it) }
@@ -559,10 +602,10 @@ class MainActivity : Activity() {
                 val text = m.optString("text").trim()
                 val cid = m.optString("cid")
                 val files = m.optJSONArray("files")?.takeIf { it.length() > 0 }
-                if (text.length > 50_000) send(Hub.sendFailed(cid, text, "That message is over 50,000 characters, so it didn't send. Try sending it in parts."))
-                else if (files != null && files.length() > MAX_FILES) send(Hub.sendFailed(cid, text, "That message has more than $MAX_FILES files, so it didn't send. Send them in smaller batches."))
-                else if ((text.isNotEmpty() || files != null) && cid.length == 36) Hub.send(text, cid, files)
-                else if (text.isNotEmpty()) send(Hub.sendFailed(cid, text, "That message didn't send. Try again."))
+                if (text.length > 50_000) send(Hub.on.sendFailed(cid, text, "That message is over 50,000 characters, so it didn't send. Try sending it in parts."))
+                else if (files != null && files.length() > MAX_FILES) send(Hub.on.sendFailed(cid, text, "That message has more than $MAX_FILES files, so it didn't send. Send them in smaller batches."))
+                else if ((text.isNotEmpty() || files != null) && cid.length == 36) Hub.on.send(text, cid, files)
+                else if (text.isNotEmpty()) send(Hub.on.sendFailed(cid, text, "That message didn't send. Try again."))
                 // Asked here, when replies and approvals start to matter, rather than on first launch.
                 val prefs = getSharedPreferences("lab", MODE_PRIVATE)
                 if (!prefs.getBoolean("askedNotify", false) && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -572,20 +615,20 @@ class MainActivity : Activity() {
             }
             "saveShortcuts" -> {
                 val id = m.optString("id")
-                Hub.saveShortcuts(m.optJSONArray("items") ?: JSONArray()) { ok -> answer(id, ok) }
+                Hub.on.saveShortcuts(m.optJSONArray("items") ?: JSONArray()) { ok -> answer(id, ok) }
             }
             "attach" -> pick(m.optString("id"), m.optString("kind"))
-            "stop" -> Hub.stop { ok -> if (!ok) send(JSONObject().put("kind", "stopFailed")) }
+            "stop" -> Hub.on.stop { ok -> if (!ok) send(JSONObject().put("kind", "stopFailed")) }
             "askInfo", "askAnswer" -> asked(m, reply)
             "call" -> {
                 val id = m.optString("id")
                 val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the computer.")
                 val path = m.optString("path")
                 if (closedToPage(path)) return answer(id, null, "The page can't use that route. Questions are answered on their own card, and pairing happens on the phone.")
-                Hub.request(method, path, m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
+                Hub.on.request(method, path, m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
             }
             "check" -> check(m.optString("id"))
-            "undo" -> Hub.undoDesign { ok ->
+            "undo" -> Hub.on.undoDesign { ok ->
                 send(JSONObject().put("kind", "undone").put("ok", ok))
                 if (ok) { rescueReason = null }
             }
@@ -593,7 +636,7 @@ class MainActivity : Activity() {
             "pageError" -> {
                 val text = m.optString("message").take(500)
                 if (!ready && pageError == null) pageError = text
-                Hub.reportError(text, m.optString("where"))
+                Hub.on.reportError(text, m.optString("where"))
             }
             "rescue" -> rescue(m.optString("reason", "Opened the safe screen."))
             "ready" -> {
@@ -601,7 +644,7 @@ class MainActivity : Activity() {
                 slow = false
                 deaths = 0
                 frame.removeCallbacks(watchdog)
-                if (showingApp) Hub.openedFine()
+                if (showingApp) Hub.on.openedFine()
                 applyTheme(m)
                 reportFullyDrawn()
                 deliverCompose()
@@ -618,6 +661,7 @@ class MainActivity : Activity() {
                 LinkService.refresh()
             }
             "retry" -> Hub.reconnectNow()
+            "chooseComputer" -> chooseComputer()
         }
     }
 
@@ -630,13 +674,13 @@ class MainActivity : Activity() {
         val ref = (m.opt("ref") as? String)?.let { plainName(it) }?.takeIf { it.length <= 200 } ?: return
         val op = m.optString("op")
         val out = JSONObject().put("op", op).put("nonce", nonce)
-        if (op == "askInfo") Hub.askInfo(ref) { code, text ->
+        if (op == "askInfo") Hub.on.askInfo(ref) { code, text ->
             val ask = if (code == 200) text?.let { runCatching { JSONObject(it) }.getOrNull() } else null
             post(reply, out.put("status", code).put("ask", ask ?: JSONObject.NULL).toString())
         } else {
             val allow = m.opt("allow") as? Boolean ?: return
             val always = m.opt("always") as? Boolean ?: return
-            Hub.answer(ref, allow, always) { code -> post(reply, out.put("status", code.coerceAtLeast(0)).toString()) }
+            Hub.on.answer(ref, allow, always) { code -> post(reply, out.put("status", code.coerceAtLeast(0)).toString()) }
         }
     }
 
@@ -826,11 +870,11 @@ class MainActivity : Activity() {
     private fun open(url: String) {
         val uri = url.toUri()
         if (uri.scheme == "http" || uri.scheme == "https") {
-            if (uri.host != HOST) return openExternal(uri)
+            if (uri.host != Hub.on.host) return openExternal(uri)
         }
         val name = uri.lastPathSegment ?: return
         Hub.soon {
-            val f = Hub.fetchFile(name)
+            val f = Hub.on.fetchFile(name)
             Hub.onMain {
                 if (f == null) return@onMain send(JSONObject().put("kind", "openFailed").put("url", url))
                 val content = FileProvider.getUriForFile(this, "$packageName.files", f)
@@ -863,9 +907,9 @@ class MainActivity : Activity() {
 
     companion object {
         const val HOST = "appassets.androidplatform.net"
-        const val ORIGIN = "https://$HOST"
         const val SAFE = "com.somethingobvious.thelab.SAFE"
         const val COMPOSE = "com.somethingobvious.thelab.COMPOSE"
+        const val COMPUTERS = "com.somethingobvious.thelab.COMPUTERS"
         const val PICK = 7
         const val LISTEN = 8
         // As many files as one message can carry.

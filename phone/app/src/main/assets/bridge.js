@@ -208,6 +208,7 @@
 		listen: () => ask("listen", {}),
 		speak: (text) => call("speak", { text }),
 		hush: () => call("hush"),
+		chooseComputer: () => call("chooseComputer"),
 		// { w } asks for a copy whose short side is at least w pixels.
 		fileUrl: (url, opts) => {
 			const w = Math.round(opts?.w || 0);

@@ -7,6 +7,7 @@ import {
 	openSync,
 	readFileSync,
 	renameSync,
+	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -98,7 +99,40 @@ export function config(): Config {
 			0o600,
 		);
 	}
-	return JSON.parse(readFileSync(file, "utf8"));
+	const text = readFileSync(file, "utf8");
+	const read = readable(text);
+	if (read) {
+		if (text !== lastGood) {
+			lastGood = text;
+			saveFile(`${file}.good`, text, 0o600);
+		}
+		return read;
+	}
+	// A crash or a bad edit shouldn't stop the server for good. The copy from
+	// the last time it read fine keeps the token, so the phone stays paired.
+	saveFile(`${file}.bad`, text, 0o600);
+	const good = existsSync(`${file}.good`) ? readFileSync(`${file}.good`, "utf8") : "";
+	const back = readable(good);
+	console.error(
+		back
+			? `${file} was damaged, so the copy from when it last read fine is back. The damaged one is ${file}.bad.`
+			: `${file} was damaged and there's no good copy, so it starts over and the phone has to pair again. The damaged one is ${file}.bad.`,
+	);
+	if (back) saveFile(file, good, 0o600);
+	else rmSync(file, { force: true });
+	return back ?? config();
+}
+
+let lastGood = "";
+function readable(text: string): Config | null {
+	try {
+		const c = JSON.parse(text);
+		return typeof c?.token === "string" && c.token && Number.isInteger(c.port)
+			? c
+			: null;
+	} catch {
+		return null;
+	}
 }
 
 // An undefined field drops that key from config.json, which is how a rename
@@ -110,6 +144,12 @@ export function setConfig(patch: { [K in keyof Config]?: Config[K] | undefined }
 		0o600,
 	);
 }
+
+// The Mac's privacy lists show this name, and the window is called The Lab, so
+// a new setup keeps the two apart. One set up before that keeps its old name,
+// since macOS ties his permissions to the app.
+export const agentAppName = () =>
+	existsSync(join(labDir(), "The Lab.app")) ? "The Lab" : "The Lab Agent";
 
 export const WIN = platform === "win32";
 // The server's sentences say "the computer" whatever it runs, and name the

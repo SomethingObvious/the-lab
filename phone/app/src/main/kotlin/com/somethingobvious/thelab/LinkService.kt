@@ -70,7 +70,7 @@ class LinkService : Service() {
         // from the background, a job checks back every 15 minutes, and the
         // battery allowlist (setup adds it) lets that job start it.
         private fun follow() {
-            if (Hub.link.optString("state") == "unpaired") {
+            if (Hub.computers.values.all { it.link.optString("state") == "unpaired" }) {
                 running?.let { it.stopForeground(STOP_FOREGROUND_REMOVE); it.stopSelf() }
             } else if (running == null && Hub.paired && !start(Hub.app)) {
                 Retry.schedule(Hub.app)
@@ -95,9 +95,8 @@ class Retry : JobService() {
         Hub.init(this)
         if (!Hub.paired) return false
         Hub.start()
-        // The session from before the freeze has had no traffic, so it may be long dead.
-        Tunnel.drop()
-        Hub.reconnectNow()
+        // The sessions from before the freeze have had no traffic, so they may be long dead.
+        Hub.redial()
         // Long enough for a relay dial and the first events.
         android.os.Handler(mainLooper).postDelayed({ jobFinished(params, false) }, 30_000)
         return true
@@ -133,9 +132,16 @@ object Notifier {
     private const val PAIR_ID = 8
     // The computer's own limit on how long a question waits.
     private const val ASK_MS = 5 * 60_000L
-    // The last few messages each way, so a reply notification reads as a conversation.
-    // Each says who it's from: "me", "mac" or "lab".
-    private val recent = ArrayDeque<Triple<CharSequence, Long, String>>()
+
+    // Each computer has its own run of ids, and the first keeps the plain ones.
+    private fun nid(c: Computer, base: Int) = base + c.slot * 100
+    private fun code(c: Computer, ref: String) = ref.hashCode() xor c.slot
+    private fun whose(c: Computer) = Bundle().apply { putString("computer", c.id) }
+    private fun isFrom(n: android.service.notification.StatusBarNotification, c: Computer) = (n.notification.extras.getString("computer") ?: "main") == c.id
+    // With one computer there's nothing to tell apart.
+    private fun named(c: Computer, text: String) = if (Hub.pairedComputers.size > 1) "${c.name}: $text" else text
+    fun card(c: Computer, ref: String) = code(c, ref)
+    fun shortcutId(c: Computer) = if (c.slot == 0) "mac" else "mac-${c.id}"
 
     fun channels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -162,13 +168,13 @@ object Notifier {
         ))
     }
 
-    private fun open(context: Context): PendingIntent = PendingIntent.getActivity(
-        context, 0, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+    private fun open(context: Context, c: Computer): PendingIntent = PendingIntent.getActivity(
+        context, c.slot, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP).putExtra("computer", c.id),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
-    private fun action(context: Context, act: String, ref: String, code: Int): PendingIntent = PendingIntent.getBroadcast(
-        context, code, Intent(context, AnswerReceiver::class.java).setAction(act).putExtra("ref", ref),
+    private fun action(context: Context, c: Computer, act: String, ref: String, code: Int): PendingIntent = PendingIntent.getBroadcast(
+        context, code, Intent(context, AnswerReceiver::class.java).setAction(act).putExtra("ref", ref).putExtra("computer", c.id),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
@@ -178,8 +184,10 @@ object Notifier {
     private var swiped: String? = null
 
     // Each task he starts has its own key, so Each Task can tell a new one.
-    private fun about(): String =
-        if (Hub.status.optBoolean("working")) "task " + (Hub.events.lastOrNull { it.optString("kind") == "you" }?.optLong("id") ?: 0) else "idle"
+    private fun about(): String {
+        val c = Hub.focus()
+        return if (c.status.optBoolean("working")) "${c.id} task " + (c.events.lastOrNull { it.optString("kind") == "you" }?.optLong("id") ?: 0) else "idle"
+    }
 
     fun swipedAway() { swiped = about() }
 
@@ -200,56 +208,62 @@ object Notifier {
 
     // When the Done line should go back to idle, or null when it already has.
     fun doneUntil(): Long? {
-        val at = Hub.lastDone?.let { Hub.phoneTime(it.optString("at")) } ?: return null
-        return (at + 10 * 60_000).takeIf { it > System.currentTimeMillis() && !Hub.status.optBoolean("working") }
+        val c = Hub.focus()
+        val at = c.lastDone?.let { c.phoneTime(it.optString("at")) } ?: return null
+        return (at + 10 * 60_000).takeIf { it > System.currentTimeMillis() && !c.status.optBoolean("working") }
     }
 
     // Four states: working, waiting for his OK, done (for 10 minutes) and idle.
     // Working and waiting are promoted, which Android 16 shows as a Live
     // Update chip in the status bar.
     fun status(context: Context): Notification {
-        val link = Hub.link
+        val c = Hub.focus()
+        val link = c.link
         val online = link.optString("state") == "online"
-        val working = online && Hub.status.optBoolean("working")
-        val waiting = working && Hub.status.optString("label") == "Waiting for you"
+        val working = c.working
+        val waiting = c.waiting
         val b = Notification.Builder(context, if (working) "status" else "idle")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
-            .setContentIntent(open(context))
+            .setContentIntent(open(context, c))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_STATUS)
-            .setDeleteIntent(action(context, AnswerReceiver.SWIPED, "", 11))
-        val since = Hub.phoneTime(Hub.status.optString("since")) ?: System.currentTimeMillis()
+            .setDeleteIntent(action(context, c, AnswerReceiver.SWIPED, "", 11))
+        val since = c.phoneTime(c.status.optString("since")) ?: System.currentTimeMillis()
         if (waiting) {
             // A promoted card always sits first and expanded, so it carries the
             // buttons rather than sending him down to the ask itself.
-            val ask = openAsk()
-            b.setContentTitle("Needs your OK").setContentText(ask?.optString("plain")?.ifBlank { null } ?: "Open The Lab to allow or deny it.")
+            val ask = openAsk(c)
+            b.setContentTitle(named(c, "Needs your OK")).setContentText(ask?.optString("plain")?.ifBlank { null } ?: "Open The Lab to allow or deny it.")
                 .setWhen(since).setShowWhen(true).setUsesChronometer(true)
             if (ask != null) {
                 val ref = ask.optString("ref")
-                b.addAction(Notification.Action.Builder(null, "Deny", action(context, AnswerReceiver.DENY, ref, ref.hashCode() + 1)).setAuthenticationRequired(true).build())
-                    .addAction(Notification.Action.Builder(null, "Allow", action(context, AnswerReceiver.ALLOW, ref, ref.hashCode())).setAuthenticationRequired(true).build())
+                b.addAction(Notification.Action.Builder(null, "Deny", action(context, c, AnswerReceiver.DENY, ref, code(c, ref) + 1)).setAuthenticationRequired(true).build())
+                    .addAction(Notification.Action.Builder(null, "Allow", action(context, c, AnswerReceiver.ALLOW, ref, code(c, ref))).setAuthenticationRequired(true).build())
             }
             if (Build.VERSION.SDK_INT >= 36) b.setShortCriticalText("Your OK")
             b.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
         } else if (working) {
-            val label = Hub.status.optString("label").ifBlank { "Working" }
-            b.setContentTitle(task() ?: "Working").setContentText(label)
+            val label = c.status.optString("label").ifBlank { "Working" }
+            b.setContentTitle(named(c, task(c) ?: "Working")).setContentText(label)
                 .setWhen(since).setShowWhen(true).setUsesChronometer(true)
-                .addAction(Notification.Action.Builder(null, "Stop", action(context, AnswerReceiver.STOP, "", 10)).build())
+                .addAction(Notification.Action.Builder(null, "Stop", action(context, c, AnswerReceiver.STOP, "", 10 + c.slot * 100)).build())
             if (Build.VERSION.SDK_INT >= 36) {
                 b.setShortCriticalText("Working")
                 b.setStyle(Notification.ProgressStyle().setProgressIndeterminate(true))
             }
             b.addExtras(Bundle().apply { putBoolean("android.requestPromotedOngoing", true) })
         } else if (online && doneUntil() != null) {
-            val d = Hub.lastDone!!
+            val d = c.lastDone!!
             val title = if (d.optBoolean("stopped")) "Stopped" else if (d.optBoolean("ok")) "Done" else "Didn't finish"
-            b.setContentTitle(task() ?: title).setContentText(if (task() == null) "Open The Lab to see what it did." else title)
-                .setWhen(Hub.phoneTime(d.optString("at")) ?: 0).setShowWhen(true)
+            b.setContentTitle(named(c, task(c) ?: title)).setContentText(if (task(c) == null) "Open The Lab to see what it did." else title)
+                .setWhen(c.phoneTime(d.optString("at")) ?: 0).setShowWhen(true)
+        } else if (Hub.pairedComputers.size > 1) {
+            val up = Hub.pairedComputers
+            b.setContentTitle("${up.size} computers").setShowWhen(false)
+                .setContentText(up.joinToString(", ") { "${it.name} ${if (it.link.optString("state") == "online") "ready" else "away"}" })
         } else {
-            val name = Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer"
+            val name = c.name
             val (title, text) = when (link.optString("state")) {
                 "online" -> name to "Ready"
                 "connecting" -> name to "Connecting"
@@ -262,42 +276,42 @@ object Notifier {
     }
 
     // What he asked for, so the card names the task rather than the step.
-    private fun task(): String? {
-        val e = Hub.events.lastOrNull { it.optString("kind") == "you" } ?: return null
+    private fun task(c: Computer): String? {
+        val e = c.events.lastOrNull { it.optString("kind") == "you" } ?: return null
         val t = e.optString("scheduled").ifBlank { null } ?: plain(e.optString("text")).lineSequence().firstOrNull { it.isNotBlank() } ?: return null
         return if (t.length > 60) t.take(59).trimEnd() + "…" else t
     }
 
     // The newest question with no answer after it.
-    private fun openAsk(): JSONObject? {
-        val at = Hub.events.indexOfLast { it.optString("kind") == "ask" }
-        return Hub.events.getOrNull(at)
-            ?.takeIf { a -> Hub.events.subList(at + 1, Hub.events.size).none { it.optString("kind") == "answered" && it.optString("ref") == a.optString("ref") } }
+    private fun openAsk(c: Computer): JSONObject? {
+        val at = c.events.indexOfLast { it.optString("kind") == "ask" }
+        return c.events.getOrNull(at)
+            ?.takeIf { a -> c.events.subList(at + 1, c.events.size).none { it.optString("kind") == "answered" && it.optString("ref") == a.optString("ref") } }
     }
 
     // After the replay. A question asked while the phone was away is too old
     // for onEvent to sound, but it can still be answered until it expires.
-    fun onLoaded() {
-        if (Hub.foreground) return
-        val e = openAsk()?.takeIf { !it.optBoolean("onMac") } ?: return
+    fun onLoaded(c: Computer) {
+        if (Hub.foreground && Hub.on === c) return
+        val e = openAsk(c)?.takeIf { !it.optBoolean("onMac") } ?: return
         val nm = Hub.app.getSystemService(NotificationManager::class.java)
-        if (nm.activeNotifications.none { it.id == e.optString("ref").hashCode() }) ask(Hub.app, e)
+        if (nm.activeNotifications.none { it.id == code(c, e.optString("ref")) }) ask(Hub.app, c, e)
     }
 
     // Only events from the last couple of minutes notify, so a phone coming
     // back after a day offline doesn't replay a day of alerts.
-    fun onEvent(e: JSONObject) {
+    fun onEvent(c: Computer, e: JSONObject) {
         val context = Hub.app
         val nm = context.getSystemService(NotificationManager::class.java)
         val kind = e.optString("kind")
         if (kind == "answered") {
-            return nm.cancel(e.optString("ref").hashCode())
+            return nm.cancel(code(c, e.optString("ref")))
         }
         if (kind == "done") {
             // Asked from the shade rather than kept in memory, so it still works after the process restarts.
-            for (n in nm.activeNotifications) if (n.notification.channelId == "asks") nm.cancel(n.id)
+            for (n in nm.activeNotifications) if (n.notification.channelId == "asks" && isFrom(n, c)) nm.cancel(n.id)
         }
-        val at = Hub.phoneTime(e.optString("at")) ?: 0
+        val at = c.phoneTime(e.optString("at")) ?: 0
         if (System.currentTimeMillis() - at > 120_000) return
         // A scheduled run with nothing to say stays quiet.
         if (e.optBoolean("silent")) return
@@ -305,45 +319,45 @@ object Notifier {
             val label = e.optString("scheduled")
             val text = if (kind == "file") "Sent you ${e.optString("name")}" else if (label.isNotEmpty()) "$label: ${plain(e.optString("text"))}" else plain(e.optString("text"))
             // A turn the server started itself, like Self-Repair, wasn't his.
-            recent.addLast(Triple(text, at, if (kind != "you") "mac" else if (e.optBoolean("auto")) "lab" else "me"))
-            while (recent.size > 6) recent.removeFirst()
+            c.recent.addLast(Triple(text, at, if (kind != "you") "mac" else if (e.optBoolean("auto")) "lab" else "me"))
+            while (c.recent.size > 6) c.recent.removeFirst()
         }
         // Someone at the computer with The Lab in front already sees it there.
-        if (Hub.foreground || e.optBoolean("onMac")) return
+        if ((Hub.foreground && Hub.on === c) || e.optBoolean("onMac")) return
         val b = when (kind) {
             "reply", "file" -> {
-                val mac = Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer").setKey("mac").build()
+                val mac = Person.Builder().setName(c.name).setKey("mac").build()
                 val me = Person.Builder().setName("You").setKey("me").build()
                 val lab = Person.Builder().setName("The Lab").setKey("lab").build()
-                conversation(context, mac)
+                conversation(context, c, mac)
                 val style = Notification.MessagingStyle(me)
-                for ((text, time, who) in recent) style.addMessage(text, time, when (who) { "me" -> null; "lab" -> lab; else -> mac })
+                for ((text, time, who) in c.recent) style.addMessage(text, time, when (who) { "me" -> null; "lab" -> lab; else -> mac })
                 val input = RemoteInput.Builder(AnswerReceiver.TEXT).setLabel("Message your computer").build()
                 val reply = PendingIntent.getBroadcast(
-                    context, 20, Intent(context, AnswerReceiver::class.java).setAction(AnswerReceiver.REPLY),
+                    context, 20 + c.slot * 100, Intent(context, AnswerReceiver::class.java).setAction(AnswerReceiver.REPLY).putExtra("computer", c.id),
                     PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
                 )
                 Notification.Builder(context, "replies")
                     .setStyle(style)
-                    .setShortcutId("mac")
+                    .setShortcutId(shortcutId(c))
                     .setCategory(Notification.CATEGORY_MESSAGE)
                     .addAction(Notification.Action.Builder(null, "Reply", reply).addRemoteInput(input).setAllowGeneratedReplies(false).build())
             }
-            "ask" -> return ask(context, e)
+            "ask" -> return ask(context, c, e)
             "notice" -> Notification.Builder(context, "notices")
-                .setContentTitle("The Lab")
+                .setContentTitle(named(c, "The Lab"))
                 .setContentText(e.optString("text"))
                 .setStyle(Notification.BigTextStyle().bigText(e.optString("text")))
             else -> return
         }
-        val id = if (kind == "notice") NOTICE_ID else REPLY_ID
-        nm.notify(id, b.setSmallIcon(R.drawable.ic_status).setColor(VIOLET).setContentIntent(open(context)).setAutoCancel(true).build())
+        val id = nid(c, if (kind == "notice") NOTICE_ID else REPLY_ID)
+        nm.notify(id, b.setSmallIcon(R.drawable.ic_status).setColor(VIOLET).setContentIntent(open(context, c)).setAutoCancel(true).addExtras(whose(c)).build())
     }
 
-    private fun ask(context: Context, e: JSONObject) {
+    private fun ask(context: Context, c: Computer, e: JSONObject) {
         val ref = e.optString("ref")
-        val code = ref.hashCode()
-        val at = Hub.phoneTime(e.optString("at")) ?: System.currentTimeMillis()
+        val code = code(c, ref)
+        val at = c.phoneTime(e.optString("at")) ?: System.currentTimeMillis()
         // The computer gives up on a question after five minutes, and the card goes with it.
         val left = at + ASK_MS - System.currentTimeMillis()
         if (left <= 0) return
@@ -353,15 +367,15 @@ object Notifier {
         val text = lines.ifEmpty { listOf(e.optString("detail")) }.joinToString("\n")
         context.getSystemService(NotificationManager::class.java).notify(code, Notification.Builder(context, "asks")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
-            .setContentTitle(e.optString("title"))
+            .setContentTitle(named(c, e.optString("title")))
             .setContentText(lines.firstOrNull() ?: e.optString("detail"))
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setCategory(Notification.CATEGORY_REMINDER)
             .setTimeoutAfter(left)
             // Allowing runs something on his computer, so it shouldn't work from a locked phone.
-            .addAction(Notification.Action.Builder(null, "Deny", action(context, AnswerReceiver.DENY, ref, code + 1)).setAuthenticationRequired(true).build())
-            .addAction(Notification.Action.Builder(null, "Allow", action(context, AnswerReceiver.ALLOW, ref, code)).setAuthenticationRequired(true).build())
-            .setContentIntent(open(context)).setAutoCancel(true)
+            .addAction(Notification.Action.Builder(null, "Deny", action(context, c, AnswerReceiver.DENY, ref, code + 1)).setAuthenticationRequired(true).build())
+            .addAction(Notification.Action.Builder(null, "Allow", action(context, c, AnswerReceiver.ALLOW, ref, code)).setAuthenticationRequired(true).build())
+            .setContentIntent(open(context, c)).setAutoCancel(true).addExtras(whose(c))
             .build())
     }
 
@@ -374,9 +388,9 @@ object Notifier {
 
     // Android only files a notification under Conversations when it points at
     // a long-lived shortcut for the person it's from.
-    private fun conversation(context: Context, mac: Person) {
-        val open = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_MAIN)
-        val info = ShortcutInfo.Builder(context, "mac")
+    private fun conversation(context: Context, c: Computer, mac: Person) {
+        val open = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_MAIN).putExtra("computer", c.id)
+        val info = ShortcutInfo.Builder(context, shortcutId(c))
             .setShortLabel(mac.name ?: "Your computer")
             .setIcon(Icon.createWithResource(context, R.mipmap.ic_launcher))
             .setPerson(mac)
@@ -388,82 +402,88 @@ object Notifier {
         runCatching { context.getSystemService(ShortcutManager::class.java).pushDynamicShortcut(info) }
     }
 
-    fun shareTarget(context: Context) = conversation(context, Person.Builder().setName(Hub.mac?.optString("name")?.ifBlank { null } ?: "Your computer").setKey("mac").build())
+    fun shareTarget(context: Context, c: Computer) = conversation(context, c, Person.Builder().setName(c.name).setKey("mac").build())
     const val SHARE_CATEGORY = "com.somethingobvious.thelab.category.SHARE"
 
 
-    fun answerFailed(context: Context, ref: String) {
-        val code = ref.hashCode()
+    fun answerFailed(context: Context, c: Computer, ref: String) {
+        val code = code(c, ref)
         context.getSystemService(NotificationManager::class.java).notify(code, Notification.Builder(context, "asks")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("Your answer didn't go through")
             .setContentText("Couldn't reach the computer. Open The Lab to answer.")
-            .setContentIntent(open(context)).setAutoCancel(true)
+            .setContentIntent(open(context, c)).setAutoCancel(true)
             .build())
     }
 
     // Replaces the question's own card, so it doesn't sound again.
-    fun answerExpired(context: Context, ref: String) {
-        context.getSystemService(NotificationManager::class.java).notify(ref.hashCode(), Notification.Builder(context, "asks")
+    fun answerExpired(context: Context, c: Computer, ref: String) {
+        context.getSystemService(NotificationManager::class.java).notify(code(c, ref), Notification.Builder(context, "asks")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("That question had already closed")
             .setContentText("It was answered already, or the agent stopped waiting and carried on without it.")
             .setOnlyAlertOnce(true)
             .setTimeoutAfter(10 * 60_000L)
-            .setContentIntent(open(context)).setAutoCancel(true)
+            .setContentIntent(open(context, c)).setAutoCancel(true)
             .build())
     }
 
-    fun queued(context: Context) {
+    fun queued(context: Context, c: Computer) {
         // On the quiet connection channel, since it's news about the link rather than something to act on.
-        context.getSystemService(NotificationManager::class.java).notify(QUEUED_ID, Notification.Builder(context, "status")
+        context.getSystemService(NotificationManager::class.java).notify(nid(c, QUEUED_ID), Notification.Builder(context, "status")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("Your message is saved")
             .setContentText("It'll go to the computer as soon as it's back.")
-            .setContentIntent(open(context)).setAutoCancel(true)
+            .setContentIntent(open(context, c)).setAutoCancel(true)
             .build())
     }
 
-    fun sent(context: Context) = context.getSystemService(NotificationManager::class.java).cancel(QUEUED_ID)
+    fun sent(context: Context, c: Computer) = context.getSystemService(NotificationManager::class.java).cancel(nid(c, QUEUED_ID))
 
-    fun unsent(text: String) {
+    fun unsent(c: Computer, text: String) {
         val context = Hub.app
-        context.getSystemService(NotificationManager::class.java).notify(UNSENT_ID, Notification.Builder(context, "notices")
+        context.getSystemService(NotificationManager::class.java).notify(nid(c, UNSENT_ID), Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("A message didn't go through")
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText("The computer couldn't take this message, so it wasn't sent:\n\n$text"))
-            .setContentIntent(open(context)).setAutoCancel(true)
+            .setContentIntent(open(context, c)).setAutoCancel(true)
             .build())
     }
 
     fun confirmPair(context: Context) {
         context.getSystemService(NotificationManager::class.java).notify(PAIR_ID, Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
-            .setContentTitle("Switch to another computer?")
+            .setContentTitle("Add another computer?")
             .setContentText("Tap to say yes or no. Nothing changes until you do.")
-            .setContentIntent(open(context)).setAutoCancel(true)
+            .setContentIntent(open(context, Hub.on)).setAutoCancel(true)
             .build())
     }
 
     fun pairAnswered(context: Context) = context.getSystemService(NotificationManager::class.java).cancel(PAIR_ID)
 
-    fun stopFailed(context: Context) {
-        context.getSystemService(NotificationManager::class.java).notify(STOP_ID, Notification.Builder(context, "notices")
+    fun stopFailed(context: Context, c: Computer) {
+        context.getSystemService(NotificationManager::class.java).notify(nid(c, STOP_ID), Notification.Builder(context, "notices")
             .setSmallIcon(R.drawable.ic_status).setColor(VIOLET)
             .setContentTitle("Couldn't reach the computer to stop it")
             .setContentText("It's probably still working. Open The Lab to try again.")
-            .setContentIntent(open(context)).setAutoCancel(true)
+            .setContentIntent(open(context, c)).setAutoCancel(true)
             .build())
     }
 
-    fun clearReplies(context: Context) {
-        recent.clear()
+    fun clearReplies(context: Context, c: Computer) {
+        c.recent.clear()
         val nm = context.getSystemService(NotificationManager::class.java)
-        nm.cancel(REPLY_ID)
-        nm.cancel(NOTICE_ID)
-        nm.cancel(STOP_ID)
-        nm.cancel(QUEUED_ID)
+        for (id in listOf(REPLY_ID, NOTICE_ID, STOP_ID, QUEUED_ID)) nm.cancel(nid(c, id))
+    }
+
+    // Its Allow cards go too, as there's nothing left to answer them with.
+    fun clearAll(context: Context, c: Computer) {
+        clearReplies(context, c)
+        val nm = context.getSystemService(NotificationManager::class.java)
+        nm.cancel(nid(c, UNSENT_ID))
+        for (n in nm.activeNotifications) if (n.notification.channelId == "asks" && isFrom(n, c)) nm.cancel(n.id)
+        runCatching { context.getSystemService(ShortcutManager::class.java).removeLongLivedShortcuts(listOf(shortcutId(c))) }
     }
 }
 
@@ -471,14 +491,16 @@ class AnswerReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Hub.init(context)
         val ref = intent.getStringExtra("ref").orEmpty()
+        val c = Hub.computer(intent.getStringExtra("computer"))
+        val card = Notifier.card(c, ref)
         when (intent.action) {
             ALLOW, DENY -> {
                 val pending = goAsync()
-                Hub.answer(ref, intent.action == ALLOW) { code ->
+                c.answer(ref, intent.action == ALLOW) { code ->
                     when (code) {
-                        in 200..299 -> context.getSystemService(NotificationManager::class.java).cancel(ref.hashCode())
-                        404 -> Notifier.answerExpired(context, ref)
-                        else -> Notifier.answerFailed(context, ref)
+                        in 200..299 -> context.getSystemService(NotificationManager::class.java).cancel(card)
+                        404 -> Notifier.answerExpired(context, c, ref)
+                        else -> Notifier.answerFailed(context, c, ref)
                     }
                     pending.finish()
                 }
@@ -492,25 +514,25 @@ class AnswerReceiver : BroadcastReceiver() {
                 // A stop can outlast the 10 s a receiver gets, and the link
                 // service keeps the process alive for the answer.
                 Hub.onMain(9_000) { finish() }
-                Hub.stop { ok ->
-                    if (!ok) Notifier.stopFailed(context)
+                c.stop { ok ->
+                    if (!ok) Notifier.stopFailed(context, c)
                     finish()
                 }
                 return
             }
             REPLY -> {
                 val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(TEXT)?.toString()?.trim().orEmpty()
-                Notifier.clearReplies(context)
+                Notifier.clearReplies(context, c)
                 if (text.isNotEmpty()) {
                     val cid = UUID.randomUUID().toString()
-                    Hub.send(text, cid, null)
+                    c.send(text, cid, null)
                     if (Hub.paired) LinkService.start(context)
                     // Long enough for a cold start to reach the computer, so the line only shows when it can't.
-                    Hub.onMain(15_000) { if (Hub.queued(cid)) Notifier.queued(Hub.app) }
+                    Hub.onMain(15_000) { if (c.queued(cid)) Notifier.queued(Hub.app, c) }
                 }
             }
         }
-        if (ref.isNotEmpty()) context.getSystemService(NotificationManager::class.java).cancel(ref.hashCode())
+        if (ref.isNotEmpty()) context.getSystemService(NotificationManager::class.java).cancel(card)
     }
 
     companion object {
@@ -539,9 +561,9 @@ class PairReceiver : BroadcastReceiver() {
             return
         }
         resultCode = 0
-        // Anything holding WRITE_SECURE_SETTINGS can send this, so a switch to
-        // a different computer waits for his yes on the phone.
-        if (!Hub.paired || Hub.pairedWith(url, tunnel)) {
+        // Anything holding WRITE_SECURE_SETTINGS can send this, so adding a
+        // computer it doesn't know waits for his yes on the phone.
+        if (!Hub.paired || Hub.known(url, tunnel) != null) {
             Hub.pair(url, tunnel, token)
             resultData = "paired"
         } else {
@@ -566,6 +588,6 @@ class App : android.app.Application() {
         super.onCreate()
         Hub.init(this)
         Notifier.channels(this)
-        Notifier.shareTarget(this)
+        for (c in Hub.pairedComputers) Notifier.shareTarget(this, c)
     }
 }

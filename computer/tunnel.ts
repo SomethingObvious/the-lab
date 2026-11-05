@@ -365,6 +365,21 @@ function framed(sock: Socket, onPacket: (b: Buffer) => void) {
 const relayUrl = (relay: string, room: string) =>
 	`${relay.replace(/\/+$/, "").replace(/^http/, "ws")}/r/${room}`;
 
+// The computer proves it owns its room with a secret, which plain http would
+// show to anyone on the way. Only this computer's own test relay may use it.
+export function relayProblem(relay: string): string | null {
+	let u: URL;
+	try {
+		u = new URL(relay);
+	} catch {
+		return `${relay} isn't a web address`;
+	}
+	if (u.protocol === "https:") return null;
+	if (u.protocol === "http:" && /^(127\.0\.0\.1|localhost|\[::1\])$/.test(u.hostname))
+		return null;
+	return `${relay} has to start with https://`;
+}
+
 export interface TunnelOptions {
 	dir: string;
 	port: number;
@@ -437,7 +452,12 @@ export function startTunnel(o: TunnelOptions) {
 		if (m.toString() === `thelab? ${room}`)
 			find.send(`thelab! ${o.lanPort}`, from.port, from.address);
 	});
-	find.on("error", () => find.close());
+	let finding = true;
+	const stopFinding = () => {
+		if (finding) find.close();
+		finding = false;
+	};
+	find.on("error", stopFinding);
 	find.bind(o.lanPort, o.lanHost ?? "0.0.0.0");
 
 	let ws: WebSocket | null = null;
@@ -452,6 +472,11 @@ export function startTunnel(o: TunnelOptions) {
 	};
 	const dialRelay = () => {
 		if (stopped || !o.relay) return;
+		const refused = relayProblem(o.relay);
+		if (refused) {
+			state.relay = `off: ${refused}`;
+			return;
+		}
 		const sock = new WebSocket(relayUrl(o.relay, roomOf(k.secret)), ["lab", k.secret]);
 		ws = sock;
 		sock.binaryType = "arraybuffer";
@@ -571,7 +596,7 @@ export function startTunnel(o: TunnelOptions) {
 			clearInterval(watch);
 			clearTimeout(timer);
 			lan.close();
-			find.close();
+			stopFinding();
 			ws?.close();
 			endSessions();
 		},

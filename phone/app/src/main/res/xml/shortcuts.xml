@@ -11,6 +11,17 @@
             android:targetPackage="com.somethingobvious.thelab"
             android:targetClass="com.somethingobvious.thelab.MainActivity" />
     </shortcut>
+    <shortcut
+        android:shortcutId="computers"
+        android:enabled="true"
+        android:icon="@drawable/ic_status"
+        android:shortcutShortLabel="@string/computers_short"
+        android:shortcutLongLabel="@string/computers_long">
+        <intent
+            android:action="com.somethingobvious.thelab.COMPUTERS"
+            android:targetPackage="com.somethingobvious.thelab"
+            android:targetClass="com.somethingobvious.thelab.MainActivity" />
+    </shortcut>
     <!-- Lets the dynamic "mac" shortcut sit in the share sheet's top row. -->
     <share-target android:targetClass="com.somethingobvious.thelab.MainActivity">
         <data android:mimeType="text/plain" />

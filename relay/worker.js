@@ -10,6 +10,18 @@ const ROOM = /^[A-Za-z0-9_-]{43}$/;
 const DATA = 0;
 const LEAVE = 2;
 const PHONES = 8;
+// The biggest frame either end sends is well under this.
+const MAX_FRAME = 512 * 1024;
+// A phone sends a little before the computer answers it, and a stranger with
+// no keys would otherwise keep waking this up for as long as it liked.
+const UNPROVEN_FRAMES = 512;
+// A phone that lost its network leaves a socket here that looks fine until
+// Cloudflare notices, so a full room can't keep out the phone that's back.
+const PROVEN_MAKES_WAY = 120_000;
+const HEADERS = {
+	"cache-control": "no-store",
+	"x-content-type-options": "nosniff",
+};
 // The computer says "ping" every 30 s, so a socket that has been quiet for
 // longer than this died without a close.
 const STALE = 100_000;
@@ -42,6 +54,8 @@ const header = (peer, type) => {
 };
 
 export class Room extends DurableObject {
+	unproven = new Map();
+
 	constructor(ctx, env) {
 		super(ctx, env);
 		ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
@@ -105,7 +119,11 @@ export class Room extends DurableObject {
 		// closing the oldest socket the computer hasn't answered past its
 		// handshake. Only a phone with the keys gets that far.
 		const phones = this.staying("phone");
-		if (phones.length >= PHONES && !this.evict(phones, (a) => !a.trusted))
+		if (
+			phones.length >= PHONES &&
+			!this.evict(phones, (a) => !a.trusted) &&
+			!this.evict(phones, (a) => Date.now() - (a.at ?? 0) > PROVEN_MAKES_WAY)
+		)
 			return new Response("Too many phones in this room.", { status: 429 });
 		let peer;
 		do peer = crypto.getRandomValues(new Uint32Array(1))[0];
@@ -122,15 +140,19 @@ export class Room extends DurableObject {
 	webSocketMessage(ws, msg) {
 		if (typeof msg === "string") return;
 		const body = new Uint8Array(msg);
-		const { peer, waiting } = ws.deserializeAttachment() ?? {};
+		const { peer, waiting, trusted } = ws.deserializeAttachment() ?? {};
 		if (waiting) return;
+		if (body.length > MAX_FRAME) {
+			quietly(() => ws.close(1009, "That frame is too big."));
+			return;
+		}
 		if (peer === undefined) {
 			if (body.length < 5) return;
 			const to = new DataView(body.buffer, body.byteOffset).getUint32(0);
 			const phone = this.ctx.getWebSockets(`p${to}`)[0];
 			if (!phone) return;
 			if (body[4] === DATA) {
-				phone.send(body.subarray(5));
+				quietly(() => phone.send(body.subarray(5)));
 				// The first frame back is the handshake, which any HELLO gets.
 				// A second one means the phone proved it has the keys.
 				const a = phone.deserializeAttachment() ?? {};
@@ -140,19 +162,27 @@ export class Room extends DurableObject {
 					phone.serializeAttachment(a);
 				}
 			} else if (body[4] === LEAVE)
-				phone.close(4000, "The computer ended this session.");
+				quietly(() => phone.close(4000, "The computer ended this session."));
 			return;
+		}
+		if (!trusted) {
+			const sent = (this.unproven.get(peer) ?? 0) + 1;
+			this.unproven.set(peer, sent);
+			if (sent > UNPROVEN_FRAMES) {
+				quietly(() => ws.close(4006, "Too much before proving who it is."));
+				return;
+			}
 		}
 		const pc = this.pc();
 		if (!pc) {
-			ws.send("away");
-			ws.close(4004, "The computer is not connected.");
+			quietly(() => ws.send("away"));
+			quietly(() => ws.close(4004, "The computer is not connected."));
 			return;
 		}
 		const out = new Uint8Array(5 + body.length);
 		out.set(header(peer, DATA));
 		out.set(body, 5);
-		pc.send(out);
+		quietly(() => pc.send(out));
 	}
 
 	// The sockets with this tag, less any already told to make way, which stay
@@ -220,16 +250,13 @@ export class Room extends DurableObject {
 			// A copy that was replaced already sent them to the new one.
 			if (!replaced)
 				for (const p of this.ctx.getWebSockets("phone"))
-					p.close(4000, "The computer went away.");
+					quietly(() => p.close(4000, "The computer went away."));
 			return;
 		}
+		this.unproven.delete(peer);
 		const pc = this.pc();
-		if (pc)
-			try {
-				pc.send(header(peer, LEAVE));
-			} catch {
-				// The computer's socket is closing too, and that close starts its phones over.
-			}
+		// If the computer's socket is closing too, that close starts its phones over.
+		if (pc) quietly(() => pc.send(header(peer, LEAVE)));
 	}
 }
 
@@ -237,12 +264,21 @@ export default {
 	fetch(req, env) {
 		const url = new URL(req.url);
 		const [, kind, room] = url.pathname.split("/");
+		if (req.method !== "GET")
+			return new Response("Only GET.\n", { status: 405, headers: HEADERS });
 		if (kind === "r" && ROOM.test(room ?? "")) {
 			if (req.headers.get("upgrade")?.toLowerCase() !== "websocket")
-				return new Response("Expected a WebSocket.", { status: 426 });
+				return new Response("Expected a WebSocket.", { status: 426, headers: HEADERS });
+			// Neither end is a browser, so a web page has no business in a room.
+			if (req.headers.has("origin"))
+				return new Response("Not from a web page.\n", {
+					status: 403,
+					headers: HEADERS,
+				});
 			return env.ROOMS.get(env.ROOMS.idFromName(room)).fetch(req);
 		}
-		if (url.pathname === "/") return new Response("The Lab relay.\n");
-		return new Response("Not found.\n", { status: 404 });
+		if (url.pathname === "/")
+			return new Response("The Lab relay 2.\n", { headers: HEADERS });
+		return new Response("Not found.\n", { status: 404, headers: HEADERS });
 	},
 };

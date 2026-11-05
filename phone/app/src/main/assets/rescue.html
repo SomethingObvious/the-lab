@@ -57,6 +57,7 @@
   <button type="button" id="undo" hidden>Undo Last Design Change</button>
   <button type="button" id="fix" hidden>Open Tailscale</button>
   <button type="button" id="retry">Try Again</button>
+  <button type="button" id="computers" hidden>Your Computers</button>
   <button type="button" id="stop" class="alert" hidden>Stop</button>
 </div>
 <ol id="log"><li class="empty">Nothing here yet.</li></ol>
@@ -166,6 +167,8 @@
   $('undo').onclick = () => lab.undoDesign();
   $('fix').onclick = () => lab.fix('tailscale');
   $('retry').onclick = () => lab.retry();
+  $('computers').hidden = !lab.chooseComputer;
+  $('computers').onclick = () => lab.chooseComputer();
   $('stop').onclick = () => lab.stop();
   const box = $('text');
   box.oninput = () => { box.style.height = 'auto'; box.style.height = `${box.scrollHeight}px`; };

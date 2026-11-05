@@ -2554,6 +2554,60 @@ test("a batch file in a folder with a space still runs", async () => {
 
 // ---------- runtime ----------
 
+test("a damaged config comes back from its last good copy", async () => {
+	const { config } = await import("./config.ts");
+	const dir = mkdtempSync(join(tmpdir(), "lab-config-"));
+	const was = process.env["LAB_DIR"];
+	process.env["LAB_DIR"] = dir;
+	try {
+		const file = join(dir, "config.json");
+		const first = config();
+		assert.ok(first.token);
+		for (const damage of ['{"token": "ab', "", "[]", '{"token": 1, "port": 8417}']) {
+			writeFileSync(file, damage);
+			assert.deepEqual(config(), first);
+			assert.equal(readFileSync(`${file}.bad`, "utf8"), damage);
+		}
+		rmSync(`${file}.good`);
+		writeFileSync(file, "not json");
+		assert.notEqual(config().token, first.token);
+	} finally {
+		if (was === undefined) delete process.env["LAB_DIR"];
+		else process.env["LAB_DIR"] = was;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("the computer's secret only goes to a relay over https", async () => {
+	const { relayProblem } = await import("./tunnel.ts");
+	assert.equal(relayProblem("https://the-lab-relay.me.workers.dev"), null);
+	assert.equal(relayProblem("http://127.0.0.1:8787"), null);
+	assert.equal(relayProblem("http://localhost:8787"), null);
+	assert.match(relayProblem("http://relay.example") ?? "", /https/);
+	assert.match(relayProblem("http://127.0.0.1.evil.example") ?? "", /https/);
+	assert.match(relayProblem("not a url at all") ?? "", /isn't a web address/);
+});
+
+test("a bad relay address leaves the server up and says why", async () => {
+	const { startTunnel } = await import("./tunnel.ts");
+	const t = startTunnel({
+		dir: mkdtempSync(join(tmpdir(), "lab-tunnel-")),
+		port: 1,
+		relay: "not a url at all",
+		lanPort: 0,
+		lanHost: "127.0.0.1",
+	});
+	assert.match(t.state.relay, /^off: /);
+	t.close();
+});
+
+test("an emptied index.html is held back like a missing one", () => {
+	const app = mkdtempSync(join(tmpdir(), "lab-app-"));
+	writeFileSync(join(app, "index.html"), "");
+	assert.match(checkApp(app) ?? "", /index\.html is empty/);
+	rmSync(app, { recursive: true, force: true });
+});
+
 test("a torn tunnel.json is moved aside and fresh keys are made", async () => {
 	const { keys } = await import("./tunnel.ts");
 	const dir = mkdtempSync(join(tmpdir(), "lab-tunnel-"));
