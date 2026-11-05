@@ -162,7 +162,7 @@ If a step fails because of a bug in The Lab rather than something on this comput
 
 - `node setup.ts check` shows what isn't working.
 - The server log is `~/.thelab/server.log`.
-- "Signed out" notices on the phone mean `node setup.ts auth` needs running again.
+- "Signed out" notices on the phone have a Sign In button that fixes it from there. Running `node setup.ts auth` on the computer does the same job.
 - To switch between Claude and ChatGPT later, run `node setup.ts auth --engine codex` (or `claude`), then `node setup.ts computer`. It picks up the last conversation it had on that engine, or starts a fresh one, and the history on the phone stays.
 - If the phone says it can't reach the computer, check that the computer is awake and online. Check My Setup on the phone says whether the computer is connected to the relay and listening on the local network.
 - To take The Lab off the computer, run `node setup.ts remove`. The server stops and no longer starts at sign-in. His workspace, his history and the app on the phone stay until he deletes them, and `node setup.ts computer` brings it all back.

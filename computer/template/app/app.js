@@ -550,6 +550,7 @@ function take(e) {
 			dirty.add(n);
 			schedule();
 			if (fresh(e)) say(e.text);
+			if (e.signedIn) settleSignIn(fresh(e));
 			return;
 		}
 		// The snapshot taken as a task starts is the one Put Things Back uses.
@@ -758,8 +759,15 @@ function noticeEl(e) {
 		return div;
 	}
 	div.className = "notice";
-	div.innerHTML = `<div>${esc(e.text)}</div>${e.action ? `<button type="button" class="pill" data-send="${esc(e.action.send)}">${esc(e.action.label)}</button>` : ""}`;
+	div.innerHTML = `<div>${esc(e.text)}</div>${noticeAction(e.action)}`;
 	return div;
+}
+function noticeAction(a) {
+	if (!a) return "";
+	let how = `data-send="${esc(a.send)}"`;
+	if (a.signin) how = 'data-signin="1"';
+	if (a.resend) how = 'data-resend="1"';
+	return `<button type="button" class="pill" ${how}>${esc(a.label)}</button>`;
 }
 
 // A message sent mid-task joins the running turn, so every turn since the
@@ -2191,6 +2199,79 @@ async function openCheck() {
 	);
 	say(bad ? `${bad} thing${bad === 1 ? "" : "s"} to fix.` : "Everything looks right.");
 }
+// Signed in again, so the older Sign In buttons have nothing left to do.
+function settleSignIn(justNow) {
+	for (const it of items)
+		if (it.type === "notice" && it.e.action?.signin) {
+			it.e.action = null;
+			dirty.add(it);
+		}
+	if (justNow && sheetKind === "signin") closeSheet();
+}
+async function openSignIn(problem) {
+	openSheet(
+		"signin",
+		"Sign Back In",
+		'<p class="hint">Getting a sign-in page from the computer</p>',
+		closeBtn,
+	);
+	let got;
+	try {
+		got = await call("POST", "/signin", {});
+		while (got.waiting) {
+			if (sheetKind !== "signin") return;
+			got = await call("POST", "/signin", {});
+		}
+	} catch (err) {
+		if (sheetKind === "signin") setHTML($("sheet-body"), offline(err));
+		return;
+	}
+	if (sheetKind !== "signin") return;
+	// The whole address is hundreds of characters of parameters, and where it
+	// goes is what he needs to be able to see.
+	const page = new URL(got.url);
+	const address = `<p class="signin-address">${esc(page.origin + page.pathname)}</p>`;
+	const open = (kind) =>
+		`<button type="button" class="${kind}" data-signinopen="${esc(got.url)}">Open Sign-In Page</button>`;
+	const turnedDown = problem ? `<p class="signin-problem">${esc(problem)}</p>` : "";
+	if (got.paste) {
+		setHTML(
+			$("sheet-body"),
+			`${turnedDown}<p class="hint">Sign in on this page with the account that has your plan, then copy the code it shows you and paste it here.</p>${address}<p>${open("pill")}</p><label for="signin-code">Code</label><input id="signin-code" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">`,
+		);
+		setHTML(
+			$("sheet-actions"),
+			'<button type="button" data-close>Cancel</button><button type="button" class="primary" data-signincode="1">Finish Signing In</button>',
+		);
+		return;
+	}
+	setHTML(
+		$("sheet-body"),
+		`${turnedDown}<p class="hint">Sign in on this page with the account that has your plan and enter this code. This closes by itself once you're signed in.</p><p class="signin-device"><span class="signin-code">${esc(got.code)}</span><button type="button" class="pill" data-signincopy="${esc(got.code)}">Copy Code</button></p>${address}`,
+	);
+	setHTML($("sheet-actions"), `${closeBtn}${open("primary")}`);
+}
+async function finishSignIn() {
+	const code = $("signin-code")?.value.trim();
+	if (!code) {
+		toast("Paste the code from the sign-in page first.", true);
+		return;
+	}
+	try {
+		await call("POST", "/signin/code", { code });
+	} catch (err) {
+		// A code that's turned down ends that attempt, so this starts a new one.
+		if (sheetKind === "signin") openSignIn(err.message);
+	}
+}
+async function resendCutOff() {
+	try {
+		const r = await call("POST", "/signin/resend", {});
+		if (!r.sent) toast("Those were already sent.");
+	} catch (err) {
+		toast(err.message || "Couldn't reach the computer, so nothing was sent.", true);
+	}
+}
 function openRestore(t) {
 	const at = clock(t.snap.at);
 	openSheet(
@@ -3200,6 +3281,11 @@ function clickSchedules(d) {
 	else if (d.schedit) editSchedule(Number(d.schedit));
 	else if (d.schsave) saveSchedule(Number(d.schsave));
 	else if (d.revoke) revokeRule(Number(d.revoke));
+	else if (d.checkfix === "signin" || d.signin) openSignIn();
+	else if (d.signinopen) lab.open(d.signinopen);
+	else if (d.signincode) finishSignIn();
+	else if (d.signincopy) copyText(d.signincopy);
+	else if (d.resend) resendCutOff();
 	else if (d.checkfix) lab.fix(d.checkfix);
 	else if (d.send) send(d.send);
 	else return false;

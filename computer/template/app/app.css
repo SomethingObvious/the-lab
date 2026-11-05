@@ -2534,6 +2534,29 @@ textarea::placeholder {
 	border-radius: var(--r-nub);
 	overflow-wrap: anywhere;
 }
+.signin-problem {
+	margin: 0 0 12px;
+	color: var(--fail);
+	font-weight: 600;
+}
+.signin-address {
+	margin: 12px 0;
+	font: var(--fs-code) / 1.5 var(--mono);
+	overflow-wrap: anywhere;
+}
+.signin-device {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 16px 0;
+}
+.signin-code {
+	color: var(--ink);
+	font: 600 var(--fs-headline) / 1.2 var(--mono);
+	overflow-wrap: anywhere;
+}
 
 .sch-list {
 	list-style: none;

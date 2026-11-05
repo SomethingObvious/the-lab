@@ -416,6 +416,193 @@ rl.on('line', (line) => {
 });
 `;
 
+// Stands in for "claude auth login", which waits on stdin for the pasted code.
+const FAKE_LOGIN = String.raw`
+console.log('Opening browser to sign in...');
+console.log("If the browser didn't open, visit: https://claude.example/oauth?x=1&browser=" + process.env.BROWSER);
+process.stdout.write('Paste code here if prompted > ');
+process.stdin.once('data', (d) => {
+  if (String(d).trim() === 'good') process.exit(0);
+  console.error("Login failed: That code wasn't accepted.");
+  process.exit(1);
+});
+`;
+
+// Stands in for "codex app-server" with a dead or working sign-in. FAKE_READ is
+// what account/read answers, and FAKE_LOGIN=no is a device login he abandons.
+const FAKE_ACCOUNT = String.raw`
+const rl = require('readline').createInterface({ input: process.stdin });
+const out = (m) => process.stdout.write(JSON.stringify(m) + '\n');
+rl.on('line', (line) => {
+  const m = JSON.parse(line);
+  if (m.method === 'initialize') return out({ id: m.id, result: {} });
+  if (m.method === 'account/read') {
+    if (process.env.FAKE_READ === 'offline') return out({ id: m.id, error: { code: -32603, message: 'discovery failed' } });
+    return out({ id: m.id, result: JSON.parse(process.env.FAKE_READ) });
+  }
+  if (m.method === 'account/login/start') {
+    out({ id: m.id, result: { type: 'chatgptDeviceCode', loginId: 'l', verificationUrl: 'https://auth.example/device', userCode: 'AB-CD' } });
+    setTimeout(() => out({ method: 'account/login/completed', params: { loginId: 'l', success: process.env.FAKE_LOGIN !== 'no', error: process.env.FAKE_LOGIN === 'no' ? 'Login was not completed' : null } }), 20);
+  }
+});
+`;
+
+async function signInLab(engine: "claude" | "codex") {
+	const root = mkdtempSync(join(tmpdir(), "lab-signin-"));
+	const fake = join(root, "fake.cjs");
+	writeFileSync(fake, engine === "codex" ? FAKE_ACCOUNT : FAKE_LOGIN);
+	if (engine === "codex") env["LAB_CODEX_BIN"] = fake;
+	const { Lab } = await import("./lab.ts");
+	const { SignIn } = await import("./signin.ts");
+	const lab = new Lab({
+		home: root,
+		dir: join(root, ".thelab"),
+		engine,
+		snapshots: false,
+	});
+	const signIn = new SignIn(lab, engine, root, [process.execPath, fake]);
+	const end = () => {
+		lab.close();
+	};
+	return { lab, signIn, end };
+}
+
+test("a lost sign-in offers Sign In, then what it cut off, once", async () => {
+	const { lab, end } = await signInLab("codex");
+	env["FAKE_READ"] = JSON.stringify({ account: null, requiresOpenaiAuth: true });
+	try {
+		lab.send("tidy the photos", crypto.randomUUID());
+		for (let i = 0; i < 100 && lab.status.working; i++) await wait(50);
+		const told = lab.store.events.findLast((e) => e.kind === "notice");
+		assert.deepEqual(told?.["action"], { label: "Sign In", signin: true, send: "" });
+		assert.equal(lab.state.signedOut, true);
+
+		const file = { name: "a.png", url: "/files/a.png", size: 1, type: "image/png" };
+		lab.send("second one", crypto.randomUUID(), [file]);
+		for (let i = 0; i < 100 && lab.status.working; i++) await wait(50);
+		lab.send("a timed one", crypto.randomUUID(), [], { label: "Daily" });
+		for (let i = 0; i < 100 && lab.status.working; i++) await wait(50);
+
+		lab.signedIn();
+		assert.equal(lab.state.signedOut, false);
+		assert.deepEqual(lab.state.cutOff, [
+			{ text: "tidy the photos", files: [] },
+			{ text: "second one", files: [file] },
+		]);
+		const back = lab.store.events.at(-1);
+		assert.equal(back?.["signedIn"], true);
+		assert.equal(
+			back?.["text"],
+			"Signed back in to ChatGPT. 2 messages didn't finish.",
+		);
+		assert.deepEqual(back?.["action"], { label: "Send Again", resend: true, send: "" });
+
+		const before = lab.store.events.filter((e) => e.kind === "you").length;
+		assert.equal(lab.resend(), 2);
+		assert.equal(lab.resend(), 0);
+		const you = lab.store.events.filter((e) => e.kind === "you").slice(before);
+		assert.deepEqual(
+			you.map((e) => [e["text"], e["files"]]),
+			[
+				["tidy the photos", undefined],
+				["second one", [file]],
+			],
+		);
+		for (let i = 0; i < 100 && lab.status.working; i++) await wait(50);
+	} finally {
+		end();
+	}
+});
+
+test("signing back in with nothing cut off offers nothing", async () => {
+	const { lab, end } = await signInLab("codex");
+	try {
+		lab.signedOut();
+		lab.signedIn();
+		const back = lab.store.events.at(-1);
+		assert.equal(back?.["text"], "Signed back in to ChatGPT.");
+		assert.equal(back?.["action"], undefined);
+	} finally {
+		end();
+	}
+});
+
+test("claude signs in with the code he pastes", async () => {
+	const { lab, signIn, end } = await signInLab("claude");
+	try {
+		const login = await signIn.begin();
+		assert.equal(
+			login.url,
+			"https://claude.example/oauth?x=1&browser=the-lab-no-browser",
+		);
+		assert.equal(login.paste, true);
+		// Asking again while it's open keeps the same one, as his code belongs to it.
+		assert.equal(await signIn.begin(), login);
+
+		await assert.rejects(signIn.paste("bad"), /That code wasn't accepted/);
+		await assert.rejects(signIn.paste("good"), /start it again/);
+
+		lab.state.signedOut = true;
+		await signIn.begin();
+		await signIn.paste("good");
+		assert.equal(lab.state.signedOut, false);
+		assert.equal(lab.store.events.at(-1)?.["text"], "Signed back in to Claude.");
+	} finally {
+		end();
+	}
+});
+
+test("codex signs in with a device code and says when it doesn't finish", async () => {
+	const { lab, signIn, end } = await signInLab("codex");
+	try {
+		lab.state.signedOut = true;
+		assert.deepEqual(await signIn.begin(), {
+			url: "https://auth.example/device",
+			code: "AB-CD",
+			paste: false,
+		});
+		for (let i = 0; i < 100 && lab.state.signedOut; i++) await wait(20);
+		assert.equal(lab.store.events.at(-1)?.["text"], "Signed back in to ChatGPT.");
+
+		env["FAKE_LOGIN"] = "no";
+		await signIn.begin();
+		for (let i = 0; i < 100 && !lab.state.signedOut; i++) await wait(20);
+		assert.equal(
+			lab.store.events.at(-1)?.["text"],
+			"The ChatGPT sign-in didn't finish (Login was not completed). Tap Sign In to fix it from here.",
+		);
+	} finally {
+		end();
+	}
+});
+
+test("the hourly check only reacts to a real answer", async () => {
+	const { lab, signIn, end } = await signInLab("codex");
+	const told = () => lab.store.events.filter((e) => e.kind === "notice").length;
+	const start = told();
+	try {
+		env["FAKE_READ"] = "offline";
+		assert.equal(await signIn.check(), "unknown");
+		assert.equal(told(), start);
+
+		env["FAKE_READ"] = JSON.stringify({ account: { type: "chatgpt" } });
+		assert.equal(await signIn.check(), "in");
+		assert.equal(told(), start);
+
+		env["FAKE_READ"] = JSON.stringify({ account: null, requiresOpenaiAuth: true });
+		assert.equal(await signIn.check(), "out");
+		assert.equal(await signIn.check(), "out");
+		assert.equal(told(), start + 1);
+
+		env["FAKE_READ"] = JSON.stringify({ account: { type: "apiKey" } });
+		assert.equal(await signIn.check(), "in");
+		assert.equal(lab.state.signedOut, false);
+		assert.equal(told(), start + 2);
+	} finally {
+		end();
+	}
+});
+
 test("codex turns map onto the phone events", async () => {
 	const root = mkdtempSync(join(tmpdir(), "lab-codex-"));
 	const fake = join(root, "fake.cjs");

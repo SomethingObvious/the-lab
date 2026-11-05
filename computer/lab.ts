@@ -206,6 +206,9 @@ export interface State {
 	// How much it asks. Kept here, where the agent can't write, rather than
 	// in settings.json in his Lab folder.
 	mode?: AskMode;
+	signedOut?: boolean;
+	// What a lost sign-in cut off, for Send Again once it's back.
+	cutOff?: { text: string; files: Attached[] }[];
 }
 
 class Channel implements AsyncIterable<SDKUserMessage> {
@@ -236,8 +239,6 @@ class Channel implements AsyncIterable<SDKUserMessage> {
 }
 
 const NOTICE: Partial<Record<SDKAssistantMessageError, string>> = {
-	authentication_failed:
-		"The Lab on the computer is signed out of Claude. Open the Claude app on the computer and ask it to sign The Lab back in, then send your message again.",
 	billing_error:
 		"The Claude plan on the computer has a billing problem. Check the account, then send your message again.",
 	rate_limit:
@@ -819,6 +820,87 @@ export class Lab {
 		this.unanswered.push(m);
 		this.ensureRunning().input.push(m);
 		return true;
+	}
+
+	private get planName() {
+		return this.opts.engine === "codex" ? "ChatGPT" : "Claude";
+	}
+
+	signedOut(
+		why = `The Lab on the computer is signed out of ${this.planName}, so messages can't run until it's back in.`,
+	) {
+		this.state.signedOut = true;
+		this.save();
+		// A page with its own notice code only knows `send`, and an empty one does nothing.
+		this.store.add({
+			kind: "notice",
+			text: `${why} Tap Sign In to fix it from here.`,
+			action: { label: "Sign In", signin: true, send: "" },
+		});
+	}
+
+	signedIn() {
+		this.state.signedOut = false;
+		// A running engine can hold on to the dead tokens, so the next message
+		// starts a new one. One partway through a task evidently isn't affected.
+		const idle = !this.status.working;
+		if (idle) {
+			this.codex?.close();
+			this.codex = null;
+			this.q?.close();
+		}
+		const { waiting, partway } = idle
+			? this.unfinished()
+			: { waiting: [], partway: false };
+		this.state.cutOff = waiting;
+		this.save();
+		const what =
+			waiting.length === 1
+				? `"${clip(waiting[0]?.text ?? "", 120)}" didn't finish`
+				: `${waiting.length} messages didn't finish`;
+		this.store.add({
+			kind: "notice",
+			signedIn: true,
+			text: `Signed back in to ${this.planName}.${
+				waiting.length === 0
+					? ""
+					: ` ${what}${partway ? ", and sending again may repeat what was already done" : ""}.`
+			}`,
+			...(waiting.length > 0
+				? { action: { label: "Send Again", resend: true, send: "" } }
+				: {}),
+		});
+	}
+
+	// He's told rather than having these run by themselves, as one can be hours
+	// old by now. Schedules get their own next run.
+	private unfinished() {
+		const texts = new Map<string, { text: string; files: Attached[] }>();
+		let partway = false;
+		const events = this.store.events;
+		for (let i = events.length - 1; i >= 0; i--) {
+			const e = events[i];
+			if (!e || (e.kind === "done" && (e["ok"] || e["stopped"]))) break;
+			if (e.kind === "step") partway = true;
+			if (e.kind === "you" && !e["scheduled"]) {
+				const text = String(e["text"] ?? "");
+				if (!texts.has(text))
+					texts.set(text, {
+						text,
+						files: (e["files"] as Attached[] | undefined) ?? [],
+					});
+			}
+		}
+		return { waiting: [...texts.values()].toReversed(), partway };
+	}
+
+	// Taken out first, so a second tap can't send them twice.
+	resend() {
+		const waiting = this.state.cutOff ?? [];
+		this.state.cutOff = [];
+		this.save();
+		for (const m of waiting) this.send(m.text, randomUUID(), m.files);
+		return waiting.length;
 	}
 
 	async stop() {
@@ -1626,8 +1708,7 @@ export class Lab {
 			case "user":
 				return this.toolResults(m);
 			case "auth_status":
-				if (m.error)
-					this.store.add({ kind: "notice", text: NOTICE.authentication_failed });
+				if (m.error) this.signedOut();
 				return;
 			case "result":
 				return this.result(m);
@@ -1641,6 +1722,7 @@ export class Lab {
 		// is still worth reading.
 		if (m.error) {
 			console.error("assistant error:", m.error);
+			if (m.error === "authentication_failed") return this.signedOut();
 			if (m.error !== "max_output_tokens") {
 				this.store.add({ kind: "notice", text: NOTICE[m.error] ?? API_TROUBLE });
 				return;
@@ -1713,7 +1795,8 @@ export class Lab {
 			stopped,
 			ms: m.duration_ms,
 			...(upto ? { upto } : {}),
-			...(ok || stopped
+			// A lost sign-in has its own notice, and this wording blames the computer.
+			...(ok || stopped || this.state.signedOut
 				? {}
 				: {
 						error:

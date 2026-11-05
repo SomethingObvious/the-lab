@@ -138,10 +138,8 @@ interface Outgoing {
 	error?: { message: string; code?: number };
 }
 
-const SIGNED_OUT =
-	"The computer is signed out of ChatGPT. Open the Codex app on the computer and sign in, then send your message again.";
+const SIGNED_OUT = "Codex is signed out.";
 const NOTICE: Record<string, string> = {
-	unauthorized: SIGNED_OUT,
 	usageLimitExceeded:
 		"The ChatGPT plan hit its usage limit for now. It will carry on once the limit resets.",
 };
@@ -577,12 +575,12 @@ export class Codex {
 		if (e === this.lastError) return;
 		this.lastError = e;
 		console.error("codex:", e.message);
-		this.lab.store.add({
-			kind: "notice",
-			text: Object.values(NOTICE).includes(e.message)
-				? e.message
-				: `Codex couldn't start (${clip(e.message, 160)}). Send your message again in a minute.`,
-		});
+		if (e.message === SIGNED_OUT) this.lab.signedOut();
+		else
+			this.lab.store.add({
+				kind: "notice",
+				text: `Codex couldn't start (${clip(e.message, 160)}). Send your message again in a minute.`,
+			});
 		this.queue = [];
 		this.lab.store.add({
 			kind: "done",
@@ -756,7 +754,8 @@ export class Codex {
 		const ok = turn.status === "completed";
 		const info =
 			typeof turn.error?.codexErrorInfo === "string" ? turn.error.codexErrorInfo : "";
-		if (NOTICE[info]) this.lab.store.add({ kind: "notice", text: NOTICE[info] });
+		if (info === "unauthorized") this.lab.signedOut();
+		else if (NOTICE[info]) this.lab.store.add({ kind: "notice", text: NOTICE[info] });
 		this.lab.store.add({
 			kind: "done",
 			ok,

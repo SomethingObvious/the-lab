@@ -75,4 +75,5 @@ No. Messages count against the same plan limits as the rest of your use, and the
 
 - The computer has to be awake. The server keeps it awake while it's plugged in and while a task runs on battery, but closing a laptop's lid still puts it to sleep.
 - The agent can still get things wrong, and an action it isn't asked about (editing a document, say) happens straight away. Windows has no local snapshots, so the Recycle Bin is the only undo there.
+- The server checks the sign-in once an hour, which costs nothing unless that check comes back empty on Claude, and then it's one very short message. If the sign-in stops working, the phone tells you and you can sign back in from there.
 - It's for one person. Whoever holds the paired phone can do anything the agent can.

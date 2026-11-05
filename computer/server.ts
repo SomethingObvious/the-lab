@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import process, { env } from "node:process";
 import { pipeline } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { tailscaleState } from "./checks.ts";
 import {
@@ -262,6 +263,7 @@ interface Check {
 	ok: boolean;
 	title: string;
 	detail?: string;
+	fix?: string;
 }
 
 interface Run {
@@ -396,6 +398,7 @@ async function serve() {
 	const { Lab } = await import("./lab.ts");
 	const { Design, checkApp, published } = await import("./design.ts");
 	const { mac, idle } = await import("./mac.ts");
+	const { SignIn } = await import("./signin.ts");
 	const { token, port, engine, relay } = config();
 	const Home = home();
 	const Dir = labDir();
@@ -948,14 +951,29 @@ async function serve() {
 		});
 	};
 
+	const signIn = new SignIn(lab, engine ?? "claude", Home);
+	// A task running is proof enough, and fails by itself if it isn't.
+	const watchSignIn = () => {
+		if (!lab.status.working)
+			signIn.check().catch((e) => console.error("sign-in check:", e));
+	};
+	setTimeout(watchSignIn, 60_000).unref();
+	setInterval(watchSignIn, 3_600_000).unref();
+
 	// What the Check Setup button reports, in his words.
 	const check = async () => {
 		const checks = await import("./checks.ts");
 		const out: Check[] = [
 			{ ok: true, title: `The Lab ${pkg.version} is running on the computer` },
 		];
+		const now = await signIn.check();
+		// Offline it can't really tell, so this goes by what's saved.
 		const signed =
-			engine === "codex" ? checks.codexSignedIn() : checks.claudeSignedIn().loggedIn;
+			now === "unknown"
+				? engine === "codex"
+					? checks.codexSignedIn()
+					: checks.claudeSignedIn().loggedIn
+				: now === "in";
 		out.push(
 			signed
 				? {
@@ -965,7 +983,8 @@ async function serve() {
 				: {
 						ok: false,
 						title: `Signed out of ${engine === "codex" ? "ChatGPT" : "Claude"}`,
-						detail: `Open the ${engine === "codex" ? "Codex" : "Claude"} app on the computer and ask it to sign The Lab back in.`,
+						detail: "Tap Fix to sign back in from here.",
+						fix: "signin",
 					},
 		);
 		out.push(...reachChecks(checks.tailscaleState), ...(await computerChecks()));
@@ -1569,6 +1588,35 @@ async function serve() {
 				if (macNow) lab.store.live(macNow);
 				return json(res, 200, {});
 			},
+		],
+		[
+			"POST /signin",
+			// The phone gives a request 8 seconds and an engine can take longer to
+			// start, so the page asks again until this has the address.
+			async (_req, res) =>
+				json(
+					res,
+					200,
+					await Promise.race([
+						signIn.begin(),
+						sleep(6000, { waiting: true }, { ref: false }),
+					]),
+				),
+		],
+		[
+			"POST /signin/code",
+			async (req, res) => {
+				const { code: pasted } = await readBody(req);
+				const clean = typeof pasted === "string" ? pasted.trim() : "";
+				if (!clean || clean.length > 4096 || /\s/.test(clean))
+					return json(res, 400, { error: "That doesn't look like a sign-in code." });
+				await signIn.paste(clean);
+				return json(res, 200, {});
+			},
+		],
+		[
+			"POST /signin/resend",
+			async (_req, res) => json(res, 200, { sent: lab.resend() }),
 		],
 		[
 			"GET /check",

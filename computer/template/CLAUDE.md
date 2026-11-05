@@ -135,6 +135,9 @@ The routes for `lab.call` are these.
 | `POST /name` | Takes `{ name }` and renames the computer on his phone, up to 40 characters. A blank name goes back to the computer's own. Returns `{ name }`, and a fresh `mac` event follows. |
 | `GET /allowed` | `{ items }`, the Always Allowed commands, each `{ command, cwd, plain, where, at }`. |
 | `POST /allowed` | Takes `{ remove }`, the index of one to take away. |
+| `POST /signin` | Starts signing the agent back in, or returns the one already open. `{ url, paste, code }`, or `{ waiting: true }` while the engine starts, so call it again. Open `url` with `lab.open`. With `paste` the page shows him a code to send to `/signin/code`, and otherwise he types `code` into the page. A `notice` with `signedIn` follows once it's done. |
+| `POST /signin/code` | Takes `{ code }`, the one he pasted. Fails with the reason if it's turned down, and that attempt is over, so call `/signin` again. |
+| `POST /signin/resend` | Sends again what the lost sign-in cut off. `{ sent }`, how many. |
 
 The events are saved in history and replayed to `subscribe` when the page loads.
 
@@ -150,7 +153,7 @@ The events are saved in history and replayed to `subscribe` when the page loads.
 | `snapshot` | `name`. A Time Machine snapshot taken before the task, for Put Things Back. |
 | `memory` | `added`, `removed`, the lines that changed in `memory.md`. |
 | `done` | `ok`, `stopped`, `ms`, `error`, and `upto`, the `id` of the last `you` event this run answered. The end of a turn. A message sent mid-task usually joins the running turn, so give this `done` to every turn since the last one up to `upto` (all of them when `upto` is missing), and leave any later turn running. |
-| `notice` | `text`, and maybe `action` (`label`, `send`), a button that sends `send` as a message. The welcome card before his first message has `first`, `title` and `points`, a list of `{ icon, text }`, with `text` as a plain version for a design that doesn't draw points. |
+| `notice` | `text`, and maybe `action` (`label`, `send`), a button that sends `send` as a message. With `action.signin` the button opens the sign-in through the `/signin` route instead, and with `action.resend` it calls `/signin/resend`. `signedIn` marks the one that says the sign-in is back. The welcome card before his first message has `first`, `title` and `points`, a list of `{ icon, text }`, with `text` as a plain version for a design that doesn't draw points. |
 | `file` | `name`, `url`, `size`, `caption`, and `fromComputer` when he sent it to the phone from the computer's window. |
 
 Every saved event also has `id` and `at` (an ISO time). These events are live only and are never replayed.
