@@ -2164,6 +2164,81 @@ test("chat commands answer without reaching the agent", async () => {
 	}
 });
 
+const buttonNamed = (name: string) => ({
+	id: "1",
+	role: "button",
+	name,
+	can: ["press"],
+});
+
+test("the computer tool picks windows and spots lasting steps", async () => {
+	const { drawn, irreversible, never, parseStep, pickWindow } = await import(
+		"./computer.ts"
+	);
+	const all = [
+		{ app: "Notes", pid: 1, title: "Groceries", window: "11" },
+		{ app: "Mail", pid: 2, title: "Inbox", window: "22" },
+		{ app: "Mail", pid: 2, title: "Draft", window: "33" },
+	];
+	assert.equal(pickWindow(all, "notes").window, "11");
+	assert.equal(pickWindow(all, "draft").window, "33");
+	assert.equal(pickWindow(all, "33").title, "Draft");
+	assert.throws(() => pickWindow(all, "mail"), /matches 2 windows/);
+	assert.throws(() => pickWindow(all, "slack"), /No open window/);
+	assert.equal(never({ app: "1Password", title: "Vault" }), true);
+	assert.equal(never({ app: "chrome", title: "ComfyUI" }, ["comfyui"]), true);
+	assert.equal(never({ app: "Notes", title: "Groceries" }), false);
+	assert.equal(irreversible({ do: "press" }, buttonNamed("Send")), true);
+	assert.equal(irreversible({ do: "click" }, buttonNamed("Delete Message")), true);
+	assert.equal(irreversible({ do: "press" }, buttonNamed("Open")), false);
+	assert.equal(irreversible({ do: "keys", keys: "enter" }), true);
+	assert.equal(irreversible({ do: "keys", keys: "ctrl+s" }), false);
+	assert.equal(irreversible({ do: "type", text: "hi\n" }), true);
+	assert.deepEqual(parseStep("set:7=a=b"), { do: "set", id: "7", text: "a=b" });
+	assert.deepEqual(parseStep("toggle:3"), { do: "press", id: "3" });
+	assert.deepEqual(parseStep("keys=ctrl+s"), { do: "keys", keys: "ctrl+s" });
+	assert.throws(() => parseStep("press:x"), /isn't a step/);
+	assert.equal(
+		drawn([{ id: "a", role: "edit", name: "Key", can: ["set"], secret: true }]),
+		'1 edit "Key" = (hidden)',
+	);
+	assert.equal(
+		judge("Bash", { command: "computer look Notes" }, W).source,
+		"a window in Notes",
+	);
+	assert.equal(verdict("computer do Notes press:4"), "go");
+	assert.equal(verdict("sudo computer do Notes press:4"), "ask");
+});
+
+test("using an app asks once a task and again before anything lasting", async () => {
+	env["FAKE_CMD"] = "brew uninstall ffmpeg";
+	const { lab, pick } = await codexLab(MODEFAKE);
+	try {
+		lab.setMode("auto");
+		lab.send("Do it", crypto.randomUUID());
+		await until(() => pick("ask").length === 1);
+		const first = String(field(present(pick("ask")[0]), "ref"));
+		const answers: boolean[] = [true, false];
+		lab.store.listen((e) => {
+			if (e.kind === "ask")
+				setTimeout(() => lab.answer(String(e["ref"]), answers.shift() ?? false), 5);
+		});
+		assert.equal(await lab.mayUse("Notes", "Use Notes", false, true), true);
+		assert.equal(await lab.mayUse("Notes", "Use Notes", false, false), true);
+		assert.equal(pick("ask").length, 2);
+		assert.equal(await lab.mayUse("Mail", 'Press "Send" in Mail', true, false), false);
+		assert.equal(pick("ask").length, 3);
+		lab.setMode("plan");
+		assert.equal(await lab.mayUse("Notes", "Use Notes", false, false), false);
+		lab.setMode("bypass");
+		assert.equal(await lab.mayUse("Mail", 'Press "Send" in Mail', true, false), true);
+		assert.equal(pick("ask").length, 3);
+		lab.answer(first, false);
+	} finally {
+		lab.close();
+	}
+});
+
 test("naming a bot that exists tells the agent to answer as it", async () => {
 	const { botsIn, botNote, namesIn } = await import("./commands.ts");
 	const root = mkdtempSync(join(tmpdir(), "lab-bots-"));

@@ -1482,6 +1482,16 @@ async function serve() {
 		["GET /events", (req, res, url) => events(req, res, url)],
 		["POST /send", send],
 		[
+			"POST /computer/ask",
+			async (req, res) => {
+				const { app, doing, final, reads } = await readBody(req);
+				if (typeof app !== "string" || typeof doing !== "string")
+					return json(res, 400, { error: "It needs an app and what to do in it." });
+				const allow = await lab.mayUse(app, doing, final === true, reads === true);
+				json(res, 200, { allow });
+			},
+		],
+		[
 			"POST /upload",
 			async (req, res, url) => {
 				const name = url.searchParams.get("name") ?? "";

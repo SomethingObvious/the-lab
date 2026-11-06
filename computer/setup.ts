@@ -1242,6 +1242,21 @@ async function windowsShell(out: string): Promise<string> {
 		join(REPO, "desktop", "windows", "TheLab.cs"),
 	]);
 	if (!built.ok) fail(`The window didn't build: ${built.out.slice(-2000)}`);
+	// The agent can still do everything else without this, so a failure only warns.
+	mkdirSync(join(LAB, "bin"), { recursive: true });
+	const helper = run(
+		"xcrun",
+		[
+			"swiftc",
+			"-O",
+			"-o",
+			join(LAB, "bin", "lab-ax"),
+			join(REPO, "desktop", "mac", "computer.swift"),
+		],
+		{ timeout: 300_000 },
+	);
+	if (!helper.ok)
+		console.log(`The computer tool didn't build: ${helper.out.slice(-1000)}`);
 	const exe = join(out, "TheLab.exe");
 	try {
 		renameSync(next, exe);

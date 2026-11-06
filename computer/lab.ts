@@ -605,6 +605,7 @@ export class Lab {
 	private readonly rulesFile: string;
 	asks = new Map<string, (allow: boolean, by: By) => void>();
 	private readonly cards = new Map<string, Card>();
+	private readonly appsAllowed = new Set<string>();
 	private readonly youIds = new Map<string, number>();
 	private unanswered: SDKUserMessage[] = [];
 	private readonly seen = new Set<string>();
@@ -758,6 +759,7 @@ export class Lab {
 		if (!this.status.working) {
 			this.taint = null;
 			this.denials = 0;
+			this.appsAllowed.clear();
 		}
 		const you = this.store.add(
 			{
@@ -1205,6 +1207,31 @@ export class Lab {
 		return existsSync(file)
 			? readFileSync(file, "utf8").trim() || "It's empty."
 			: "There's no personality set. Add one with /personality and how it should talk.";
+	}
+
+	// The computer tool asks here, once per app in a task and again before
+	// anything that looks final, so both engines get the same questions.
+	async mayUse(app: string, doing: string, final: boolean, reads: boolean) {
+		if (this.mode === "bypass") return true;
+		if (this.mode === "plan" && !reads) return false;
+		const every = final || (this.mode === "manual" && !reads);
+		if (!every && this.appsAllowed.has(app)) return true;
+		const j = {
+			undo: null,
+			effect: "send",
+			plain: doing,
+			touches: [app],
+			leaves: false,
+		} satisfies Judgement;
+		const card = {
+			...this.card("computer", {}, j),
+			facts: final
+				? ["This might not be something you can take back."]
+				: [`It can read ${app}'s window and press things in it until this task ends.`],
+		};
+		const { allow } = await this.waitFor(randomUUID(), "computer", card);
+		if (allow) this.appsAllowed.add(app);
+		return allow;
 	}
 
 	// Records a call the guard refused, and stops the task after three

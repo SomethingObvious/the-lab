@@ -37,6 +37,10 @@ A bot is a file in `~/TheLab/bots` that says who it is, and asking the agent is 
 
 The agent can run commands in a Docker container that only sees the Lab folder, or on another machine over SSH, using the `box` command. Docker or SSH has to be set up on the computer already, and SSH asks you first.
 
+## Use Other Apps
+
+The agent can read and press the controls in other apps on the computer, without screenshots and mostly without taking the mouse. You get asked the first time it uses an app in a task and again before anything that looks final, like Send or Delete. Password managers, security settings and password fields are off limits, and `neverApps` in `~/.thelab/config.json` adds to that list.
+
 ## Change the App by Asking
 
 The app's interface is a web page kept on the computer in `~/TheLab/app`. Ask for a change ("make the send button orange") and the agent edits that page, and the phone picks it up within a couple of seconds. A change that doesn't parse never reaches the phone. If one still fails to open there, the server puts the version before it back by itself and the phone shows a built-in safe screen with an undo button.

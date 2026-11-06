@@ -2521,6 +2521,18 @@ function boxing({ argv, j }: Call): Judgement {
 	return { ...j, effect: "run", plain: "Run something in the box" };
 }
 
+// The computer tool puts its own questions on the phone, app by app, so
+// there's nothing to ask here. What a window shows counts as outside content.
+function usingApps({ sub, rest, j }: Call): Judgement {
+	const app = sub === "apps" ? "" : (rest[1] ?? "");
+	return {
+		...j,
+		effect: sub === "do" ? "change" : "read",
+		plain: app ? `Use ${clip(app)}` : "See which apps are open",
+		...(app ? { source: `a window in ${clip(app)}` } : {}),
+	};
+}
+
 function command(seg: Seg, w: Where): Judgement {
 	const { argv, sudo } = unwrap(seg);
 	const head = argv[0] ?? "";
@@ -2540,6 +2552,7 @@ function command(seg: Seg, w: Where): Judgement {
 		j,
 	};
 	if (cmd === "box" && !sudo) return boxing(c);
+	if (cmd === "computer" && !sudo) return usingApps(c);
 	const odd = unknown(c) ?? batch(c);
 	if (odd) return odd;
 	const nest = nested(c);

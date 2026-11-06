@@ -34,6 +34,8 @@ export interface Config {
 	engine?: "claude" | "codex";
 	name?: string;
 	relay?: string;
+	// Apps and window titles the agent's computer tool never works, as he listed them.
+	neverApps?: string[];
 }
 
 // Written to a temp file, flushed to the disk and renamed into place, so a
