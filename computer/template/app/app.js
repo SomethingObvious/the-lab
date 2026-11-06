@@ -1225,6 +1225,18 @@ const Widgets = {
 
 // What to call the model he picked, from the last list the computer sent.
 let modelList = null;
+// The saved list names the default model without starting the agent. A page that
+// opens while the computer is away asks again once it's back.
+async function savedModels() {
+	if (modelList) return;
+	try {
+		modelList = await call("GET", "/models?saved=1");
+	} catch {
+		return;
+	}
+	drawChips();
+	drawGlance();
+}
 const modelName = () => {
 	const id = settings.model;
 	if (!id) return modelList?.defaultName || "Default";
@@ -1551,6 +1563,7 @@ function drawLink(was) {
 	$("banner-fix").hidden = link.fix !== "tailscale";
 	$("banner-retry").hidden = link.state === "unpaired";
 	if (stick && booted) toBottom();
+	if (booted && link.state === "online") savedModels();
 	if (booted && was !== link.state) {
 		if (show) say(link.detail || "Can't reach the computer.");
 		else if (link.state === "online" && (was === "offline" || was === "unpaired"))
@@ -3805,17 +3818,7 @@ lab.subscribe((e) =>
 booted = true;
 applySettings();
 refreshSchedules();
-// The saved list names the default model without starting the agent.
-(async () => {
-	try {
-		modelList ??= await call("GET", "/models?saved=1");
-	} catch {
-		// The chip says Default until the Model sheet asks again.
-		return;
-	}
-	drawChips();
-	drawGlance();
-})();
+savedModels();
 setInterval(refreshSchedules, 10 * 60_000);
 threadH = thread.clientHeight;
 measure();

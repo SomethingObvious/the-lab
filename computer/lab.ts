@@ -1046,7 +1046,7 @@ export class Lab {
 					this.snapFailed = true;
 					this.store.add({
 						kind: "notice",
-						text: `The computer couldn't take a Time Machine snapshot (${clip(why, 120)}), so the only undo for now is the Trash. Turning on Time Machine in System Settings usually fixes it.`,
+						text: `The computer couldn't take a Time Machine snapshot, so the only undo for now is the Trash. Turning on Time Machine in System Settings usually fixes it.`,
 					});
 					return;
 				}

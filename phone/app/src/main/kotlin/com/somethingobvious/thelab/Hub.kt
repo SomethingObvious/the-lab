@@ -348,7 +348,10 @@ class Computer(val slot: Int) {
     fun networkChanged(moved: Boolean) {
         if (!paired) return
         directWait = FIRST_DIRECT_TRY
-        if (moved) tunnel.retire()
+        if (moved) {
+            tunnel.retire()
+            client.connectionPool.evictAll()
+        }
         if (moved || link.optString("state") != "online") reconnectNow()
     }
 
@@ -371,8 +374,11 @@ class Computer(val slot: Int) {
         thread(name = "tunnel-upgrade", isDaemon = true) {
             val moved = tunnel.upgrade()
             main.post {
-                if (moved) connect()
-                else {
+                if (moved) {
+                    // A kept-alive connection is tied to the old session, and the stream would reuse it.
+                    client.connectionPool.evictAll()
+                    connect()
+                } else {
                     directWait = minOf(directWait * 2, LAST_DIRECT_TRY)
                     main.postDelayed(tryDirect, directWait)
                 }
@@ -532,7 +538,8 @@ class Computer(val slot: Int) {
                 main.post { if (source === eventSource) onEvent(type, data) }
             }
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
-                val code = response?.code
+                // A stream that breaks after opening still has its 200, and that's a dead link rather than an answer.
+                val code = response?.code?.takeUnless { it in 200..299 }
                 response?.close()
                 main.post { if (source === eventSource) onLost(t, code) }
             }

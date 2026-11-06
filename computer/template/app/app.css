@@ -1453,7 +1453,7 @@ input[type="search"]::-webkit-search-cancel-button {
 }
 .group {
 	display: inline-flex;
-	gap: 3px;
+	gap: 8px;
 	flex: none;
 	margin-left: auto;
 }
@@ -1481,10 +1481,6 @@ input[type="search"]::-webkit-search-cancel-button {
 .now-btn.review {
 	background: var(--on-ask);
 	color: var(--ask-hi);
-	border-radius: var(--r-card) var(--r-joint) var(--r-joint) var(--r-card);
-}
-.now-btn.review:not([hidden]) + .stop {
-	border-radius: var(--r-joint) var(--r-card) var(--r-card) var(--r-joint);
 }
 .now-btn:active {
 	border-radius: var(--r-pressed-l);

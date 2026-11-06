@@ -376,6 +376,17 @@ async function main() {
 			),
 			"the unsent message survives and goes",
 		);
+		const chip = await until(
+			() =>
+				page(
+					`return document.querySelector("#chips").textContent.includes("fake") || null`,
+				),
+			15,
+		);
+		report(
+			Boolean(chip),
+			"names the model on a page that opened while the computer was away",
+		);
 
 		sim("launch", "booted", "com.apple.Preferences");
 		// Past the 30 or so seconds iOS allows, as coming back around then is what got it killed.

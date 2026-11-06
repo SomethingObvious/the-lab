@@ -164,9 +164,10 @@ button:disabled { cursor: default; opacity: 0.55; }
 .allow { background: light-dark(#1d6b3a, #4cc17a); color: light-dark(#ffffff, #0b2414); }
 .always { min-height: 36px; padding: 0; margin-top: 10px; width: 100%; font-weight: 500;
   color: light-dark(#2f5bd3, #8fb0ff); }
-/* Always two lines tall, so a note can't move the card under his finger and
-   turn a second tap on Allow into one on Always Allow. */
-.note { margin-top: 10px; min-height: 2.9em; font-size: 13px; color: light-dark(#55555f, #b4b4bf); }
+/* A fixed height, so a note can't move the card under his finger and turn a
+   second tap on Allow into one on Always Allow. */
+.note { margin-bottom: -10px; height: 1.5em; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 13px; color: light-dark(#55555f, #b4b4bf); }
 `;
 	const heldMs = 800;
 	const buttons = ["deny", "allow", "always"];
@@ -224,8 +225,8 @@ ${own(ask, "always") === true ? `<button type="button" class="always" id="always
 			say(
 				s,
 				s.since === null && !confirmsAllow
-					? "Scroll so the whole card shows, then tap again."
-					: "Take a second to read it, then tap again.",
+					? "Scroll so all of it shows, then tap again."
+					: "Read it for a second, then tap again.",
 			);
 			return;
 		}
@@ -241,7 +242,7 @@ ${own(ask, "always") === true ? `<button type="button" class="always" id="always
 			const status = own(r, "status");
 			if (typeof status === "number" && status >= 200 && status < 300)
 				return say(s, allow ? "Allowed." : "Denied.");
-			if (status === 404) return say(s, "This was already answered or has expired.");
+			if (status === 404) return say(s, "Already answered, or it has expired.");
 			if (status === 499) {
 				s.busy = false;
 				lock(s, false);
@@ -249,7 +250,7 @@ ${own(ask, "always") === true ? `<button type="button" class="always" id="always
 			}
 			s.busy = false;
 			lock(s, false);
-			say(s, "That didn't reach the computer. Try again.");
+			say(s, "Didn't reach the computer. Try again.");
 		});
 	};
 

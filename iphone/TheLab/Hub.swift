@@ -30,6 +30,11 @@ private let stopping = session(request: 25, total: 25)
 // Listing the agent's models can take the server 20 s, on top of a relay dial.
 private let slow = session(request: 40, total: 40)
 
+// A kept-alive connection is tied to the old tunnel session, and each URLSession keeps its own.
+private func freshConnections() {
+	for s in [client, streaming, quick, stopping, slow] { s.flush {} }
+}
+
 private func folder(_ base: FileManager.SearchPathDirectory, _ path: String) -> URL {
 	let url = FileManager.default.urls(for: base, in: .userDomainMask)[0].appendingPathComponent(path)
 	try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -423,7 +428,10 @@ final class Computer {
 	func networkChanged(moved: Bool) {
 		guard paired else { return }
 		directWait = Computer.firstDirectTry
-		if moved { tunnel.retire() }
+		if moved {
+			tunnel.retire()
+			freshConnections()
+		}
 		if moved || state != "online" { reconnectNow() }
 	}
 
@@ -454,6 +462,7 @@ final class Computer {
 			let moved = tunnel.upgrade()
 			DispatchQueue.main.async { [self] in
 				if moved {
+					freshConnections()
 					connect()
 				} else {
 					directWait = min(directWait * 2, Computer.lastDirectTry)
