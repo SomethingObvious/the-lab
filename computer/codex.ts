@@ -491,7 +491,7 @@ export class Codex {
 				),
 			);
 			await this.call("initialize", {
-				clientInfo: { name: "the_lab", title: "The Lab", version: "1.1.0" },
+				clientInfo: { name: "the_lab", title: "The Lab", version: "1.2.0" },
 				capabilities: null,
 			});
 			this.write({ method: "initialized", params: {} });
