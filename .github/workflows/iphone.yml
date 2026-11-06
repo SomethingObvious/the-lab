@@ -31,7 +31,7 @@ jobs:
       - name: Build for the simulator
         working-directory: iphone
         run: |
-          xcodebuild -project TheLab.xcodeproj -target TheLab -sdk iphonesimulator -configuration Debug \
+          xcodebuild build-for-testing -project TheLab.xcodeproj -scheme TheLab -destination "generic/platform=iOS Simulator" -configuration Debug \
             ARCHS=arm64 CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- SYMROOT="$RUNNER_TEMP/build" > "$RUNNER_TEMP/xcodebuild.log" 2>&1 \
             || { grep -E 'error:' "$RUNNER_TEMP/xcodebuild.log" | sort -u; exit 1; }
       - name: Run the app in the simulator

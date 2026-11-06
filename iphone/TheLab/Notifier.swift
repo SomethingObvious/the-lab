@@ -82,7 +82,7 @@ enum Notifier {
 	// card now, unless it's already showing.
 	static func onLoaded(_ c: Computer) {
 		if Hub.foreground, Hub.on === c { return }
-		guard !pushCovers, let i = c.events.lastIndex(where: { $0["kind"] as? String == "ask" }) else { return }
+		guard !pushCovers(c), let i = c.events.lastIndex(where: { $0["kind"] as? String == "ask" }) else { return }
 		let e = c.events[i]
 		let answered = c.events[(i + 1)...].contains {
 			let k = $0["kind"] as? String
@@ -91,13 +91,18 @@ enum Notifier {
 		if !answered { ask(c, e) }
 	}
 
-	// While The Lab is in the background, a phone with push leaves it all to the computer.
-	private static var pushCovers: Bool { !Hub.foreground && Hub.pushToken != nil }
+	// While The Lab is in the background, a phone with push leaves it to any computer that can send one.
+	private static func pushCovers(_ c: Computer) -> Bool { !Hub.foreground && Hub.pushToken != nil && c.pushSends }
 
 	static func onEvent(_ c: Computer, _ e: J) {
 		let kind = e["kind"] as? String ?? ""
 		if kind == "answered", let ref = e["ref"] as? String {
 			center.removeDeliveredNotifications(withIdentifiers: [askId(c, ref)])
+			// One from a push has an identifier Apple chose, so it's found by its question.
+			center.getDeliveredNotifications { list in
+				let pushed = list.filter { $0.request.content.userInfo["ref"] as? String == ref }.map(\.request.identifier)
+				center.removeDeliveredNotifications(withIdentifiers: pushed)
+			}
 			return
 		}
 		if kind == "done" { clearAsks(c) }
@@ -106,7 +111,7 @@ enum Notifier {
 		// A scheduled run with nothing to say stays quiet.
 		if e["silent"] as? Bool == true { return }
 		// Someone at the computer with The Lab in front already sees it there.
-		if (Hub.foreground && Hub.on === c) || e["onMac"] as? Bool == true || pushCovers { return }
+		if (Hub.foreground && Hub.on === c) || e["onMac"] as? Bool == true || pushCovers(c) { return }
 		switch kind {
 		case "reply":
 			show(messageId(c), c, title: c.name, body: plain(e["text"] as? String ?? ""), category: replyCategory)
@@ -183,6 +188,24 @@ enum Notifier {
 		show("stop-\(c.id)", c, title: named(c, "Couldn't stop it"), body: "The computer didn't answer. Open The Lab to try again.")
 	}
 
+	// A frozen app's sockets can be dead without saying so, and out here nothing else
+	// would notice, as the scene never becomes active.
+	private static func wake() {
+		Hub.start()
+		if !Hub.foreground { Hub.redial() }
+	}
+
+	// iOS freezes the app as soon as done is called, so this waits for the message to
+	// go, up to the 30 or so seconds iOS allows, and says so if it didn't.
+	private static func settle(_ c: Computer, _ cid: String, tries: Int, _ done: @escaping () -> Void) {
+		if !c.queued(cid) { return done() }
+		if tries == 0 {
+			queued(c)
+			return done()
+		}
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { settle(c, cid, tries: tries - 1, done) }
+	}
+
 	static func handle(_ r: UNNotificationResponse, done: @escaping () -> Void) {
 		let info = r.notification.request.content.userInfo
 		let c = (info["computer"] as? String).map { Hub.computer($0) } ?? Hub.computer(room: info["room"] as? String)
@@ -190,7 +213,8 @@ enum Notifier {
 		switch r.actionIdentifier {
 		case allow, deny:
 			let id = r.notification.request.identifier
-			c.answer(ref, allow: r.actionIdentifier == allow) { code in
+			wake()
+			c.answer(ref, allow: r.actionIdentifier == allow, patient: true) { code in
 				if (200...299).contains(code) {
 					center.removeDeliveredNotifications(withIdentifiers: [id])
 				} else if code == 404 {
@@ -203,15 +227,11 @@ enum Notifier {
 		case reply:
 			let text = (r as? UNTextInputNotificationResponse)?.userText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 			clearReplies(c)
-			if !text.isEmpty {
-				let cid = UUID().uuidString.lowercased()
-				c.send(text, cid: cid, files: nil)
-				Hub.start()
-				DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
-					if c.queued(cid) { queued(c) }
-				}
-			}
-			done()
+			if text.isEmpty { return done() }
+			let cid = UUID().uuidString.lowercased()
+			wake()
+			c.send(text, cid: cid, files: nil)
+			settle(c, cid, tries: 50, done)
 		default:
 			Hub.switchTo(c.id)
 			done()

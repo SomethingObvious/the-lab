@@ -143,6 +143,29 @@ const onPage = (text, secs = 30) =>
 		secs,
 	);
 const launch = () => sim("launch", "booted", ID);
+// A real tap, because the card only counts a real one and nothing in the page can make it.
+const tapAllow = (udid) => {
+	const r = spawnSync(
+		"xcodebuild",
+		[
+			"test-without-building",
+			"-project",
+			join(dirname(fileURLToPath(import.meta.url)), "TheLab.xcodeproj"),
+			"-scheme",
+			"TheLab",
+			"-destination",
+			`id=${udid}`,
+			"-only-testing:TheLabUITests/AllowTests/testAllow",
+			`SYMROOT=${dirname(dirname(app))}`,
+			"ARCHS=arm64",
+			"CODE_SIGN_STYLE=Manual",
+			"CODE_SIGN_IDENTITY=-",
+		],
+		{ encoding: "utf8", timeout: 300_000, maxBuffer: 1 << 28 },
+	);
+	writeFileSync(join(shots, "uitest.log"), `${r.stdout}\n${r.stderr}`);
+	return r.status === 0;
+};
 const opened = (host, path = "/app/index.html") =>
 	until(async () => {
 		const s = await state();
@@ -270,18 +293,12 @@ async function main() {
 		);
 		report(Boolean(clear), "the Allow buttons aren't under the Needs Your OK bar");
 		shot("05-ask");
-		const ref = alpha
-			.events()
-			.split("\n")
-			.filter((l) => l.includes(`"kind":"ask"`))
-			.map((l) => JSON.parse(l).ref)
-			.pop();
-		const answered = await command({ op: "answer", ref, allow: true });
 		report(
-			answered.status === 200,
-			"the app's answer reaches the computer",
-			String(answered.status),
+			tapAllow(phone.udid),
+			"a real tap on Allow goes through the native confirmation",
 		);
+		launch();
+		await opened("main");
 		report(
 			Boolean(await onPage("Decision was accept")),
 			"answering lets the agent carry on",

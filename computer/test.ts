@@ -3764,6 +3764,70 @@ test("codex goes ahead with escalated code and network access", async () => {
 	]);
 });
 
+test("a push that gets no answer goes again on a new connection", async () => {
+	const { generateKeyPairSync } = await import("node:crypto");
+	const { createServer } = await import("node:http2");
+	const { startPush } = await import("./push.ts");
+	const dir = mkdtempSync(join(tmpdir(), "lab-push-"));
+	const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+	writeFileSync(
+		join(dir, "key.p8"),
+		privateKey.export({ type: "pkcs8", format: "pem" }),
+	);
+	writeFileSync(
+		join(dir, "apple-push.json"),
+		JSON.stringify({ keyId: "KEY", teamId: "TEAM", topic: "com.x", keyFile: "key.p8" }),
+	);
+	const ids: unknown[] = [];
+	let streams = 0;
+	const apple = createServer((req, res) => {
+		ids.push(req.headers["apns-collapse-id"]);
+		req.resume();
+		// The first never hears back, like a connection that died while the computer slept.
+		if (++streams === 1) return;
+		req.on("end", () => {
+			res.writeHead(200);
+			res.end();
+		});
+	});
+	await new Promise<void>((ok) => apple.listen(0, "127.0.0.1", ok));
+	const { port } = apple.address() as { port: number };
+	const start = (room: string) =>
+		startPush({
+			dir,
+			name: () => "Studio",
+			room: () => room,
+			url: `http://127.0.0.1:${port}`,
+			patience: 150,
+		});
+	const push = start("room-1");
+	const token = "ab".repeat(32);
+	try {
+		assert.equal(push.ready(), true);
+		push.register(token, "sandbox");
+		push.event({ kind: "reply", text: "x" });
+		await until(() => streams === 2);
+		await wait(300);
+		assert.equal(streams, 2);
+		assert.equal(ids[0], ids[1]);
+
+		const other = start("room-2");
+		other.event({ kind: "reply", text: "x" });
+		await until(() => streams === 3);
+		other.close();
+		assert.notEqual(ids[2], ids[0]);
+		assert.ok(String(ids[2]).length <= 64);
+
+		assert.equal(push.unregister(token), true);
+		push.event({ kind: "reply", text: "x" });
+		await wait(100);
+		assert.equal(streams, 3);
+	} finally {
+		push.close();
+		apple.close();
+	}
+});
+
 test("a push says what kind of thing happened and never the words", async () => {
 	const { generateKeyPairSync, verify } = await import("node:crypto");
 	const { createServer } = await import("node:http2");

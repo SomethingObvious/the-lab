@@ -16,24 +16,35 @@ private func resource(_ name: String) -> Data? {
 // files. Each computer has a host of its own, so their storage stays apart.
 private final class PageFiles: NSObject, WKURLSchemeHandler {
 	let computer: Computer
-	private let lock = NSLock()
-	private var stopped = Set<ObjectIdentifier>()
+	// Only touched on the main thread, where WebKit starts and stops tasks.
+	private var running = Set<ObjectIdentifier>()
 
 	init(_ c: Computer) { computer = c }
 
 	func webView(_ w: WKWebView, stop task: WKURLSchemeTask) {
-		lock.lock()
-		stopped.insert(ObjectIdentifier(task))
-		lock.unlock()
+		running.remove(ObjectIdentifier(task))
 	}
 
-	private func live(_ task: WKURLSchemeTask) -> Bool {
-		lock.lock()
-		defer { lock.unlock() }
-		return !stopped.contains(ObjectIdentifier(task))
+	// WebKit raises if a stopped task is touched, so the check and the call happen
+	// together on the thread that stops them. A lock would deadlock, as these calls
+	// wait for the main thread themselves.
+	private func ifRunning(_ task: WKURLSchemeTask, _ use: () -> Void) -> Bool {
+		DispatchQueue.main.sync {
+			guard running.contains(ObjectIdentifier(task)) else { return false }
+			use()
+			return true
+		}
+	}
+
+	private func end(_ task: WKURLSchemeTask) {
+		_ = ifRunning(task) {
+			task.didFinish()
+			running.remove(ObjectIdentifier(task))
+		}
 	}
 
 	func webView(_ w: WKWebView, start task: WKURLSchemeTask) {
+		running.insert(ObjectIdentifier(task))
 		DispatchQueue.global(qos: .userInitiated).async { [self] in
 			let url = task.request.url
 			let path = url?.path.removingPercentEncoding ?? url?.path ?? ""
@@ -64,11 +75,11 @@ private final class PageFiles: NSObject, WKURLSchemeHandler {
 	}
 
 	private func fail(_ task: WKURLSchemeTask, _ code: Int) {
-		guard live(task), let url = task.request.url,
+		guard let url = task.request.url,
 			let r = HTTPURLResponse(url: url, statusCode: code, httpVersion: "HTTP/1.1", headerFields: nil)
 		else { return }
-		task.didReceive(r)
-		task.didFinish()
+		_ = ifRunning(task) { task.didReceive(r) }
+		end(task)
 	}
 
 	// Video needs ranges, or WebKit never plays it.
@@ -93,16 +104,16 @@ private final class PageFiles: NSObject, WKURLSchemeHandler {
 			"Accept-Ranges": "bytes", "Cache-Control": "no-cache",
 		]
 		if partial { headers["Content-Range"] = "bytes \(from)-\(to)/\(total)" }
-		guard live(task), let r = HTTPURLResponse(url: url, statusCode: partial ? 206 : 200, httpVersion: "HTTP/1.1", headerFields: headers) else { return }
-		task.didReceive(r)
+		guard let r = HTTPURLResponse(url: url, statusCode: partial ? 206 : 200, httpVersion: "HTTP/1.1", headerFields: headers),
+			ifRunning(task, { task.didReceive(r) })
+		else { return }
 		try? h.seek(toOffset: UInt64(from))
 		var left = to - from + 1
 		while left > 0 {
-			guard live(task), let d = try? h.read(upToCount: min(left, 512 * 1024)), !d.isEmpty else { break }
-			task.didReceive(d)
+			guard let d = try? h.read(upToCount: min(left, 512 * 1024)), !d.isEmpty, ifRunning(task, { task.didReceive(d) }) else { break }
 			left -= d.count
 		}
-		if live(task) { task.didFinish() }
+		end(task)
 	}
 }
 
@@ -259,10 +270,6 @@ final class Screen: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScri
 				if let e { return done(["error": "\(e)"]) }
 				done(["value": v as? String ?? ""])
 			}
-		case "answer":
-			Hub.on.answer(c["ref"] as? String ?? "", allow: c["allow"] as? Bool ?? false, always: false) { code in
-				done(["status": code])
-			}
 		default:
 			done(["error": "no such command"])
 		}
@@ -415,15 +422,16 @@ final class Screen: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScri
 		config.allowsInlineMediaPlayback = true
 		config.mediaTypesRequiringUserActionForPlayback = []
 		config.preferences.javaScriptCanOpenWindowsAutomatically = false
-		// A fresh key for each WebView, and ask.js straight after the shim, so it
-		// holds the built-ins it needs before anything else on the page runs.
+		// A fresh key for each WebView, and ask.js before anything else, so it holds the
+		// built-ins it needs and answers through labAsk rather than the page's own channel.
 		askKey = (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
 		let ask = String(decoding: resource("ask.js") ?? Data(), as: UTF8.self).replacingOccurrences(of: "__LAB_ASK_KEY__", with: askKey)
 		let bridge = String(decoding: resource("bridge.js") ?? Data(), as: UTF8.self)
-		for source in [Screen.shim, ask, bridge] {
+		for source in [ask, Screen.shim, bridge] {
 			config.userContentController.addUserScript(WKUserScript(source: "if (location.protocol === 'lab:') {\n\(source)\n}", injectionTime: .atDocumentStart, forMainFrameOnly: true))
 		}
 		config.userContentController.add(WeakHandler(self), name: "labNative")
+		config.userContentController.addScriptMessageHandler(WeakAsk(self), contentWorld: .page, name: "labAsk")
 		let w = WKWebView(frame: view.bounds, configuration: config)
 		w.isOpaque = false
 		w.backgroundColor = .clear
@@ -546,7 +554,6 @@ final class Screen: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScri
 		case "saveShortcuts": Hub.on.saveShortcuts(m["items"] as? [Any] ?? []) { [weak self] ok in self?.answer(id, ok) }
 		case "attach": pick(id, m["kind"] as? String ?? "")
 		case "stop": Hub.on.stop { [weak self] ok in if !ok { self?.send(["kind": "stopFailed"]) } }
-		case "askInfo", "askAnswer": asked(m)
 		case "call":
 			let method = (m["method"] as? String ?? "GET").uppercased()
 			guard method == "GET" || method == "POST" else { return answer(id, nil, "Only GET and POST go to the computer.") }
@@ -577,7 +584,6 @@ final class Screen: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScri
 			watchdog?.cancel()
 			if showingApp { Hub.on.openedFine() }
 			applyTheme(m)
-			deliverCompose()
 		case "theme": applyTheme(m)
 		case "back": wantsBack = m["on"] as? Bool == true
 		case "open": open(m["url"] as? String ?? "")
@@ -634,24 +640,48 @@ final class Screen: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScri
 
 	// From <lab-ask>, which alone holds this WebView's key. Anything else is
 	// dropped without a reply. The reply never carries the key.
-	private func asked(_ m: J) {
-		guard let key = m["key"] as? String, !askKey.isEmpty, Data(key.utf8) == Data(askKey.utf8),
-			let nonce = m["nonce"] as? String, let raw = m["ref"] as? String,
-			let ref = plainName(raw), ref.count <= 200, let op = m["op"] as? String
-		else { return }
-		var out: J = ["op": op, "nonce": nonce]
+	// The reply goes through the promise postMessage returned, which the page can't
+	// read or rewrite the way it could anything sent to its own channel.
+	fileprivate func asked(_ message: WKScriptMessage, _ replyHandler: @escaping (Any?, String?) -> Void) {
+		guard message.frameInfo.isMainFrame, message.frameInfo.securityOrigin.protocol == "lab",
+			message.frameInfo.securityOrigin.host == Hub.on.host,
+			let raw = message.body as? String, let m = parseJSON(raw),
+			let key = m["key"] as? String, !askKey.isEmpty, Data(key.utf8) == Data(askKey.utf8),
+			let nonce = m["nonce"] as? String, let given = m["ref"] as? String,
+			let ref = plainName(given), ref.count <= 200, let op = m["op"] as? String
+		else { return replyHandler(nil, nil) }
+		let computer = Hub.on!
+		let reply = { (fields: J) in
+			var all = fields
+			all["op"] = op
+			all["nonce"] = nonce
+			replyHandler(jsonString(all), nil)
+		}
 		if op == "askInfo" {
-			Hub.on.askInfo(ref) { [weak self] code, text in
-				out["status"] = code
-				out["ask"] = code == 200 ? text.flatMap(parseJSON) ?? NSNull() : NSNull()
-				self?.send(out)
+			computer.askInfo(ref) { code, text in
+				reply(["status": code, "ask": code == 200 ? text.flatMap(parseJSON) ?? NSNull() : NSNull()])
 			}
-		} else {
-			guard isBool(m["allow"]), isBool(m["always"]), let allow = m["allow"] as? Bool, let always = m["always"] as? Bool else { return }
-			Hub.on.answer(ref, allow: allow, always: always) { [weak self] code in
-				out["status"] = max(code, 0)
-				self?.send(out)
-			}
+			return
+		}
+		guard op == "askAnswer", isBool(m["allow"]), isBool(m["always"]), let allow = m["allow"] as? Bool, let always = m["always"] as? Bool
+		else { return replyHandler(nil, nil) }
+		let send = {
+			computer.answer(ref, allow: allow, always: always) { code in reply(["status": max(code, 0)]) }
+		}
+		if !allow { return send() }
+		// WebKit can't tell whether something covers the card, so an Allow is asked
+		// again where the page can't reach.
+		computer.askInfo(ref) { [weak self] code, text in
+			guard code == 200, let ask = text.flatMap(parseJSON) else { return reply(["status": code]) }
+			guard let self, self.presentedViewController == nil else { return reply(["status": 499]) }
+			let detail = ask["detail"] as? String ?? ""
+			let alert = UIAlertController(
+				title: ask["title"] as? String ?? "Allow this?",
+				message: detail.count > 600 ? "\(detail.prefix(600))…" : detail,
+				preferredStyle: .alert)
+			alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in reply(["status": 499]) })
+			alert.addAction(UIAlertAction(title: always ? "Always Allow" : "Allow", style: .default) { _ in send() })
+			self.present(alert, animated: true)
 		}
 	}
 
@@ -713,12 +743,6 @@ final class Screen: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScri
 		send(r)
 	}
 
-	private func deliverCompose() {
-		guard ready, showingApp, !Hub.composing.isEmpty else { return }
-		for e in Hub.composing { send(e) }
-		Hub.composing.removeAll()
-	}
-
 	// A sheet of the app's own, so the mic never runs without him seeing it, whatever the page does.
 	private func listen(_ id: String) {
 		if let was = listening { answer(was, "") }
@@ -738,6 +762,12 @@ final class Screen: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScri
 		let said = String(text.prefix(4000))
 		if said.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
 		voice.stopSpeaking(at: .immediate)
+		// Dictation leaves the session recording, which has no way to be heard.
+		if listening == nil {
+			let session = AVAudioSession.sharedInstance()
+			try? session.setCategory(.playback, mode: .spokenAudio, options: .mixWithOthers)
+			try? session.setActive(true)
+		}
 		voice.speak(AVSpeechUtterance(string: said))
 	}
 
@@ -877,6 +907,15 @@ private final class WeakHandler: NSObject, WKScriptMessageHandler {
 	init(_ t: WKScriptMessageHandler) { target = t }
 	func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
 		target?.userContentController(c, didReceive: m)
+	}
+}
+
+private final class WeakAsk: NSObject, WKScriptMessageHandlerWithReply {
+	weak var target: Screen?
+	init(_ t: Screen) { target = t }
+	func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage, replyHandler: @escaping (Any?, String?) -> Void) {
+		guard let target else { return replyHandler(nil, nil) }
+		target.asked(m, replyHandler)
 	}
 }
 

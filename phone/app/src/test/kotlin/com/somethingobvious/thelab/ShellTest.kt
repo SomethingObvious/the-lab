@@ -13,7 +13,7 @@ class ShellTest {
             "/answer", "/ANSWER", "/answer/", "//answer", "/./answer", "/memory/../answer",
             "/%61nswer", "/%2561nswer", "/%252561nswer", "/x/%2e%2e/answer", "/x/%2E%2E/Answer",
             "/asks", "/asks/toolu_1", "/Asks/x", "/asks%2Fx", "/pair", "/pair?t=abc", "/pair/claim",
-            "/PAIR-PHONE", "/pair-phone?x=1",
+            "/PAIR-PHONE", "/pair-phone?x=1", "/push/register", "/PUSH/unregister",
             "/memory\\..\\answer", "/answer?x=1?y=2", "/answer%3Fx", "/answer#x", "/memory%", "/memory%zz",
             "/answer%00", "/%",
         )) assertTrue(p, closedToPage(p))

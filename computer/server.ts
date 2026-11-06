@@ -1495,6 +1495,16 @@ async function serve() {
 				if (!goodToken(device) || (where !== "sandbox" && where !== "production"))
 					return json(res, 400, { error: "That isn't a push token." });
 				const saved = pushes.register(device, where);
+				return json(res, saved ? (pushes.ready() ? 200 : 202) : 500, { ok: saved });
+			},
+		],
+		[
+			"POST /push/unregister",
+			async (req, res) => {
+				const { token: device } = await readBody(req);
+				if (!goodToken(device))
+					return json(res, 400, { error: "That isn't a push token." });
+				const saved = pushes.unregister(device);
 				return json(res, saved ? 200 : 500, { ok: saved });
 			},
 		],

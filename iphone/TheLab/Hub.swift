@@ -79,7 +79,6 @@ enum Hub {
 	static var pairedComputers: [Computer] { all.filter { $0.paired } }
 	static var foreground = false
 	// Text shared in, held until the design is up and ready to take it.
-	static var composing: [J] = []
 	static var pushToken: String?
 
 	private static var listeners: [UUID: (J) -> Void] = [:]
@@ -160,7 +159,6 @@ enum Hub {
 		guard let c = computers[id], c.paired, c !== on else { return }
 		on = c
 		prefs.set(id, forKey: "active")
-		composing.removeAll()
 		Notifier.clearReplies(c)
 		onSwitch?()
 	}
@@ -191,6 +189,7 @@ enum Hub {
 	}
 
 	static func forget(_ c: Computer) {
+		c.unregisterPush()
 		c.wipe()
 		if c.slot != 0 {
 			computers[c.id] = nil
@@ -200,7 +199,6 @@ enum Hub {
 		if c === on || !on.paired {
 			on = pairedComputers.first ?? computers[mainId]
 			prefs.set(on.id, forKey: "active")
-			composing.removeAll()
 			onSwitch?()
 		}
 		changed()
@@ -867,8 +865,9 @@ final class Computer {
 	}
 
 	// done gets the status, and a 404 means it was already answered or has expired.
-	func answer(_ ref: String, allow: Bool, always: Bool = false, _ done: @escaping (Int) -> Void = { _ in }) {
-		post("/answer", ["ref": ref, "allow": allow, "always": always], via: quick, done: done)
+	// Patient for an answer from a notification, as a frozen app may have to dial the relay first.
+	func answer(_ ref: String, allow: Bool, always: Bool = false, patient: Bool = false, _ done: @escaping (Int) -> Void = { _ in }) {
+		post("/answer", ["ref": ref, "allow": allow, "always": always], via: patient ? stopping : quick, done: done)
 	}
 
 	// Any JSON route on the computer, for the page's memory, schedules and setup
@@ -928,11 +927,26 @@ final class Computer {
 
 	// So the computer can reach this phone while The Lab is shut. Nothing happens
 	// on a computer with no Apple key, and a build without push never has a token.
+	var pushSends: Bool { prefs.bool(forKey: "pushSends") }
+
 	func registerPush() {
-		guard let t = Hub.pushToken, state == "online", prefs.string(forKey: "pushed") != t else { return }
+		guard let t = Hub.pushToken, state == "online" else { return }
 		post("/push/register", ["token": t, "env": Notifier.pushEnvironment], suspicious: false) { [self] code in
-			if code == 200 { prefs.set(t, forKey: "pushed") }
+			// 202 is a computer with no key from Apple, which can't send anything yet.
+			if code == 200 || code == 202 { prefs.set(code == 200, forKey: "pushSends") }
 		}
+	}
+
+	// Over a session of its own, because forgetting tears down the usual one straight
+	// away. If it can't get through, a stale token just gets refused by Apple later.
+	func unregisterPush() {
+		guard let t = Hub.pushToken, let base = tunnel.spec.flatMap({ tunnel.once($0) }) ?? url,
+			var req = authed("/push/unregister", base)
+		else { return }
+		req.httpMethod = "POST"
+		req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+		req.httpBody = jsonData(["token": t])
+		slow.dataTask(with: req).resume()
 	}
 
 	private func post(_ path: String, _ body: J, via: URLSession = client, suspicious: Bool = true, done: @escaping (Int) -> Void) {
@@ -969,20 +983,21 @@ final class Computer {
 	func upload(_ file: URL, name: String) throws -> J {
 		let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
 		if size > 100 * 1024 * 1024 { throw Trouble("\(name) is over the 100 MB limit.") }
-		guard let base = url else { throw Trouble("This phone isn't paired with a computer yet.") }
+		guard url != nil else { throw Trouble("This phone isn't paired with a computer yet.") }
 		let q = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? "file"
-		guard var req = authed("/upload?name=\(q)", base) else { throw Trouble("That file's name can't be sent.") }
-		req.httpMethod = "POST"
-		req.setValue(mime(name), forHTTPHeaderField: "Content-Type")
-		func attempt() -> (Int, Data?, Error?) {
-			wait(req) { r, done in client.uploadTask(with: r, fromFile: file, completionHandler: done) }
+		// Built fresh each go, as the first failure can have moved the port.
+		func attempt() throws -> (Int, Data?, Error?) {
+			guard let base = url, var req = authed("/upload?name=\(q)", base) else { throw Trouble("That file's name can't be sent.") }
+			req.httpMethod = "POST"
+			req.setValue(mime(name), forHTTPHeaderField: "Content-Type")
+			return wait(req) { r, done in client.uploadTask(with: r, fromFile: file, completionHandler: done) }
 		}
 		// A second go after a drop, on whatever link the first failure brought up.
-		var r = attempt()
+		var r = try attempt()
 		if r.2 != nil {
 			DispatchQueue.main.async { [self] in suspect() }
 			Thread.sleep(forTimeInterval: 3)
-			r = attempt()
+			r = try attempt()
 			if r.2 != nil { throw Trouble("Couldn't reach the computer, so \(name) wasn't attached.") }
 		}
 		let j = r.1.flatMap { parseJSON(String(decoding: $0, as: UTF8.self)) }

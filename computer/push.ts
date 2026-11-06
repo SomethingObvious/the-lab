@@ -2,7 +2,7 @@
 // Apple's push service. Android doesn't need this, as its app keeps its own link
 // open. Everything sent passes through Apple, so a push only ever says what kind
 // of thing happened, and the words wait in the app.
-import { createPrivateKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { type ClientHttp2Session, connect } from "node:http2";
 import { isAbsolute, join } from "node:path";
@@ -11,7 +11,13 @@ import { saveFile } from "./config.ts";
 type Env = "sandbox" | "production";
 type Apple = { keyId: string; teamId: string; topic: string; keyFile: string };
 type Event = { kind: string; [k: string]: unknown };
-type Options = { dir: string; name: () => string; room: () => string; url?: string };
+type Options = {
+	dir: string;
+	name: () => string;
+	room: () => string;
+	url?: string;
+	patience?: number;
+};
 
 const BODY: Record<string, string> = {
 	ask: "Needs your OK",
@@ -27,6 +33,9 @@ const URLS: Record<Env, string> = {
 };
 // A question lapses on the computer after 5 minutes, so it shouldn't arrive later.
 const ASK_LIFE = 300;
+// A connection that died while the computer slept still looks open, so an answer
+// that takes this long means going again on a new one.
+const PATIENCE = 15_000;
 
 const base64url = (b: Buffer | string) => Buffer.from(b).toString("base64url");
 
@@ -87,7 +96,7 @@ export function startPush(o: Options) {
 		return s;
 	};
 
-	const deliver = (a: Apple, token: string, env: Env, e: Event) => {
+	const deliver = (a: Apple, token: string, env: Env, e: Event, again = true) => {
 		const payload = {
 			aps: {
 				alert: { title: o.name() || "The Lab", body: BODY[e.kind] },
@@ -97,7 +106,8 @@ export function startPush(o: Options) {
 			room: o.room(),
 			...(e.kind === "ask" ? { ref: String(e["ref"] ?? "") } : {}),
 		};
-		const req = session(o.url ?? URLS[env]).request({
+		const link = session(o.url ?? URLS[env]);
+		const req = link.request({
 			":method": "POST",
 			":path": `/3/device/${token}`,
 			authorization: `bearer ${jwt(a)}`,
@@ -107,11 +117,31 @@ export function startPush(o: Options) {
 			"apns-expiration": String(
 				e.kind === "ask" ? Math.floor(Date.now() / 1000) + ASK_LIFE : 0,
 			),
-			// A newer one of the same kind replaces it, so a long task doesn't pile up.
-			"apns-collapse-id": e.kind === "ask" ? `ask-${String(e["ref"])}` : e.kind,
+			// A newer one of the same kind replaces it, so a long task doesn't pile up. It
+			// has the room in it so two computers don't replace each other's, and Apple
+			// allows 64 bytes.
+			"apns-collapse-id": createHash("sha256")
+				.update(`${o.room()}:${e.kind === "ask" ? `ask-${String(e["ref"])}` : e.kind}`)
+				.digest("base64url"),
 		});
 		let status = 0;
 		let body = "";
+		let over = false;
+		const resend = (why: string) => {
+			if (over) return;
+			over = true;
+			console.error(`sending a push: ${why}`);
+			if (!again) return;
+			try {
+				deliver(a, token, env, e, false);
+			} catch (err) {
+				console.error("sending a push:", err);
+			}
+		};
+		req.setTimeout(o.patience ?? PATIENCE, () => {
+			resend("Apple's push service went quiet");
+			link.destroy();
+		});
 		req.setEncoding("utf8");
 		req.on("response", (h) => {
 			status = Number(h[":status"]);
@@ -119,8 +149,11 @@ export function startPush(o: Options) {
 		req.on("data", (d) => {
 			body += d;
 		});
-		req.on("error", (err) => console.error("sending a push:", err.message));
+		req.on("error", (err) => resend(err.message));
 		req.on("end", () => {
+			if (over) return;
+			if (status === 0) return resend("the connection closed with no answer");
+			over = true;
 			if (status === 200) return;
 			if (status === 410 || body.includes("BadDeviceToken")) {
 				const left = tokens();
@@ -141,6 +174,14 @@ export function startPush(o: Options) {
 			all[token] = env;
 			return saveTokens(all);
 		},
+		unregister(token: string) {
+			const all = tokens();
+			if (!(token in all)) return true;
+			delete all[token];
+			return saveTokens(all);
+		},
+		// Whether a push can go at all, so the phone knows to make its own notifications.
+		ready: () => Boolean(apple()),
 		// The phone leaves a push alone while The Lab is open, so this always sends.
 		event(e: Event) {
 			if (!BODY[e.kind] || e["silent"] || e["onMac"]) return;

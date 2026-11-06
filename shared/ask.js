@@ -72,7 +72,7 @@
 	const heard = (e) => {
 		let raw;
 		if (e instanceof MsgEvent) raw = apply(dataOf, e, []);
-		else raw = e?.data;
+		else raw = typeof e === "string" ? e : e?.data;
 		let m;
 		try {
 			m = typeof raw === "string" ? parse(raw) : raw;

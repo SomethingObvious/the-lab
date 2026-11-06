@@ -954,7 +954,8 @@ internal fun closedToPage(path: String): Boolean {
     }
     val route = "/" + parts.joinToString("/")
     return route == "/answer" || route == "/asks" || route.startsWith("/asks/") ||
-        route == "/pair" || route.startsWith("/pair/") || route == "/pair-phone"
+        route == "/pair" || route.startsWith("/pair/") || route == "/pair-phone" ||
+        route == "/push" || route.startsWith("/push/")
 }
 
 // Percent escapes as UTF-8, or null for a stray % that isn't one.

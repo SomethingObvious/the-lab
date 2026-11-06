@@ -796,7 +796,7 @@ final class Sock {
 		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
 	}
 
-	deinit { close() }
+	deinit { Darwin.close(fd) }
 
 	static func connect(host: String, port: UInt16, ms: Int32) throws -> Sock {
 		var addr = sockaddr_in()
@@ -860,13 +860,14 @@ final class Sock {
 		}
 	}
 
+	// Only ends the connection. Another thread can be inside a read or a write, and
+	// the number has to stay ours until it's done, or a new connection could be given it.
 	func close() {
 		lock.lock()
 		defer { lock.unlock() }
 		if closed { return }
 		closed = true
 		shutdown(fd, SHUT_RDWR)
-		Darwin.close(fd)
 	}
 }
 

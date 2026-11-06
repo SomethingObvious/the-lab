@@ -39,6 +39,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate, UNUserNotificationC
 
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 	var window: UIWindow?
+	private var wasAway = false
 
 	func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
 		guard let s = scene as? UIWindowScene else { return }
@@ -57,8 +58,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 	func sceneDidBecomeActive(_ scene: UIScene) {
 		Hub.foreground = true
 		Hub.start()
-		// A suspended app's sockets can be dead without saying so.
-		if Hub.paired { Hub.redial() }
+		// A suspended app's sockets can be dead without saying so. A look at Control
+		// Center suspends nothing, and a redial then would kill an upload under way.
+		if wasAway, Hub.paired { Hub.redial() }
+		wasAway = false
 		Screen.current?.becameActive()
 	}
 
@@ -69,6 +72,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 	// No background task here. On GitHub's Macs the app stayed frozen while holding one,
 	// and iOS killed it for not letting go. What's unsent just waits in the outbox.
 	func sceneDidEnterBackground(_ scene: UIScene) {
+		wasAway = true
 		Screen.current?.wentAway()
 	}
 }
