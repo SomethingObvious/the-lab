@@ -3763,3 +3763,107 @@ test("codex goes ahead with escalated code and network access", async () => {
 		["Decision was accept"],
 	]);
 });
+
+test("a push says what kind of thing happened and never the words", async () => {
+	const { generateKeyPairSync, verify } = await import("node:crypto");
+	const { createServer } = await import("node:http2");
+	const { startPush, goodToken } = await import("./push.ts");
+	const dir = mkdtempSync(join(tmpdir(), "lab-push-"));
+	const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+	writeFileSync(
+		join(dir, "key.p8"),
+		privateKey.export({ type: "pkcs8", format: "pem" }),
+	);
+	const seen: { path: string; headers: Record<string, unknown>; body: string }[] = [];
+	const apple = createServer((req, res) => {
+		let body = "";
+		req.on("data", (d) => {
+			body += d;
+		});
+		req.on("end", () => {
+			seen.push({ path: String(req.headers[":path"]), headers: req.headers, body });
+			const gone = String(req.headers[":path"]).endsWith("dead");
+			res.writeHead(gone ? 410 : 200);
+			res.end(gone ? '{"reason":"Unregistered"}' : "");
+		});
+	});
+	await new Promise<void>((ok) => apple.listen(0, "127.0.0.1", ok));
+	const { port } = apple.address() as { port: number };
+	const push = startPush({
+		dir,
+		name: () => "Studio",
+		room: () => "room-1",
+		url: `http://127.0.0.1:${port}`,
+	});
+	const live = "ab".repeat(32);
+	const dead = `${"cd".repeat(32)}dead`;
+	try {
+		assert.equal(goodToken(live), true);
+		assert.equal(goodToken("../x"), false);
+		assert.equal(push.register(live, "sandbox"), true);
+
+		// With no key from Apple, nothing goes anywhere.
+		push.event({ kind: "reply", text: "secret words" });
+		await wait(100);
+		assert.equal(seen.length, 0);
+
+		writeFileSync(
+			join(dir, "apple-push.json"),
+			JSON.stringify({
+				keyId: "KEY",
+				teamId: "TEAM",
+				topic: "com.x",
+				keyFile: "key.p8",
+			}),
+		);
+		push.event({ kind: "reply", text: "secret words" });
+		push.event({ kind: "ask", ref: "r1", title: "secret title", why: "secret why" });
+		push.event({ kind: "reply", text: "quiet", silent: true });
+		push.event({ kind: "reply", text: "at the computer", onMac: true });
+		push.event({ kind: "step", text: "not worth a buzz" });
+		await until(() => seen.length >= 2);
+		await wait(100);
+		assert.equal(seen.length, 2);
+		assert.doesNotMatch(seen.map((s) => s.body).join(), /secret|quiet/);
+		const asked = JSON.parse(seen.find((s) => s.body.includes("r1"))?.body ?? "{}");
+		assert.deepEqual(asked.aps.alert, { title: "Studio", body: "Needs your OK" });
+		assert.equal(asked.room, "room-1");
+		assert.equal(seen[0]?.path, `/3/device/${live}`);
+		assert.equal(seen[0]?.headers["apns-topic"], "com.x");
+
+		const [head, claims, sig] = String(seen[0]?.headers["authorization"])
+			.replace("bearer ", "")
+			.split(".");
+		assert.equal(
+			JSON.parse(Buffer.from(head ?? "", "base64url").toString()).kid,
+			"KEY",
+		);
+		assert.equal(
+			JSON.parse(Buffer.from(claims ?? "", "base64url").toString()).iss,
+			"TEAM",
+		);
+		assert.equal(
+			verify(
+				"sha256",
+				Buffer.from(`${head}.${claims}`),
+				{ key: publicKey, dsaEncoding: "ieee-p1363" },
+				Buffer.from(sig ?? "", "base64url"),
+			),
+			true,
+		);
+
+		// A phone that's gone is dropped, so it isn't tried again.
+		push.register(dead, "production");
+		push.event({ kind: "file", name: "a.png" });
+		await until(() => seen.length >= 4);
+		await wait(100);
+		const before = seen.length;
+		push.event({ kind: "notice", text: "secret" });
+		await until(() => seen.length > before);
+		await wait(100);
+		assert.equal(seen.length, before + 1);
+	} finally {
+		push.close();
+		apple.close();
+	}
+});

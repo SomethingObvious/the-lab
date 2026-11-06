@@ -36,6 +36,7 @@ import {
 import { ASK_MODES } from "./guard.ts";
 import { EFFORTS, type Live } from "./lab.ts";
 import { awake, type Mac } from "./mac.ts";
+import { goodToken, startPush } from "./push.ts";
 import {
 	cleanSchedules,
 	due,
@@ -864,13 +865,19 @@ async function serve() {
 		lanPort: port + 1,
 		lanHost: setting("LAB_LAN_HOST"),
 	});
+	const pushes = startPush({
+		dir: Dir,
+		name: () => macNow?.name ?? "",
+		room: () => tunnel.spec().room,
+	});
+	lab.store.listen((e) => pushes.event({ ...e }));
 	const reach = () => ({
 		kind: "reach" as const,
 		lan: tunnel.spec().lan,
 		relay: relay ?? null,
 	});
 	// Whether a phone has The Lab connected right now, for the desktop's Phone
-	// panel. The phone's own client is OkHttp, and setup's checks use the same
+	// panel. The phones' own clients are OkHttp and CFNetwork, and setup's checks use the same
 	// token from Node, so the user agent is what tells them apart.
 	let phones = 0;
 	const phoneNow = () => ({
@@ -955,7 +962,7 @@ async function serve() {
 		res.write(
 			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow()] })}\n\n`,
 		);
-		const phone = /okhttp/i.test(req.headers["user-agent"] ?? "");
+		const phone = /okhttp|cfnetwork/i.test(req.headers["user-agent"] ?? "");
 		if (phone && ++phones === 1) lab.store.live(phoneNow());
 		// Replay and subscribe in the same tick, so nothing can land in between.
 		for (const e of lab.store.since(Number.isFinite(after) ? after : null))
@@ -1481,6 +1488,16 @@ async function serve() {
 		["GET /pair-phone", pairPhone],
 		["GET /events", (req, res, url) => events(req, res, url)],
 		["POST /send", send],
+		[
+			"POST /push/register",
+			async (req, res) => {
+				const { token: device, env: where } = await readBody(req);
+				if (!goodToken(device) || (where !== "sandbox" && where !== "production"))
+					return json(res, 400, { error: "That isn't a push token." });
+				const saved = pushes.register(device, where);
+				return json(res, saved ? 200 : 500, { ok: saved });
+			},
+		],
 		[
 			"POST /computer/ask",
 			async (req, res) => {

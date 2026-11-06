@@ -3,3 +3,5 @@
 wdth = "wdth"
 # The format flag of whoami and tasklist on Windows, as in /fo csv.
 fo = "fo"
+# How simctl names a simulator in its JSON.
+udid = "udid"

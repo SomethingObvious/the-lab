@@ -1,4 +1,4 @@
-// window.lab, injected by the Android shell before any page script runs.
+// window.lab, injected by the phone app before any page script runs.
 // The design talks to the computer only through this, so a design can't break the
 // connection, the outbox or notifications.
 (() => {
@@ -172,7 +172,7 @@
 	addEventListener("click", () => retheme(450), true);
 
 	globalThis.lab = {
-		platform: "android",
+		platform: globalThis.labPlatform || "android",
 		// fn gets every event in order: the history first, then live ones.
 		subscribe(fn) {
 			listeners.add(fn);

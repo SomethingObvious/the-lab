@@ -22,8 +22,8 @@ repos:
     rev: v2.4.1
     hooks:
       - id: codespell
-        # The same Windows flag that .typos.toml allows, and lockfiles are hashes.
-        args: [--ignore-words-list=fo]
+        # The same Windows flag that .typos.toml allows, a keyword of Swift, and lockfiles are hashes.
+        args: ["--ignore-words-list=fo,inout"]
         exclude: package-lock\.json$
 
   - repo: https://github.com/crate-ci/typos

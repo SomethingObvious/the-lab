@@ -22,7 +22,7 @@
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   h1 { font-size: 22px; margin: 0 0 4px; font-weight: 650; letter-spacing: -0.01em; }
   .why { margin: 0; color: var(--dim); }
-  .link { margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .link { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
   .online .dot { background: var(--done); }
   .offline .dot, .unpaired .dot { background: var(--alert); }
@@ -114,7 +114,7 @@
         $('link').className = `link ${e.state}`;
         $('linkText').textContent = e.detail || e.state;
         $('fix').hidden = e.fix !== 'tailscale';
-        if (e.state === 'unpaired') $('why').textContent = "This phone is not paired with a computer yet.";
+        if (e.state === 'unpaired') $('why').textContent = "Not paired yet.";
         return;
       }
       case 'status': $('stop').hidden = !e.working; return;

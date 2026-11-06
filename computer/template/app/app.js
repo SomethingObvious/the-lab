@@ -1084,7 +1084,7 @@ const Widgets = {
 			!mac
 				? null
 				: !mac.battery
-					? { value: "Plugged in", label: "No battery", icon: "bolt" }
+					? { value: "Plugged in", short: "Power", label: "No battery", icon: "bolt" }
 					: {
 							value: `${mac.battery.percent}%`,
 							label: mac.battery.charging ? "Charging" : "On battery",
@@ -1439,14 +1439,22 @@ function fold() {
 	if (!pinned) thread.scrollTop += thread.getBoundingClientRect().top - topBefore;
 }
 let threadH = 0;
+let threadTop = 0;
 // Set once the shell says the whole history is in, so an empty list
 // isn't claimed while it's still on its way.
 let loaded = false;
 thread.addEventListener(
 	"scroll",
 	() => {
-		if (thread.clientHeight === threadH) pinned = nearBottom();
+		// Only scrolling up leaves the newest message. A card that has just grown also
+		// reads as far from the bottom, and letting go then leaves its buttons under the bar.
+		if (
+			thread.clientHeight === threadH &&
+			(thread.scrollTop < threadTop || nearBottom())
+		)
+			pinned = nearBottom();
 		threadH = thread.clientHeight;
+		threadTop = thread.scrollTop;
 		fold();
 		if (pinned && !frame && !filling && !overlay()) trim();
 	},
@@ -1758,6 +1766,12 @@ const Settings = [
 		label: "Sum Up What Happened While You Were Away",
 	},
 ];
+// An iPhone has no card that sits in the notifications.
+if (lab.platform === "ios")
+	Settings.splice(
+		Settings.findIndex((r) => r.key === "statusCard"),
+		1,
+	);
 const urlTheme = root.dataset.theme;
 function applySettings() {
 	const s = settings;
@@ -3714,13 +3728,10 @@ text.addEventListener("input", () => {
 	canSend();
 	keep(text.value);
 });
-if (lab.platform === "android") text.enterKeyHint = "enter";
+const onPhone = lab.platform === "android" || lab.platform === "ios";
+if (onPhone) text.enterKeyHint = "enter";
 text.addEventListener("keydown", (ev) => {
-	if (
-		ev.key === "Enter" &&
-		!ev.shiftKey &&
-		(lab.platform !== "android" || settings.enterSends)
-	) {
+	if (ev.key === "Enter" && !ev.shiftKey && (!onPhone || settings.enterSends)) {
 		ev.preventDefault();
 		$("form").requestSubmit();
 	}

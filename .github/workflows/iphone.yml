@@ -1,0 +1,47 @@
+name: iPhone
+on:
+  push:
+    branches: ["iphone*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: computer
+      - run: npm ci
+        working-directory: relay
+      - name: Start a local relay
+        working-directory: relay
+        run: |
+          nohup npx wrangler dev --port 8797 --ip 127.0.0.1 > "$RUNNER_TEMP/relay.log" 2>&1 &
+          for i in $(seq 1 60); do curl -fs http://127.0.0.1:8797/ && break; sleep 1; done
+      - name: Test the core against the real tunnel
+        working-directory: iphone
+        env:
+          LAB_TEST_RELAY: http://127.0.0.1:8797
+        run: swift test
+      - name: Build for the simulator
+        working-directory: iphone
+        run: |
+          xcodebuild -project TheLab.xcodeproj -target TheLab -sdk iphonesimulator -configuration Debug \
+            ARCHS=arm64 CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- SYMROOT="$RUNNER_TEMP/build" > "$RUNNER_TEMP/xcodebuild.log" 2>&1 \
+            || { grep -E 'error:' "$RUNNER_TEMP/xcodebuild.log" | sort -u; exit 1; }
+      - name: Run the app in the simulator
+        run: node iphone/check.mjs "$RUNNER_TEMP/build/Debug-iphonesimulator/TheLab.app" "$RUNNER_TEMP/shots"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-check
+          path: |
+            ${{ runner.temp }}/shots
+            ${{ runner.temp }}/relay.log
+            ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore

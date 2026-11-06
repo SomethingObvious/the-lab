@@ -143,7 +143,7 @@ The page talks to the phone and the server only through `window.lab`, which is t
 | `lab.reportError(message, where)` | Reports an error the page caught itself, so it reaches you. Errors it doesn't catch are reported anyway. |
 | `lab.onBack(fn)` | Set it only while something is open that back should close, and pass `null` once it's closed, so back can leave the app with the system's own animation. |
 | `lab.ready()` | Tells the phone the page has drawn. |
-| `lab.platform` | `'android'` on the phone, `'desktop'` in The Lab's window on this computer, `'web'` in a browser. |
+| `lab.platform` | `'android'` or `'ios'` on the phone, `'desktop'` in The Lab's window on this computer, `'web'` in a browser. |
 | `lab.os` | `'windows'` or `'mac'` in The Lab's window, empty elsewhere. |
 | `lab.window` | The window's own title bar buttons, `minimize()`, `maximize()` (which also restores) and `close()`, plus `drag()` for a Mac, whose WebKit has no `app-region`, and `tint(hex)`, the title bar's colour. `null` anywhere but The Lab's window. |
 | `lab.reveal(url)` | Shows a file from a `file` event or an attachment in File Explorer or the Finder. It never opens or runs the file. Desktop only. |

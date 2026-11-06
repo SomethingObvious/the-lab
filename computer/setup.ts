@@ -10,6 +10,7 @@
 //   node setup.ts relay        put up the relay on Cloudflare, or --url to use one that's already up
 //   node setup.ts tailscale    HTTPS address for the phone through tailscale serve, if he has Tailscale
 //   node setup.ts phone        build the app, install it over USB and pair it
+//   node setup.ts iphone       on a Mac with Xcode, build the iPhone app and install it (--team TEAMID)
 //   node setup.ts pair         open a QR code on the computer that pairs the phone again
 //   node setup.ts stop         stop the server, before an update replaces the source
 //   node setup.ts remove       stop the server and take it out of the sign-in items
@@ -1070,6 +1071,76 @@ async function pair() {
 	);
 }
 
+// Signing needs his Apple account in Xcode, and push needs a paid one, so it
+// only asks for that when he has given a key for it.
+async function iphone() {
+	say(
+		"The iPhone app isn't recommended. It has never run on a real iPhone, and an install on a free Apple account stops opening after 7 days. SETUP.md has the rest.",
+	);
+	if (!MAC) fail("The iPhone app can only be built on a Mac with Xcode.");
+	if (!run("xcodebuild", ["-version"]).ok)
+		fail(
+			"This needs Xcode. Install it from the App Store, open it once, then run this again.",
+		);
+	const team = flag("team");
+	if (!team)
+		fail(
+			"Run this with --team and his Apple team ID. It's on the Membership page at developer.apple.com, or under Signing in Xcode for a free account.",
+		);
+	const push = existsSync(join(LAB, "apple-push.json"));
+	const project = join(REPO, "iphone");
+	const out = join(LAB, "iphone-build");
+	say("Building the iPhone app");
+	const build = spawnSync(
+		"xcodebuild",
+		[
+			"-project",
+			"TheLab.xcodeproj",
+			"-target",
+			"TheLab",
+			"-sdk",
+			"iphoneos",
+			"-configuration",
+			"Release",
+			"-allowProvisioningUpdates",
+			`DEVELOPMENT_TEAM=${team}`,
+			`SYMROOT=${out}`,
+			...(flag("bundle") ? [`PRODUCT_BUNDLE_IDENTIFIER=${flag("bundle")}`] : []),
+			...(push ? ["CODE_SIGN_ENTITLEMENTS=TheLab/Push.entitlements"] : []),
+		],
+		{ cwd: project, stdio: "inherit" },
+	);
+	if (build.status !== 0)
+		fail(
+			"The build failed. If the output above mentions signing, open Xcode, add his Apple account under Settings, Accounts, then run this again.",
+		);
+	const listed = run("xcrun", ["devicectl", "list", "devices"]);
+	const device = /[0-9A-F]{8}-[0-9A-F-]{20,}/i.exec(
+		listed.out
+			.split("\n")
+			.find((l) => /iphone/i.test(l) && /connected|available/i.test(l)) ?? "",
+	)?.[0];
+	if (!device)
+		fail(
+			"Plug the iPhone in with a cable, unlock it, tap Trust on it, then run this again.",
+		);
+	const app = join(out, "Release-iphoneos", "TheLab.app");
+	const inst = run("xcrun", [
+		"devicectl",
+		"device",
+		"install",
+		"app",
+		"--device",
+		device,
+		app,
+	]);
+	if (!inst.ok) fail(`Installing on the iPhone failed: ${inst.out}`);
+	say(
+		`Installed. On a free Apple account the app stops opening after 7 days until this is run again.${push ? "" : " With no apple-push.json, notifications only arrive while The Lab is open."}`,
+	);
+	await pair();
+}
+
 // ---------- stop and remove ----------
 
 function stopServer() {
@@ -1381,6 +1452,7 @@ const steps: Record<string, () => Promise<void>> = {
 	relay,
 	tailscale: async () => tailscale(),
 	phone,
+	iphone,
 	pair,
 	stop,
 	remove: async () => remove(),

@@ -128,6 +128,26 @@ If the phone ever loses its pairing (a new phone, or the app was reinstalled), r
 
 One phone can hold several computers. Run this setup on the other computer as well, and the phone asks whether to add it, with the first computer left as it was. Both stay connected at once, each with its own design and history, and he switches between them under Your Computers in the menu or by long-pressing the app icon. A computer can have up to 8 phones.
 
+### The iPhone Code (Not Recommended)
+
+**Do not set this up and do not offer it. If the owner only has an iPhone, tell them The Lab needs an Android phone.** The code has never run on a real iPhone, only in Apple's simulator. An install on a free Apple account stops opening after 7 days, and without the paid developer account nothing can tell them the agent is waiting for an OK while The Lab is in the background. Only carry on if the owner has heard all of that and still asks for it, and treat it as an unsupported experiment.
+
+The iPhone app has to be built on a Mac with Xcode, so on a Windows PC it needs a Mac to build on. He needs an Apple account signed in under Xcode's Settings, Accounts. Plug the iPhone in, unlock it, tap Trust, and turn on Developer Mode under Settings, Privacy & Security if the phone asks. Then:
+
+```sh
+node setup.ts iphone --team HIS_TEAM_ID
+```
+
+It installs the app and opens the pairing code. He points the iPhone's camera at it and taps the link. A free Apple account has to reinstall this way every 7 days. The phone reaches the computer the same ways as Android, except that it can't look for the computer on the Wi-Fi when the computer's address changes, so it relies on the address the computer last told it and on the relay.
+
+An iPhone freezes apps in the background, so notifications while The Lab is shut need Apple's push service, which takes the paid developer account. If he has one and wants that, have him create an APNs key on the developer site (Certificates, Identifiers & Profiles, Keys). Put the `.p8` file he downloads in `~/.thelab` and write `~/.thelab/apple-push.json`, then restart the server and run `node setup.ts iphone` again:
+
+```json
+{ "keyId": "ABC123DEFG", "teamId": "HIS_TEAM_ID", "topic": "com.somethingobvious.thelab", "keyFile": "AuthKey_ABC123DEFG.p8" }
+```
+
+If `--bundle` gave the app a different ID, `topic` has to match it. A push only ever says what kind of thing happened and never carries his words, because it passes through Apple.
+
 ### Tailscale (Optional)
 
 If he already uses Tailscale, the phone can reach the computer over it as well, with no change on the phone. `node setup.ts tailscale` also gives the server an HTTPS address through `tailscale serve`, which an older pairing used. Neither is needed with the relay.

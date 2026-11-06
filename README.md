@@ -79,7 +79,12 @@ No. The agent runs on your own Mac or PC, and the phone reaches it directly at h
 
 ### Is There an iPhone App?
 
-No, only Android for now.
+Not one you should use. **Use an Android phone. We recommend that people and agents do not set up or rely on the iPhone code.** It is unsupported, and it stays in `iphone/` only for anyone who wants to read it or take it further.
+
+- It has never run on a real iPhone, only in Apple's simulator, and its push notifications have only been tried against a stand-in for Apple's service.
+- Building it takes a Mac with Xcode, and an install on a free Apple account stops opening after 7 days until it is installed again from that Mac.
+- Without the $99 a year developer account you won't hear anything while The Lab is frozen in the background, including when the agent is waiting for your OK.
+- Giving it to other people takes that same paid account. TestFlight builds expire after 90 days, and Apple may refuse it for the App Store because the app rewrites its own screen.
 
 ### Is It on the Play Store?
 
