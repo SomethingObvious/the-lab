@@ -1848,7 +1848,7 @@ export class Lab {
 		this.gone = false;
 		const lab = createSdkMcpServer({
 			name: "lab",
-			version: "1.2.1",
+			version: "1.3.0",
 			tools: [
 				defineTool(
 					"send_to_phone",
