@@ -37,7 +37,7 @@ import {
 import { cleanSettings, DEFAULTS } from "./settings.ts";
 import { title } from "./steps.ts";
 import { trash } from "./trash.ts";
-import { fitTemplate, merge3, syncHome } from "./update.ts";
+import { fitTemplate, hunks, merge3, syncHome } from "./update.ts";
 
 // The value a test expects to be there, failing the test when it isn't.
 const present = <T>(x: T | null | undefined): T => {
@@ -1141,6 +1141,36 @@ test("a change to app/ can't add lint findings over the version the phone has", 
 	rmSync(root, { recursive: true, force: true });
 });
 
+test("the line diff rebuilds the other side and keeps it small", () => {
+	let seed = 7;
+	const rand = (n: number) => {
+		seed = (seed * 1103515245 + 12345) % 2147483648;
+		return seed % n;
+	};
+	for (let round = 0; round < 300; round++) {
+		const a = Array.from({ length: rand(40) }, () => String(rand(6)));
+		const b = [...a];
+		for (let k = rand(6); k > 0; k--) {
+			const at = rand(b.length + 1);
+			if (rand(2)) b.splice(at, 1);
+			else b.splice(at, 0, String(rand(6)));
+		}
+		const out: string[] = [];
+		let at = 0;
+		for (const h of hunks(a, b)) {
+			assert.ok(h.a0 >= at && h.a1 >= h.a0 && h.b1 >= h.b0);
+			out.push(...a.slice(at, h.a0), ...b.slice(h.b0, h.b1));
+			at = h.a1;
+		}
+		out.push(...a.slice(at));
+		assert.deepEqual(out, b);
+	}
+	// A long file with a line added every 100 is many small hunks, not one.
+	const long = Array.from({ length: 6000 }, (_, i) => `line ${i % 50}`);
+	const edited = long.flatMap((l, i) => (i % 100 === 0 ? [l, `his ${i}`] : [l]));
+	assert.equal(hunks(long, edited).length, 60);
+});
+
 test("updates merge into code that was changed here", () => {
 	assert.deepEqual(merge3("a\nb\nc\nd\ne", "a\nB\nc\nd\ne", "a\nb\nc\nD\ne", "ours"), {
 		text: "a\nB\nc\nD\ne",
@@ -2144,7 +2174,7 @@ test("chat commands answer without reaching the agent", async () => {
 		lab.command(text, crypto.randomUUID(), (m) => m === "good");
 	try {
 		assert.equal(said("/help"), true);
-		assert.match(texts().at(-1) ?? "", /\/retry sends/);
+		assert.match(texts().at(-1) ?? "", /\/retry: Sends/);
 		assert.equal(said("/model good"), true);
 		assert.equal(texts().at(-1), "The next message uses good.");
 		assert.equal(said("/model bad"), true);
@@ -2159,6 +2189,63 @@ test("chat commands answer without reaching the agent", async () => {
 		lab.state.threadId = "old";
 		assert.equal(said("/new"), true);
 		assert.equal(lab.state.threadId, undefined);
+	} finally {
+		lab.close();
+	}
+});
+
+test("conversations keep their own engine thread and names", async () => {
+	const { lab, pick } = await codexLab(MODEFAKE);
+	const { chatOf, cleanTitle, roughTitle } = await import("./lab.ts");
+	const asked = (text: string) =>
+		lab.store.add({ kind: "you", text, cid: crypto.randomUUID() });
+	const list = () =>
+		lab.chatList() as unknown as {
+			current: string;
+			items: { id: string; title: string | null }[];
+		};
+	try {
+		assert.equal(chatOf(asked("Total the October receipts")), "first");
+		lab.state.threadId = "thread-a";
+		assert.equal(lab.openChat(), null);
+		const second = lab.chat;
+		assert.notEqual(second, "first");
+		assert.equal(lab.state.threadId, undefined);
+		// An empty one is reused rather than piling up.
+		assert.equal(lab.openChat(), null);
+		assert.equal(lab.chat, second);
+		assert.equal(chatOf(asked("Is there a newer driver?")), second);
+		lab.state.threadId = "thread-b";
+		assert.equal(lab.openChat("first"), null);
+		assert.equal(lab.state.threadId, "thread-a");
+		assert.equal(lab.openChat(second), null);
+		assert.equal(lab.state.threadId, "thread-b");
+		assert.match(lab.openChat("gone") ?? "", /isn't on the computer/);
+		lab.setStatus(true, "Working");
+		assert.match(lab.openChat("first") ?? "", /still working/);
+		lab.setStatus(false);
+		// Codex has no cheap model here, so the first message names it.
+		await lab.nameChat("first");
+		assert.equal(
+			list().items.find((c) => c.id === "first")?.title,
+			"Total the October receipts",
+		);
+		assert.equal(
+			lab.command("/rename Taxes", crypto.randomUUID(), () => false),
+			true,
+		);
+		assert.equal(list().items.find((c) => c.id === second)?.title, "Taxes");
+		await lab.nameChat(second, true);
+		assert.equal(list().items.find((c) => c.id === second)?.title, "Taxes");
+		assert.ok(pick("chats").length > 0);
+		assert.equal(
+			roughTitle("one two three four five six seven"),
+			"one two three four five six...",
+		);
+		assert.equal(
+			cleanTitle('Title: "Driver Update Check."\nmore'),
+			"Driver Update Check",
+		);
 	} finally {
 		lab.close();
 	}

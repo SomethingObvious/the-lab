@@ -19,7 +19,7 @@ export const DEFAULTS: Settings = {
 		{ id: "battery", size: "small" },
 		{ id: "storage", size: "wide" },
 	],
-	topBarHidden: false,
+	topBarHidden: true,
 	theme: "system",
 	textSize: 100,
 	steps: "live",

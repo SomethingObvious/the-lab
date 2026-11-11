@@ -46,6 +46,9 @@
     <symbol id="i-wclose" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
     <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M10.5 18h3"/></symbol>
+    <symbol id="i-compose" viewBox="0 0 24 24"><path d="M11 4.5H6.5a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13"/><path d="M17.5 3.5a2.1 2.1 0 0 1 3 3L13 14l-4 1 1-4z"/></symbol>
+    <symbol id="i-chats" viewBox="0 0 24 24"><path d="M4 6.5h16M4 12h16M4 17.5h10"/></symbol>
+    <symbol id="i-slash" viewBox="0 0 24 24"><path d="m15 4-6 16"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.5 5 6.5v5c0 4.2 2.9 7.6 7 9 4.1-1.4 7-4.8 7-9v-5l-7-3z"/><path d="M12 8v4.5M12 15.5v.5"/></symbol>
   </defs>
 </svg>
@@ -53,7 +56,10 @@
 <div class="app" id="app">
   <header class="head" id="head">
     <div class="head-row" id="head-main">
-      <div class="title-wrap"><h1 class="title">The Lab</h1><span class="head-sub" id="head-sub"></span></div>
+      <button type="button" class="icon-btn on-head" id="open-chats" aria-label="Conversations, Search and Files">
+        <svg class="ic" aria-hidden="true"><use href="#i-chats"/></svg>
+      </button>
+      <div class="title-wrap"><h1 class="title" id="head-title">The Lab</h1><span class="head-sub" id="head-sub"></span></div>
       <button type="button" class="icon-btn on-head" id="open-search" aria-label="Search">
         <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
       </button>
@@ -63,8 +69,11 @@
       <button type="button" class="icon-btn on-head" id="open-files" aria-label="Files and Photos">
         <svg class="ic" aria-hidden="true"><use href="#i-files"/></svg>
       </button>
-      <button type="button" class="icon-btn on-head fold-head" id="fold-head" aria-label="Hide the Top Bar" aria-expanded="true" aria-controls="glance">
+      <button type="button" class="icon-btn on-head fold-head" id="fold-head" aria-label="Show the Top Bar" aria-expanded="false" aria-controls="glance">
         <svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg>
+      </button>
+      <button type="button" class="icon-btn on-head" id="new-chat" aria-label="New Conversation" title="New Conversation">
+        <svg class="ic" aria-hidden="true"><use href="#i-compose"/></svg>
       </button>
       <button type="button" class="icon-btn on-head" id="open-menu" aria-label="More: Settings, Memory, Schedules and Setup">
         <svg class="ic" aria-hidden="true"><use href="#i-more"/></svg>
@@ -79,7 +88,7 @@
       <button type="button" class="icon-btn on-head" id="close-search" aria-label="Close Search">
         <svg class="ic" aria-hidden="true"><use href="#i-back"/></svg>
       </button>
-      <input type="search" id="search" class="search" placeholder="Search requests and replies" aria-label="Search requests and replies" autocomplete="off" enterkeyhint="search">
+      <input type="search" id="search" class="search" placeholder="Search every conversation" aria-label="Search every conversation" autocomplete="off" enterkeyhint="search">
       <button type="button" class="icon-btn on-head clear" data-clear="search" aria-label="Clear Search" hidden>
         <svg class="ic" aria-hidden="true"><use href="#i-close"/></svg>
       </button>
@@ -97,10 +106,11 @@
     </div>
   </div>
 
-  <aside class="side" id="side" aria-label="Requests">
+  <aside class="side" id="side" aria-label="Conversations">
+    <button type="button" class="new-chat" data-newchat><svg class="ic" aria-hidden="true"><use href="#i-compose"/></svg>New Conversation</button>
     <label class="side-search">
       <svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
-      <input type="search" id="side-search" placeholder="Search" aria-label="Search requests and replies" autocomplete="off">
+      <input type="search" id="side-search" placeholder="Search conversations" aria-label="Search conversations" autocomplete="off">
       <button type="button" class="icon-btn clear" data-clear="side-search" aria-label="Clear Search" hidden>
         <svg class="ic" aria-hidden="true"><use href="#i-close"/></svg>
       </button>
@@ -136,6 +146,7 @@
    <div class="tray">
     <fieldset class="chips" id="chips" aria-label="Shortcuts"></fieldset>
     <div class="pending" id="pending" hidden></div>
+    <div class="slash" id="slash" role="listbox" aria-label="Commands" hidden></div>
     <form class="dock" id="form">
       <div class="attach-wrap">
         <button type="button" class="round tonal" id="attach" aria-label="Attach" aria-expanded="false" aria-controls="attach-menu">
@@ -144,9 +155,10 @@
         <div class="menu" id="attach-menu" hidden>
           <button type="button" data-attach="photos"><span class="menu-shape s-a" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg></span>Photos</button>
           <button type="button" data-attach="files"><span class="menu-shape s-b" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#i-doc"/></svg></span>Files</button>
+          <button type="button" data-attach="commands"><span class="menu-shape s-c" aria-hidden="true"><svg class="ic" aria-hidden="true"><use href="#i-slash"/></svg></span>Commands</button>
         </div>
       </div>
-      <textarea id="text" rows="1" placeholder="Message your computer" aria-label="Message your computer" enterkeyhint="send"></textarea>
+      <textarea id="text" rows="1" placeholder="Message your computer, or / for commands" aria-label="Message your computer" aria-controls="slash" enterkeyhint="send"></textarea>
       <button type="button" class="round tonal" id="talk" aria-label="Talk" hidden><svg class="ic" aria-hidden="true"><use href="#i-mic"/></svg></button>
       <button type="submit" class="send" id="send" aria-label="Send" disabled>
         <svg viewBox="0 0 100 100" aria-hidden="true"><rect class="shape" width="100" height="100"/></svg>

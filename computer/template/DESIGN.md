@@ -343,7 +343,7 @@ It's a working tool he uses all day, one-handed on the outer screen. Density is 
 Motion is springy and short, and it's tied to state. Shapes morph when the state behind them changes, corners tighten under a finger, and nothing loops unless the computer is actually busy or waiting on him.
 
 **Key Characteristics:**
-- Violet header block with The Lab in heavy, wide Roboto Flex, the computer's name under it, and a row of pastel widgets he picks himself
+- Violet header block with the open conversation's title in heavy, wide Roboto Flex, the computer's name under it, and a row of pastel widgets he picks himself, hidden until he asks for them
 - Tonal cards with 28 px corners, no borders, depth from tone rather than shadow
 - One morphing shape library where each shape names a state
 - Fat pill composer with colour-cycled shortcut chips riding on top
@@ -394,7 +394,7 @@ Saturated violet and four fixed pastels on a cool lilac paper, with green, amber
 Both fonts are local `.woff2` files in `app/fonts/`. Roboto Flex is loaded with its full weight (100 to 1000) and width (25% to 151%) axes, so set `font-weight` and `font-stretch` freely within those.
 
 ### Hierarchy
-- **Display** (860, 36 px, 1, width 116%): The Lab in the header. Drops to the headline size when the header is compact.
+- **Display** (860, 36 px, 1, width 116%): the welcome card's title. The header's conversation title is 22 px in the same face, one line with an ellipsis.
 - **Headline** (820, 24 px, width 110 to 112%): sheet and Files and Photos titles, and the value on a big widget (narrowed to 90%). Other widget values are Title Large (22 px), or Title Medium on a small one.
 - **Title Large** (750, 22 px, 1.25): the approval card's question.
 - **Title Medium** (750, 16 px, width 104%): the toolbar's current step, Allow and Deny.
@@ -423,7 +423,7 @@ The page draws behind the status bar, gesture bar and cutout. The header reaches
 One column. The widgets sit on their own rows under the title, four columns across. While the agent works, the toolbar floats 12 px above the composer over the conversation, and the thread pads its bottom by the toolbar's measured height plus 32 px so the last message is never hidden under it.
 
 ### Compact Header
-The header gives its height back (title at 24 px, widgets at 40 px showing only their values) when he scrolls more than 300 px up from the newest message, when search or Files is open, when the phone's text size is turned up, and when the screen is short. It comes back below 60 px from the bottom. The switch snaps, then the widgets settle in, so no layout animates.
+The header gives its height back (widgets at 40 px showing only their values) when he scrolls more than 300 px up from the newest message, when search or Files is open, when the phone's text size is turned up, and when the screen is short. It comes back below 60 px from the bottom. The switch snaps, then the widgets settle in, so no layout animates.
 
 ### Short Screen and Keyboard
 When the height is under 560 px or `html` has `data-keyboard`, the app goes tight. The toolbar stops floating and docks in its own row above the composer, at 56 px with no shadow. On the outer screen the header also drops its widgets, so the message box and the conversation keep the room. The offline banner still shows. Sideways under 500 px tall, while he types a message with the keyboard up, the header, the shortcut chips and the request list hide as well. A search keeps its field, and the message tray hides while it has focus so the results get the room.
@@ -432,7 +432,7 @@ When the height is under 560 px or `html` has `data-keyboard`, the app goes tigh
 If "Write a message" at 16 px draws more than 15% wider than it should, the root font is over 18 px, or Text Size is Largest, `html` gets `big-text`. The widget grid drops to two columns and anything wider than small takes a whole row, so nothing overflows sideways.
 
 ### Unfolded (720 px and Up)
-Two columns. A 320 px requests list with its own search sits on the left, the conversation on the right. The header becomes one row with the title left and the widgets right (six columns, at most 560 px). The header's search button is hidden because the side list has search. Files show four tiles across instead of three.
+Two columns. A 320 px conversations pane sits on the left, with New Conversation on top, then its own search and the conversations newest first. The open conversation is on the right. The header becomes one row with the title left and the widgets right (six columns, at most 560 px). The header's search button is hidden because the side list has search. Files show four tiles across instead of three.
 
 ### The Computer's Window
 In The Lab's own window on Windows or a Mac, `html` gets `data-shell="desktop"` and `data-os`, and only that window gets these rules. The system's title bar is gone, so the header is the title bar: one flat 46 px row of the brand colour, square corners, the title with the computer's name and state beside it, Files and Photos, More, then minimize, maximize and close as 46 px wide buttons (close turns `#c42b1c` on hover). The row is `app-region: drag` and every button in it `no-drag`, so it moves the window, snaps and maximizes on a double-click. On a Mac the traffic lights stay and the row starts 84 px in. When the window isn't in front, the bar takes `head-deep` and its text dims. The widgets leave the header for a 316 px panel on the right (from 1040 px wide, and below that a phone button in the title bar slides it in over the right edge) with the computer's tiles on calm `surface-1` rather than the phone's bright colours, the phone's state, a drop zone that sends files to the phone, recent files with Show in Folder, and what's coming up. Panes are flat `surface` with a hairline between them, corners are smaller (8 to 16 px), rows are denser with hover states, and Ctrl+K (Cmd+K) searches. Sizes are for a mouse: 32 px chips, a 40 px message box with 15 px type, 15 px bubbles and replies, and sheets open as a 560 px dialog in the middle of the window, with no handle, that fades in and out. Motion uses `--ease` in place of the spring. Files dropped on the window or pasted into the message box are attached. Anything that changes the header has to leave the window buttons and the drag region working.
@@ -527,14 +527,14 @@ Tactile and chunky. Every one is a pill that squares up under the finger.
 - **Focus:** an inset 2 px `focus` ring, no outline.
 
 ### Navigation
-There are no tabs. The header holds the title with the computer's name and state under it, Search (folded only), Files and Photos, a chevron that hides or shows the widgets, and More, which opens a sheet of six rows: Settings, Memory, Schedules, Always Allowed, Check My Setup and Rename This Computer. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Unfolded, the left column lists every request with its state mark, and the current one is a `primary-c` pill.
+There are no tabs. Unfolded, the header holds the title with the computer's name and state under it, Files and Photos, New Conversation, a chevron that hides or shows the widgets, and More, which opens a sheet of six rows: Settings, Memory, Schedules, Always Allowed, Check My Setup and Rename This Computer. Search replaces the title row with a back button and the search field. Files and search results slide over the conversation and close with back. Folded, the header is one row: a conversations button, the title, New Conversation and More. The conversations button opens a sheet with New Conversation, Search, Files and Photos and the list, which is where search and Files live on a phone. Unfolded, the left column lists the conversations, and the open one is a `primary-c` pill. One that is working or waiting on him shows its state mark. A new conversation shows a centred compose mark in a `primary-c` tile with a line saying to ask anything or type / for commands.
 
 ### Header and Widgets
-The violet block with The Lab, the computer's name and its state under it in Label Large (`Paul's Laptop · Online`), and a grid of widgets. The default three are Connection (pink, Online with how long it's been up), Battery (sun, pink at 20% or lower on battery) and Storage (mint, wide, with a used meter). He can add, remove, resize and reorder them in Settings, or by long-pressing one. Each is a widget in the `Widgets` list in `app.js`.
+The violet block with the open conversation's title, the computer's name and its state under it in Label Large (`Paul's Laptop · Online`), and a grid of widgets, which are hidden by default so the conversation gets the room. The default three are Connection (pink, Online with how long it's been up), Battery (sun, pink at 20% or lower on battery) and Storage (mint, wide, with a used meter). He can add, remove, resize and reorder them in Settings, or by long-pressing one. Each is a widget in the `Widgets` list in `app.js`.
 - **Sizes:** small takes one of four columns, wide two, long the whole row and big two columns by two rows, the way home screen widgets do. Rows are at least 60 px and grow with their text.
 - **Shape:** a pill (24 px corners) at wide and long, 28 px at small, 36 px at big. Corners tighten to 14 px under a finger.
 - **Inside:** the value in heavy narrow type with an optional icon, a label line under it, a detail line at long and big, and a 6 px meter in the tile's own ink on wide and up.
-- **Hidden:** the chevron hides the widgets, leaving the title row with the computer's name. The choice is saved in settings.
+- **Hidden:** the default. The chevron (or Settings on a phone) shows or hides them, and the choice is saved in settings.
 
 A widget without a tap of its own opens a `head-deep` details panel with every reading, a Rename text button on the name row, Edit the Top Bar and Hide Details.
 
@@ -550,7 +550,7 @@ Keep the whole card on screen, uncovered and at full opacity while it waits, wit
 A 72 px `toolbar` pill with a 52 px loader, the current step and "Working for 0:07", and Stop on the right. While a request waits on him the whole bar turns `ask` amber, the loader becomes a still burst on a dark disc, the label says Needs Your OK, and Review appears joined to Stop. Review jumps to the approval card.
 
 ### Composer
-The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the mode chip, the model chip and the shortcut chips on top, any attachments waiting to send, then a row with the round attach button, the message field and the send shape. Send is a 56 px violet cookie with an up arrow, and a pale circle when there's nothing to send. Attach opens a menu with a mint circle for Photos and a pink rounded square for Files.
+The `bg` strip at the bottom holds a `surface-1` tray with 36 px corners: the mode chip, the model chip and the shortcut chips on top, any attachments waiting to send, then a row with the round attach button, the message field and the send shape. Send is a 56 px violet cookie with an up arrow, and a pale circle when there's nothing to send. Attach opens a menu with a mint circle for Photos, a pink rounded square for Files and Commands. Typing / at the start opens the command menu above the message field, a `surface-2` list of commands with their argument and a line on what each does. Arrows and Tab move through it, Enter picks one, and Escape closes it. A command without an argument sends straight away.
 
 ### Messages
 His messages are `primary` bubbles on the right, at most 86% wide. Tapping one opens a split button, Save as Shortcut with a chevron that holds Send Again and Copy. Messages still waiting to send turn `surface-2` and `dim` with a clock. Replies are `surface` bubbles on the left (92% wide at most) with Markdown, `link` list markers and mono code. Files arrive as `surface` pills with a pink flower icon, photos as images with the reply tail. A message the server sent from `schedules.json` shows its label and a clock in the `meta` line under the bubble.

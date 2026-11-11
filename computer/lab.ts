@@ -73,7 +73,9 @@ export type Live =
 				| "settings"
 				| "reach"
 				| "update"
-				| "phone";
+				| "phone"
+				| "chats"
+				| "commands";
 			[k: string]: unknown;
 	  };
 export interface Attached {
@@ -110,6 +112,8 @@ export class Store {
 	private readonly listeners = new Set<Listener>();
 	// Whether he's at the computer with The Lab open, set by the server.
 	atMac: () => boolean = () => false;
+	// The conversation every new event belongs to.
+	chat: () => string = () => FIRST;
 
 	constructor(file: string) {
 		if (existsSync(file)) {
@@ -146,6 +150,7 @@ export class Store {
 		const ev = {
 			id: this.next++,
 			at: new Date().toISOString(),
+			chat: this.chat(),
 			...e,
 			...(LOUD.has(e.kind) && !e["fromComputer"] && this.atMac()
 				? { onMac: true }
@@ -193,9 +198,49 @@ export class Store {
 	}
 }
 
+// One conversation. The one open keeps its engine's ids in State itself.
+export interface Chat {
+	title?: string;
+	// Named by him, so it isn't renamed by itself.
+	named?: boolean;
+	at: string;
+	sessionId?: string | undefined;
+	threadId?: string | undefined;
+}
+
+// Events from before conversations had ids all belong to this one.
+export const FIRST = "first";
+export const chatOf = (e: Ev | Record<string, unknown>) =>
+	typeof e["chat"] === "string" ? e["chat"] : FIRST;
+// Slash commands are answered by the server and say nothing about the topic.
+const asked = (e: Ev) =>
+	e.kind === "you" && !e["auto"] && !String(e["text"] ?? "").startsWith("/");
+// Titles are named again as the conversation grows, while the topic can still drift.
+const RENAME_AT = new Set([1, 3, 8]);
+// A title from the first message, shown until the cheap model's is back, and
+// in its place when there is none.
+export function roughTitle(text: string): string {
+	const parts = text.replace(/\s+/g, " ").trim().split(" ");
+	const t = parts.slice(0, 6).join(" ");
+	return clip(parts.length > 6 ? `${t}...` : t, 60);
+}
+// Whatever the model wraps around a title, it keeps only the title.
+export function cleanTitle(raw: string): string {
+	const line = raw.trim().split("\n")[0] ?? "";
+	return clip(
+		line
+			.replace(/^(title:\s*)/i, "")
+			.replace(/^["'*#\s]+|["'*.\s]+$/g, "")
+			.trim(),
+		60,
+	);
+}
+
 export interface State {
 	sessionId?: string | undefined;
 	threadId?: string | undefined;
+	chat?: string;
+	chats?: Record<string, Chat>;
 	open?: { text: string; at: string } | null;
 	memoryPaused?: boolean;
 	login?: string;
@@ -275,6 +320,9 @@ export const ASK_MS = 5 * 60_000;
 // A transcript it can't load (past the CLI's size cap, say) fails the same
 // way every time, so that counts as gone too.
 const GONE = /No conversation found with session ID|Failed to resume session/;
+
+// The cheapest model, for naming conversations.
+const TITLE_MODEL = "claude-haiku-5-5";
 
 // How long a Stop waits for the engine before ending the turn itself.
 export const STOP_MS = 15_000;
@@ -680,6 +728,10 @@ export class Lab {
 		this.store = new Store(join(opts.dir, "events.jsonl"));
 		for (const e of this.store.events)
 			if (e.kind === "you") this.seen.add(String(e["cid"]));
+		this.store.chat = () => this.chat;
+		this.store.listen((e) => {
+			if (e.kind === "done" && "id" in e) void this.nameChat(chatOf(e));
+		});
 		if (fresh) this.store.add(WELCOME);
 		this.prune();
 
@@ -761,6 +813,11 @@ export class Lab {
 			this.denials = 0;
 			this.appsAllowed.clear();
 		}
+		const chat = this.chatEntry(this.chat);
+		chat.at = new Date().toISOString();
+		if (!chat.title && text && !text.startsWith("/") && !scheduled?.auto)
+			chat.title = roughTitle(this.askedIn(this.chat)[0] ?? scheduled?.shown ?? text);
+		this.store.live(this.chatList());
 		const you = this.store.add(
 			{
 				kind: "you",
@@ -1153,6 +1210,8 @@ export class Lab {
 				return HELP;
 			case "new":
 				return this.fresh();
+			case "rename":
+				return this.renameChat(this.chat, rest);
 			case "stop":
 				if (!this.status.working) return "It isn't doing anything right now.";
 				this.stop();
@@ -1188,13 +1247,169 @@ export class Lab {
 
 	private fresh() {
 		if (this.status.working) return "It's still working. Use /stop first.";
-		this.state.sessionId = undefined;
-		this.state.threadId = undefined;
+		this.openChat();
+		return "Started a new conversation. Its memory stays.";
+	}
+
+	get chat(): string {
+		return this.state.chat ?? FIRST;
+	}
+
+	private chats(): Record<string, Chat> {
+		this.state.chats ??= {};
+		return this.state.chats;
+	}
+
+	// Entries are made on first use, so a Lab from before conversations, or a
+	// state.json lost to a power cut, still opens on the one it was in.
+	private chatEntry(id: string): Chat {
+		const chats = this.chats();
+		chats[id] ??= this.untracked(id);
+		return chats[id];
+	}
+
+	// A conversation that has events but no entry yet, as it was last left.
+	private untracked(id: string): Chat {
+		const first = this.askedIn(id)[0];
+		return {
+			at:
+				this.store.events.findLast((e) => chatOf(e) === id)?.at ??
+				new Date().toISOString(),
+			...(first ? { title: roughTitle(first) } : {}),
+		};
+	}
+
+	// What he asked in a conversation, oldest first.
+	private askedIn(id: string): string[] {
+		return this.store.events
+			.filter((e) => chatOf(e) === id && asked(e))
+			.map((e) => String(e["text"] ?? ""));
+	}
+
+	// Newest first. A conversation he never wrote in isn't listed, except the open one.
+	chatList(): Live {
+		const all = { ...this.state.chats };
+		all[this.chat] ??= this.untracked(this.chat);
+		const items = Object.entries(all)
+			.map(([id, c]) => ({ id, title: c.title ?? null, at: c.at }))
+			.toSorted((a, b) => b.at.localeCompare(a.at));
+		return { kind: "chats", current: this.chat, items };
+	}
+
+	private chatsChanged() {
+		this.save();
+		this.store.live(this.chatList());
+	}
+
+	// With no id it starts a new one, unless the open one is still empty.
+	// The engine starts afresh either way, as /new always has. Returns why it
+	// couldn't, or null.
+	openChat(id?: string): string | null {
+		if (this.status.working)
+			return "It's still working, so the conversation can't change until it's done or stopped.";
+		const chats = this.chats();
+		const cur = this.chat;
+		if (id === cur) return null;
+		if (id !== undefined && !chats[id])
+			return "That conversation isn't on the computer anymore.";
+		const empty = this.askedIn(cur).length === 0;
+		const to = id ?? (empty ? cur : `c${Date.now().toString(36)}`);
+		if (to !== cur && empty) delete chats[cur];
+		else if (to !== cur) {
+			const was = this.chatEntry(cur);
+			was.sessionId = this.state.sessionId;
+			was.threadId = this.state.threadId;
+		}
+		const next = this.chatEntry(to);
+		// An empty one reused for /new forgets its engine conversation too.
+		this.state.sessionId = to === cur ? undefined : next.sessionId;
+		this.state.threadId = to === cur ? undefined : next.threadId;
+		next.sessionId = undefined;
+		next.threadId = undefined;
+		this.state.chat = to;
 		this.codex?.close();
 		this.codex = null;
-		this.q?.close();
-		this.save();
-		return "Started a new conversation. Its memory stays.";
+		// Cut loose first, so a message sent straight after starts the new one.
+		const q = this.q;
+		this.q = null;
+		this.input?.close();
+		this.input = null;
+		q?.close();
+		this.chatsChanged();
+		return null;
+	}
+
+	renameChat(id: string, to: string): string {
+		const c = id === this.chat ? this.chatEntry(id) : this.chats()[id];
+		if (!c) return "That conversation isn't on the computer anymore.";
+		const name = cleanTitle(to);
+		if (name) {
+			c.title = name;
+			c.named = true;
+		} else c.named = false;
+		this.chatsChanged();
+		if (name) return `This conversation is called ${name} now.`;
+		void this.nameChat(id, true);
+		return "It'll name this conversation itself again.";
+	}
+
+	private readonly naming = new Set<string>();
+	// Asks the cheapest model for a short title after the first answer, and
+	// again as the conversation grows, unless he named it himself.
+	async nameChat(id: string, now = false) {
+		const c = this.chats()[id];
+		const said = this.askedIn(id);
+		if (!c || c.named || said.length === 0 || this.naming.has(id)) return;
+		if (!now && c.title && !RENAME_AT.has(said.length)) return;
+		this.naming.add(id);
+		try {
+			const named =
+				(await this.titleFor(id, said)) || c.title || roughTitle(said[0] ?? "");
+			if (named && named !== c.title && !c.named) {
+				c.title = named;
+				this.chatsChanged();
+			}
+		} catch (e) {
+			console.error("naming a conversation:", e instanceof Error ? e.message : e);
+		} finally {
+			this.naming.delete(id);
+		}
+	}
+
+	private async titleFor(id: string, said: string[]): Promise<string> {
+		if (this.opts.engine === "codex" || setting("LAB_NO_TITLES")) return "";
+		const reply = this.store.events.findLast(
+			(e) => chatOf(e) === id && e.kind === "reply",
+		);
+		const lines = [...said.slice(0, 2), ...said.slice(2).slice(-3)].map(
+			(t) => `He asked: ${clip(t, 300)}`,
+		);
+		if (reply) lines.push(`It answered: ${clip(String(reply["text"] ?? ""), 400)}`);
+		const stop = new AbortController();
+		const timer = setTimeout(() => stop.abort(), 30_000);
+		let text = "";
+		try {
+			for await (const m of query({
+				prompt: lines.join("\n\n"),
+				options: {
+					model: TITLE_MODEL,
+					effort: "low",
+					tools: [],
+					maxTurns: 1,
+					persistSession: false,
+					settingSources: [],
+					cwd: this.opts.dir,
+					env: cleanEnv(),
+					abortController: stop,
+					systemPrompt:
+						"You name chat conversations for a list. Reply with only a title of two to five words in Title Case that says what the conversation is about now. No quotes, no ending punctuation, no emoji.",
+				},
+			}))
+				if (m.type === "result" && m.subtype === "success") text = m.result;
+		} finally {
+			clearTimeout(timer);
+		}
+		return cleanTitle(text);
 	}
 
 	private personality(text: string) {

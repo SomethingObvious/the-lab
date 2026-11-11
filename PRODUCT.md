@@ -41,7 +41,7 @@ Dispatch and Remote Control already reach a desktop from the phone. The Lab diff
 
 ## Capabilities and Constraints
 
-- There is one long-running conversation, kept by the agent on the computer and compacted automatically.
+- He can keep several conversations, each with its own thread on the computer, compacted automatically and named by a cheap model as it goes.
 - Each step arrives as a title (shell steps carry their own description) with the tool name and its exact input behind it.
 - A running task can be stopped at any moment and the conversation carries on.
 - The agent can send files and images, which open on the phone.

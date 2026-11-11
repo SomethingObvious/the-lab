@@ -23,7 +23,7 @@ const DefaultSettings = {
 		{ id: "battery", size: "small" },
 		{ id: "storage", size: "wide" },
 	],
-	topBarHidden: false,
+	topBarHidden: true,
 	theme: "system",
 	textSize: 100,
 	steps: "live",
@@ -208,8 +208,6 @@ const Marks = {
 	stopped: ["circle", "stop"],
 	go: [null, null],
 };
-// Read before a request in the list. Working and asking say so in the meta line.
-const Said = { ok: "Done, ", bad: "Didn't finish, ", stopped: "Stopped, " };
 function mark(state) {
 	const [s, ic] = Marks[state];
 	return `<span class="state ${state}">${s ? shape(s) : loader()}${ic ? icon(ic) : ""}</span>`;
@@ -325,6 +323,42 @@ let booted = false;
 // The Lab's own window on the computer, which gets a title bar and a side panel.
 const desk = lab.platform === "desktop";
 let phone = null;
+
+// Conversations. Every stored event names the one it belongs to, and the
+// page draws one at a time from `history`, so switching is a redraw.
+const chatOf = (e) => (typeof e.chat === "string" ? e.chat : "first");
+const history = [];
+let chats = { current: null, items: [] };
+// What's drawn. Null until the shell says which one is open, and NewChat
+// for one he started that the computer hasn't made yet.
+let viewing = null;
+const NewChat = "";
+let commands = [];
+const isHere = (id) => id === (chats.current ?? viewing);
+const askedText = (e) =>
+	e.kind === "you" && !e.auto && e.text && !e.text.startsWith("/") ? e.text : "";
+const firstAsked = (id) => {
+	for (const e of history) if (chatOf(e) === id && askedText(e)) return e.text;
+	return "";
+};
+const shortTitle = (t) => {
+	const w = t.replace(/\s+/g, " ").trim().split(" ");
+	return w.length > 6 ? `${w.slice(0, 6).join(" ")}...` : w.join(" ");
+};
+function titleOf(id) {
+	if (id === NewChat || id === null) return "New Conversation";
+	const c = chats.items.find((x) => x.id === id);
+	return c?.title || shortTitle(firstAsked(id)) || "New Conversation";
+}
+// An older computer sends no list, so its one conversation is the history.
+function chatItems() {
+	const list = [...chats.items];
+	if (list.length === 0 && history.length > 0)
+		list.push({ id: chatOf(history.at(-1)), title: null, at: history.at(-1).at });
+	if (viewing === NewChat)
+		list.unshift({ id: NewChat, title: null, at: new Date().toISOString() });
+	return list;
+}
 
 const thread = $("thread");
 const log = document.createElement("div");
@@ -449,6 +483,132 @@ function modeMoved(was, now) {
 }
 
 function take(e) {
+	if (typeof e.id === "number") {
+		history.push(e);
+		// The Allow card has to be on screen, whichever conversation he was reading.
+		if (
+			e.kind === "ask" &&
+			viewing !== null &&
+			chatOf(e) !== viewing &&
+			isHere(chatOf(e))
+		)
+			view(chatOf(e));
+		if (chatOf(e) !== viewing) {
+			want.side = true;
+			schedule();
+			return;
+		}
+	}
+	if (e.kind === "chats") return takeChats(e);
+	if (e.kind === "commands") {
+		commands = e.items || [];
+		return;
+	}
+	showEvent(e);
+}
+// The first view is the open conversation, or with an older computer the newest one.
+function settleView() {
+	if (viewing === null)
+		view(chats.current ?? (history.length > 0 ? chatOf(history.at(-1)) : "first"));
+	drawTitle();
+}
+function takeChats(e) {
+	const was = chats.current;
+	chats = { current: e.current ?? null, items: e.items ?? [] };
+	if (viewing === null) {
+		if (loaded) view(chats.current ?? "first");
+	} else if (chats.current !== was && (viewing === was || viewing === NewChat))
+		view(chats.current);
+	drawTitle();
+	want.side = true;
+	schedule();
+}
+
+// Draws every event of one conversation again from history.
+function view(id) {
+	viewing = id;
+	for (const it of items) {
+		it.el?.remove();
+		it.dayEl?.remove();
+	}
+	items.length = 0;
+	byRef.clear();
+	byEid.clear();
+	dirty.clear();
+	cur = null;
+	settled = -1;
+	shownFrom = 0;
+	windowed = false;
+	filling = true;
+	selected = null;
+	digestEl.hidden = true;
+	for (const e of history) if (chatOf(e) === id) showEvent(e);
+	drawQueue();
+	drawTitle();
+	want.now = true;
+	want.side = true;
+	want.files = true;
+	pinned = true;
+	schedule();
+}
+function drawTitle() {
+	const t = titleOf(viewing);
+	setText($("head-title"), t);
+	emptyEl.hidden = !(
+		loaded &&
+		items.length === 0 &&
+		(viewing === NewChat || isHere(viewing))
+	);
+}
+// Before the first message the conversation only exists on this screen.
+// Sending asks the computer to open it, and nothing goes if it can't.
+async function ensureChat() {
+	if (viewing === null || !chats.current || isHere(viewing)) return true;
+	try {
+		const r = await call(
+			"POST",
+			"/chat",
+			viewing === NewChat ? { new: true } : { id: viewing },
+		);
+		take(r);
+		return true;
+	} catch (err) {
+		toast(
+			err.message && !/fetch|network/i.test(err.message)
+				? err.message
+				: "Couldn't reach the computer to open that conversation. Try again once it's back.",
+			true,
+		);
+		return false;
+	}
+}
+const emptyChat = (id) => !history.some((e) => chatOf(e) === id && askedText(e));
+function newChat() {
+	closeSheet();
+	closeFiles();
+	if (!$("search-row").hidden) closeSearch();
+	if (chats.current && emptyChat(chats.current)) view(chats.current);
+	else if (viewing !== NewChat) {
+		view(NewChat);
+		// Every screen follows a new one, so it's opened now when it can be.
+		if (link.state === "online" && !status.working)
+			call("POST", "/chat", { new: true })
+				.then(take)
+				.catch(() => {
+					// Sending asks again.
+				});
+	}
+	text.focus();
+}
+function openChat(id) {
+	closeSheet();
+	closeFiles();
+	if (id !== viewing) view(id);
+	flushNow();
+	toBottom();
+}
+
+function showEvent(e) {
 	switch (e.kind) {
 		case "link": {
 			const was = link.state;
@@ -493,6 +653,7 @@ function take(e) {
 		}
 		case "loaded":
 			loaded = true;
+			settleView();
 			want.side = true;
 			want.files = true;
 			schedule();
@@ -776,7 +937,7 @@ function noticeAction(a) {
 
 // A message sent mid-task joins the running turn, so every turn since the
 // last done belongs to the same run and ends with its done.
-const active = (t) => !t.done && t.i > settled && status.working;
+const active = (t) => !t.done && t.i > settled && status.working && isHere(viewing);
 const openByDefault = (t) =>
 	settings.steps === "open" || (settings.steps !== "closed" && active(t));
 const waitingAsk = (t) => t.asks.find((a) => !t.answers[a.ref]);
@@ -959,6 +1120,11 @@ const markSeen = () => {
 		// Storage can be refused, and then the digest just shows again next time.
 	}
 };
+// A conversation with nothing in it yet.
+const emptyEl = document.createElement("div");
+emptyEl.className = "empty-chat";
+emptyEl.hidden = true;
+emptyEl.innerHTML = `<span class="empty-mark" aria-hidden="true">${icon("compose")}</span><h2>New Conversation</h2><p>Ask your computer anything. Type / for commands.</p>`;
 const digestEl = document.createElement("section");
 digestEl.className = "digest";
 digestEl.hidden = true;
@@ -1034,7 +1200,7 @@ document.addEventListener("visibilitychange", () => {
 function drawQueue() {
 	setHTML(
 		queue,
-		outbox
+		(isHere(viewing) || viewing === null ? outbox : [])
 			.map((m) => `<div class="turn">${youEl({ ...m, id: "" }, true)}</div>`)
 			.join(""),
 	);
@@ -2566,21 +2732,19 @@ const outText = (o) =>
 	o.kind === "reply"
 		? o.text.replace(/\*\*|`/g, "")
 		: `${o.name}${o.caption ? `, ${o.caption}` : ""}`;
-// Searches the data rather than the page, so it finds turns that aren't drawn.
+// Searches the data rather than the page, so it finds every conversation.
 function hits(q) {
 	const needle = q.trim().toLowerCase();
 	if (!needle) return [];
 	const out = [];
-	for (const t of items) {
-		if (t.type !== "turn") continue;
-		if (t.you?.text && has(t.you, youText, needle))
-			out.push({ who: t.you.auto ? "The Lab" : "You", e: t.you, text: t.you.text });
-		for (const f of t.you?.files || [])
-			if (has(f, fileName, needle))
-				out.push({ who: t.you.auto ? "The Lab" : "You", e: t.you, text: f.name });
-		for (const o of t.out)
-			if (has(o, outText, needle))
-				out.push({ who: mac?.name || "Computer", e: o, text: outText(o) });
+	for (const e of history) {
+		if (e.kind === "you") {
+			const who = e.auto ? "The Lab" : "You";
+			if (e.text && has(e, youText, needle)) out.push({ who, e, text: e.text });
+			for (const f of e.files || [])
+				if (has(f, fileName, needle)) out.push({ who, e, text: f.name });
+		} else if ((e.kind === "reply" || e.kind === "file") && has(e, outText, needle))
+			out.push({ who: mac?.name || "Computer", e, text: outText(e) });
 	}
 	return out.toReversed();
 }
@@ -2614,14 +2778,14 @@ function drawResults() {
 	setHTML(
 		$("results"),
 		!q.trim()
-			? `<p class="empty-state">Search your requests, the computer's replies and file names.</p>`
+			? `<p class="empty-state">Search every conversation, the computer's replies and file names.</p>`
 			: list.length === 0
 				? `<p class="empty-state">${esc(none)}</p>`
 				: `<p class="count">${count}</p><ol>${list
 						.slice(0, MaxHits)
 						.map(
 							(h) =>
-								`<li><button type="button" class="hit" data-jump="${esc(h.e.id)}"><span class="hit-top"><b>${esc(h.who)}</b><span>${shortDay(h.e.at)}</span></span><span class="hit-text">${snippet(h.text, q.trim())}</span></button></li>`,
+								`<li><button type="button" class="hit" data-jump="${esc(h.e.id)}"><span class="hit-top"><b>${esc(h.who)}</b><span>${esc(titleOf(chatOf(h.e)))} · ${shortDay(h.e.at)}</span></span><span class="hit-text">${snippet(h.text, q.trim())}</span></button></li>`,
 						)
 						.join("")}</ol>`,
 	);
@@ -2665,9 +2829,8 @@ function jump(id) {
 	focusSoft(el.querySelector("lab-ask") || target);
 }
 
-// Requests pane, unfolded
+// Conversations: the pane on the left when unfolded, a sheet when folded.
 
-let currentReq = null;
 let sideLimit = 60;
 const sideIO = new IntersectionObserver(
 	(list) => {
@@ -2678,64 +2841,76 @@ const sideIO = new IntersectionObserver(
 	},
 	{ root: $("side-list"), rootMargin: "0px 0px 400px 0px" },
 );
-const sideState = (t, ask) => {
-	if (ask) return "wait";
-	if (active(t)) return "go";
-	if (t.done?.stopped) return "stopped";
-	if (t.done && !t.done.ok) return "bad";
-	return t.done ? "ok" : "stopped";
-};
-function sideRow(t) {
-	const ask = active(t) && waitingAsk(t);
-	const state = sideState(t, ask);
-	const meta = ask ? "Asking you now" : active(t) ? "Working now" : shortDay(t.at);
-	const label = t.you.text || (t.you.files || []).map((f) => f.name).join(", ");
-	const here = t.id === (currentReq ?? cur?.id);
-	return `<li><button type="button" class="req${here ? " current" : ""}" data-req="${esc(t.id)}"${here ? ' aria-current="true"' : ""}>${mark(state)}<span class="req-body"><span class="req-text">${Said[state] ? `<span class="sr">${Said[state]}</span>` : ""}${esc(label)}</span><span class="req-meta">${meta}</span></span></button></li>`;
+// What a conversation says, for the list's search.
+function chatHas(id, q) {
+	if (titleOf(id).toLowerCase().includes(q)) return true;
+	for (const e of history)
+		if (
+			chatOf(e) === id &&
+			((e.kind === "you" && has(e, youText, q)) ||
+				((e.kind === "reply" || e.kind === "file") && has(e, outText, q)))
+		)
+			return true;
+	return false;
+}
+function chatRow(c) {
+	const here = c.id === viewing;
+	const live = isHere(c.id) && status.working;
+	const t = live && viewing === c.id ? cur : null;
+	const ask = live && Boolean(t && waitingAsk(t));
+	const meta = live ? (ask ? "Asking you now" : "Working now") : shortDay(c.at);
+	return `<li><button type="button" class="req${here ? " current" : ""}${live ? " live" : ""}" data-chat="${esc(c.id)}"${here ? ' aria-current="true"' : ""}>${live ? mark(ask ? "wait" : "go") : ""}<span class="req-body"><span class="req-text">${esc(titleOf(c.id))}</span><span class="req-meta">${meta}</span></span></button></li>`;
+}
+function chatRows(q) {
+	const all = q ? chatItems().filter((c) => chatHas(c.id, q)) : chatItems();
+	const rows = all.slice(0, sideLimit);
+	return rows.length > 0
+		? rows.map(chatRow).join("") +
+				(all.length > rows.length
+					? `<li class="side-more"><button type="button" class="pill" data-sidemore>Show Older Conversations</button></li>`
+					: "")
+		: loaded || q
+			? `<li class="side-empty">${q ? `Nothing matches "${esc(q)}".` : "Your conversations show up here."}</li>`
+			: "";
 }
 function drawSide() {
 	if (!booted) return;
 	const list = $("side-list");
-	const q = $("side-search").value.trim().toLowerCase();
-	const turns = items.filter((t) => t.type === "turn" && t.you).toReversed();
-	const all = q
-		? turns.filter(
-				(t) => has(t.you, youText, q) || t.out.some((o) => has(o, outText, q)),
-			)
-		: turns;
-	const rows = all.slice(0, sideLimit);
 	refocus(
 		list,
-		() => {
-			setHTML(
-				list,
-
-				rows.length > 0
-					? rows.map(sideRow).join("") +
-							(all.length > rows.length
-								? `<li class="side-more"><button type="button" class="pill" data-sidemore>Show Older Requests</button></li>`
-								: "")
-					: loaded || q
-						? `<li class="side-empty">${q ? `Nothing matches "${esc(q)}".` : "Your requests show up here."}</li>`
-						: "",
-			);
-		},
+		() => setHTML(list, chatRows($("side-search").value.trim().toLowerCase())),
 		() => $("side-search"),
 	);
 	sideIO.disconnect();
 	const m = list.querySelector("[data-sidemore]");
 	if (m) sideIO.observe(m);
+	if (sheetKind === "chats") drawChatSheet();
 	drawHub();
+}
+function openChats() {
+	openSheet(
+		"chats",
+		"Conversations",
+		`<button type="button" class="new-chat" data-newchat>${icon("compose")}New Conversation</button>
+		<div class="chat-tools"><button type="button" class="pill" data-chatgo="search">${icon("search")}Search</button><button type="button" class="pill" data-chatgo="files">${icon("files")}Files and Photos</button></div>
+		<ol class="side-list" id="chat-list"></ol>`,
+		closeBtn,
+	);
+	drawChatSheet();
+}
+function drawChatSheet() {
+	const list = $("chat-list");
+	if (list) setHTML(list, chatRows(""));
 }
 
 // Files view
 
 function drawFiles() {
 	const all = [];
-	for (const t of items) {
-		if (t.type !== "turn") continue;
-		for (const f of t.you?.files || []) all.push({ ...f, at: t.you.at, who: "You" });
-		for (const o of t.out) if (o.kind === "file") all.push({ ...o, who: "computer" });
+	for (const e of history) {
+		if (e.kind === "you")
+			for (const f of e.files || []) all.push({ ...f, at: e.at, who: "You" });
+		else if (e.kind === "file") all.push({ ...e, who: "computer" });
 	}
 	all.reverse();
 	const photos = all.filter(isImage);
@@ -2809,10 +2984,12 @@ function drawPending() {
 	);
 	canSend();
 }
-function send(t, files) {
-	if (!(t || files?.length)) return;
+async function send(t, files) {
+	if (!(t || files?.length)) return false;
+	if (!(await ensureChat())) return false;
 	digestEl.hidden = true;
 	lab.send(t, files?.length ? files : undefined);
+	return true;
 }
 function menu(open) {
 	$("attach-menu").hidden = !open;
@@ -2941,16 +3118,11 @@ function findYou(cid) {
 const hub = $("hub");
 const hubFiles = () => {
 	const all = [];
-	for (const t of items) {
-		if (t.type !== "turn") continue;
-		for (const f of t.you?.files || [])
-			all.push({ ...f, at: t.you.at, who: "From you" });
-		for (const o of t.out)
-			if (o.kind === "file")
-				all.push({
-					...o,
-					who: o.fromComputer ? "Sent to the phone" : "From the agent",
-				});
+	for (const e of history) {
+		if (e.kind === "you")
+			for (const f of e.files || []) all.push({ ...f, at: e.at, who: "From you" });
+		else if (e.kind === "file")
+			all.push({ ...e, who: e.fromComputer ? "Sent to the phone" : "From the agent" });
 	}
 	return all.toReversed().slice(0, 5);
 };
@@ -3424,22 +3596,40 @@ function clickMine(d) {
 function clickLists(d) {
 	if (d.jump) {
 		closeSearch();
+		const e = history.find((x) => String(x.id) === d.jump);
+		if (e && chatOf(e) !== viewing) view(chatOf(e));
 		jump(d.jump);
 		return true;
 	}
-	if (d.req) {
-		currentReq = d.req;
-		const t = items.find((x) => x.id === d.req);
-		if (t) {
-			closeFiles();
-			jump(t.you.id);
-		}
-		drawSide();
+	if (d.chat !== undefined) {
+		openChat(d.chat);
+		return true;
+	}
+	if (d.newchat !== undefined) {
+		newChat();
+		return true;
+	}
+	if (d.chatgo) {
+		closeSheet();
+		if (d.chatgo === "search") openSearch();
+		else openFiles();
+		return true;
+	}
+	if (d.slash) {
+		pickCommand(Number(d.slash));
 		return true;
 	}
 	if (d.sidemore !== undefined) {
 		sideLimit += 60;
 		drawSide();
+		return true;
+	}
+	if (d.attach === "commands") {
+		menu(false);
+		text.value = "/";
+		text.focus();
+		drawSlash();
+		canSend();
 		return true;
 	}
 	if (d.attach) {
@@ -3594,6 +3784,10 @@ function clickById(id) {
 			return openFiles();
 		case "open-menu":
 			return openMenu();
+		case "open-chats":
+			return openChats();
+		case "new-chat":
+			return newChat();
 		case "close-files":
 			return closeFiles();
 		case "fold-head":
@@ -3740,10 +3934,86 @@ text.addEventListener("input", () => {
 	growText();
 	canSend();
 	keep(text.value);
+	drawSlash();
 });
+
+// Typing / at the start lists the commands, the way /help does.
+const Builtin = [
+	{ name: "new", about: "Starts a new conversation. Memory stays." },
+	{ name: "rename", arg: "NAME", about: "Names this conversation." },
+	{ name: "retry", about: "Sends your last message again." },
+	{ name: "stop", about: "Stops what it's doing." },
+	{ name: "status", about: "Shows the model, mode and what it's doing." },
+	{ name: "help", about: "Lists every command." },
+];
+let slashHits = [];
+let slashAt = 0;
+const slash = $("slash");
+function drawSlash() {
+	const m = /^\/([\w-]*)$/.exec(text.value);
+	const all = commands.length > 0 ? commands : Builtin;
+	slashHits = m
+		? all.filter((c) => c.name.startsWith(m[1].toLowerCase())).slice(0, 8)
+		: [];
+	if (slashHits.length === 0) return closeSlash();
+	slashAt = Math.min(slashAt, slashHits.length - 1);
+	setHTML(
+		slash,
+		slashHits
+			.map(
+				(c, i) =>
+					`<button type="button" class="sl" role="option" id="slash-${i}" tabindex="-1" aria-selected="${i === slashAt}" data-slash="${i}"><b>/${esc(c.name)}${c.arg ? ` <i>${esc(c.arg)}</i>` : ""}</b><span>${esc(c.about)}</span></button>`,
+			)
+			.join(""),
+	);
+	slash.hidden = false;
+	text.setAttribute("aria-activedescendant", `slash-${slashAt}`);
+}
+function closeSlash() {
+	if (slash.hidden) return;
+	slash.hidden = true;
+	slashHits = [];
+	slashAt = 0;
+	text.removeAttribute("aria-activedescendant");
+}
+function pickCommand(i) {
+	const c = slashHits[i];
+	if (!c) return;
+	closeSlash();
+	text.value = c.arg ? `/${c.name} ` : `/${c.name}`;
+	growText();
+	canSend();
+	text.focus();
+	if (!c.arg) $("form").requestSubmit();
+}
+text.addEventListener("blur", () =>
+	setTimeout(() => {
+		if (document.activeElement !== text) closeSlash();
+	}, 150),
+);
 const onPhone = lab.platform === "android" || lab.platform === "ios";
 if (onPhone) text.enterKeyHint = "enter";
 text.addEventListener("keydown", (ev) => {
+	if (!slash.hidden) {
+		const n = slashHits.length;
+		if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+			ev.preventDefault();
+			slashAt = (slashAt + (ev.key === "ArrowDown" ? 1 : n - 1)) % n;
+			drawSlash();
+			return;
+		}
+		if (ev.key === "Tab" || (ev.key === "Enter" && !ev.shiftKey)) {
+			ev.preventDefault();
+			pickCommand(slashAt);
+			return;
+		}
+		if (ev.key === "Escape") {
+			ev.preventDefault();
+			ev.stopPropagation();
+			closeSlash();
+			return;
+		}
+	}
 	if (ev.key === "Enter" && !ev.shiftKey && (!onPhone || settings.enterSends)) {
 		ev.preventDefault();
 		$("form").requestSubmit();
@@ -3751,7 +4021,7 @@ text.addEventListener("keydown", (ev) => {
 });
 $("talk").hidden = !lab.listen;
 // The mic leaves too little room for the long version on a phone.
-if (lab.listen) text.placeholder = "Message";
+if (lab.listen) text.placeholder = "Message or /";
 $("talk").addEventListener("click", async () => {
 	lab.hush?.();
 	try {
@@ -3764,11 +4034,16 @@ $("talk").addEventListener("click", async () => {
 		toast(e.message, true);
 	}
 });
-$("form").addEventListener("submit", (ev) => {
+let sending = false;
+$("form").addEventListener("submit", async (ev) => {
 	ev.preventDefault();
-	if ($("send").disabled) return;
+	if ($("send").disabled || sending) return;
+	closeSlash();
 	talked = false;
-	send(text.value.trim(), pending);
+	sending = true;
+	const sent = await send(text.value.trim(), pending);
+	sending = false;
+	if (!sent) return;
 	text.value = "";
 	keep("");
 	pending = [];
@@ -3800,7 +4075,7 @@ try {
 	// Without storage there's no draft to put back.
 }
 thread.append(log);
-log.append(older, digestEl, queue);
+log.append(older, emptyEl, digestEl, queue);
 // Every reconnect sends loaded again. Only the first is coming back to the
 // app, and the others would bring back a digest he already closed.
 let away = lastSeen();
@@ -3833,3 +4108,4 @@ drawPending();
 growText();
 toBottom();
 requestAnimationFrame(() => lab.ready());
+setTimeout(settleView, 1500);

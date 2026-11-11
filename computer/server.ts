@@ -22,6 +22,7 @@ import { pipeline } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import type { tailscaleState } from "./checks.ts";
+import { COMMANDS, namesIn } from "./commands.ts";
 import {
 	agentAppName,
 	config,
@@ -960,7 +961,7 @@ async function serve() {
 			"x-accel-buffering": "no",
 		});
 		res.write(
-			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow()] })}\n\n`,
+			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow(), lab.chatList(), commandList()] })}\n\n`,
 		);
 		const phone = /okhttp|cfnetwork/i.test(req.headers["user-agent"] ?? "");
 		if (phone && ++phones === 1) lab.store.live(phoneNow());
@@ -1483,8 +1484,36 @@ async function serve() {
 		return json(res, 200, { name: macNow?.name ?? name.trim() });
 	};
 
+	// His skills follow the built-in commands, as the app's command menu lists both.
+	const commandList = (): Live => ({
+		kind: "commands",
+		items: [
+			...COMMANDS,
+			...namesIn(join(Home, "skills")).map((name) => ({
+				name,
+				about: "Follows this skill.",
+			})),
+		],
+	});
+
+	// Opens a conversation (`id`), starts one (`new`) or names one (`id` and `title`).
+	const chat: Route = async (req, res) => {
+		const { id, title, new: fresh } = await readBody(req);
+		if (typeof id === "string" && typeof title === "string") {
+			if (title.length > 200)
+				return json(res, 400, { error: "That name is too long." });
+			lab.renameChat(id, title);
+			return json(res, 200, lab.chatList());
+		}
+		if (fresh !== true && typeof id !== "string")
+			return json(res, 400, { error: "Say which conversation to open." });
+		const why = lab.openChat(fresh === true ? undefined : String(id));
+		return why ? json(res, 409, { error: why }) : json(res, 200, lab.chatList());
+	};
+
 	// Routes that need the token or the preview link.
 	const routes = new Map<string, Route>([
+		["POST /chat", chat],
 		["GET /pair-phone", pairPhone],
 		["GET /events", (req, res, url) => events(req, res, url)],
 		["POST /send", send],

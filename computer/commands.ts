@@ -1,19 +1,35 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-export const HELP = [
-	"- /new starts a new conversation. Memory stays.",
-	"- /retry sends your last message again.",
-	"- /undo tells the agent to ignore your last message and its answer.",
-	"- /stop stops what it's doing.",
-	"- /compress shrinks the conversation so far.",
-	"- /status shows the model, mode and what it's doing.",
-	"- /usage shows today's work, and /insights 30 shows the last 30 days.",
-	"- /model NAME switches model.",
-	"- /personality TEXT sets how it talks, and on its own shows the current one.",
-	"- /skills lists what it has written down, and /NAME follows one of them.",
-	"- /bots lists your named bots, and @NAME talks to one.",
-].join("\n");
+// The app's command menu lists these, then the skills, so it says the same as /help.
+export const COMMANDS = [
+	{ name: "new", about: "Starts a new conversation. Memory stays." },
+	{
+		name: "rename",
+		arg: "NAME",
+		about: "Names this conversation. On its own, it names itself again.",
+	},
+	{ name: "retry", about: "Sends your last message again." },
+	{ name: "undo", about: "Tells it to ignore your last message and its answer." },
+	{ name: "stop", about: "Stops what it's doing." },
+	{ name: "compress", about: "Shrinks the conversation so far." },
+	{ name: "status", about: "Shows the model, mode and what it's doing." },
+	{ name: "usage", about: "Shows today's work." },
+	{ name: "insights", arg: "DAYS", about: "Shows the work over the last few days." },
+	{ name: "model", arg: "NAME", about: "Switches model." },
+	{
+		name: "personality",
+		arg: "TEXT",
+		about: "Sets how it talks, and on its own shows how it talks now.",
+	},
+	{ name: "skills", about: "Lists what it has written down. /NAME follows one." },
+	{ name: "bots", about: "Lists your named bots. @NAME talks to one." },
+	{ name: "help", about: "Lists these commands." },
+];
+
+export const HELP = COMMANDS.filter((c) => c.name !== "help")
+	.map((c) => `- /${c.name}${c.arg ? ` ${c.arg}` : ""}: ${c.about}`)
+	.join("\n");
 
 const DAY = 86_400_000;
 

@@ -112,6 +112,8 @@ He can have named bots. A bot is `bots/NAME.md`, which says who it is and what i
 
 His chat commands, like /new and /retry, are answered by the server, so you won't see those.
 
+He can keep several conversations, and each one has its own thread with you. /new and the New Conversation button start one, and the server names it with a cheap model after your first answer (and again as it grows), unless he named it with /rename. Your memory and this folder are the same in all of them.
+
 ## Schedules
 
 `schedules.json` is a list of `{ "id", "label", "text", "time" }` with `time` as 24-hour `"HH:MM"` in this computer's time zone. Add `"days": ["mon", "fri"]` to run only on those days, or `"date": "YYYY-MM-DD"` to run once. `"quiet": true` is for checks that usually find nothing ("tell me if a big email comes in"), and `"paused": true` stops one without deleting it. He can see, pause, edit and delete them from the phone too.
@@ -168,6 +170,7 @@ The routes for `lab.call` are these.
 | `POST /signin` | Starts signing the agent back in, or returns the one already open. `{ url, paste, code }`, or `{ waiting: true }` while the engine starts, so call it again. Open `url` with `lab.open`. With `paste` the page shows him a code to send to `/signin/code`, and otherwise he types `code` into the page. A `notice` with `signedIn` follows once it's done. |
 | `POST /signin/code` | Takes `{ code }`, the one he pasted. Fails with the reason if it's turned down, and that attempt is over, so call `/signin` again. |
 | `POST /signin/resend` | Sends again what the lost sign-in cut off. `{ sent }`, how many. |
+| `POST /chat` | `{ id }` opens that conversation, `{ new: true }` starts one (or reuses the open one if it's still empty) and `{ id, title }` renames one, with a blank title handing the name back to the server. Fails with the reason while you're working. A `chats` event follows. |
 
 The events are saved in history and replayed to `subscribe` when the page loads.
 
@@ -186,7 +189,7 @@ The events are saved in history and replayed to `subscribe` when the page loads.
 | `notice` | `text`, and maybe `action` (`label`, `send`), a button that sends `send` as a message. With `action.signin` the button opens the sign-in through the `/signin` route instead, and with `action.resend` it calls `/signin/resend`. `signedIn` marks the one that says the sign-in is back. The welcome card before his first message has `first`, `title` and `points`, a list of `{ icon, text }`, with `text` as a plain version for a design that doesn't draw points. |
 | `file` | `name`, `url`, `size`, `caption`, and `fromComputer` when he sent it to the phone from the computer's window. |
 
-Every saved event also has `id` and `at` (an ISO time). These events are live only and are never replayed.
+Every saved event also has `id`, `at` (an ISO time) and `chat`, the conversation it belongs to. Events from before there were conversations have no `chat` and belong to `first`. These events are live only and are never replayed.
 
 | Event | Fields |
 |---|---|
@@ -195,6 +198,8 @@ Every saved event also has `id` and `at` (an ISO time). These events are live on
 | `mac` | `name` (his name for it if he renamed it), `os` (`mac` or `windows`), `battery` (`percent`, `charging`, or `null` on a desktop), `disk` and `memory` (`free`, `total` in bytes), `cpu` (percent busy over the last minute), `uptime` in seconds, `at`. Every minute while connected. The phone replays the last one while offline, so check `at`. |
 | `shortcuts` | `items`, the saved shortcuts (`id`, `label`, `text`). On connect and on every change. |
 | `settings` | `values`, everything in `settings.json`. On connect and on every change. |
+| `chats` | `current`, the open conversation's id, and `items`, every conversation newest first (`id`, `title` or `null` until it has one, `at`). On connect and on every change. A computer from before conversations never sends it, so treat its whole history as one. |
+| `commands` | `items`, the slash commands he can type (`name`, `arg` when it takes one, `about`), skills included. On connect. |
 | `loaded` | No fields. The saved history has all arrived, so an empty list really is empty and not still loading. The phone sends it once per page load, the browser again after each reconnect. |
 | `outbox` | `items`, the messages still waiting to send (`cid`, `text`, `at`). |
 | `compose` | `text`, and `files` if any. Something he shared into The Lab from another app, or opened it from the tile, widget or assistant. Put it in the message box and focus it, without sending. |

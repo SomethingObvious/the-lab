@@ -29,7 +29,7 @@ On the phone, the mic button next to the message box uses Android's own speech s
 
 ## Chat Commands
 
-Type /help for the list. /new starts a new conversation, /retry sends your last message again, /usage and /insights show what it has been doing, and /model, /personality, /skills and /bots do what they say. Anything else starting with a slash goes to the agent.
+Typing / opens a menu of them, and /help lists them too. /new starts a new conversation (so does the button next to the title), /rename names the one you're in, /retry sends your last message again, /usage and /insights show what it has been doing, and /model, /personality, /skills and /bots do what they say. Anything else starting with a slash goes to the agent.
 
 ## Bots and the Box
 

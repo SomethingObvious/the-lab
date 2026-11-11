@@ -103,49 +103,74 @@ export function hunks(a: string[], b: string[]): Hunk[] {
 		endB--;
 	}
 	if (endA === start && endB === start) return [];
-	// ponytail: plain LCS table, Myers diff if a file ever has thousands of changed lines.
-	if ((endA - start) * (endB - start) > 16_000_000)
-		return [{ a0: start, a1: endA, b0: start, b1: endB }];
 	return walk(a.slice(start, endA), b.slice(start, endB), start);
 }
 
-// The longest common subsequence table for x and y, row by row.
-function table(x: string[], y: string[]): Uint32Array {
-	const w = y.length + 1;
-	const lcs = new Uint32Array((x.length + 1) * w);
-	for (let i = x.length - 1; i >= 0; i--)
-		for (let j = y.length - 1; j >= 0; j--)
-			lcs[i * w + j] =
-				x[i] === y[j]
-					? (lcs[(i + 1) * w + j + 1] ?? 0) + 1
-					: Math.max(lcs[(i + 1) * w + j] ?? 0, lcs[i * w + j + 1] ?? 0);
-	return lcs;
+// Whether the furthest path on diagonal k after d edits came down from k + 1
+// (a line put in) rather than across from k - 1 (a line taken out).
+const fromAbove = (v: Int32Array, off: number, k: number, d: number) =>
+	k === -d || (k !== d && (v[off + k - 1] ?? 0) < (v[off + k + 1] ?? 0));
+
+// Myers' diff, the fewest lines taken out and put in. Its memory grows with
+// how much changed rather than with the square of the file's length, so a
+// long app.js with a few edits through it still merges line by line. Returns
+// the furthest reach on each diagonal before every round, or null if that
+// would take more than 16M cells.
+function reach(x: string[], y: string[]): Int32Array[] | null {
+	const n = x.length;
+	const m = y.length;
+	const off = n + m + 1;
+	const v = new Int32Array(2 * off + 1);
+	const rounds: Int32Array[] = [];
+	for (let d = 0; ; d++) {
+		// ponytail: one changed block past 16M cells, a linear space Myers if that ever bites.
+		if ((d + 1) * v.length > 16_000_000) return null;
+		rounds.push(v.slice());
+		for (let k = -d; k <= d; k += 2) {
+			let i = fromAbove(v, off, k, d)
+				? (v[off + k + 1] ?? 0)
+				: (v[off + k - 1] ?? 0) + 1;
+			let j = i - k;
+			while (i < n && j < m && x[i] === y[j]) {
+				i++;
+				j++;
+			}
+			v[off + k] = i;
+			if (i >= n && j >= m) return rounds;
+		}
+	}
 }
 
 // The hunks between x and y, which start `at` lines into their files.
 function walk(x: string[], y: string[], at: number): Hunk[] {
-	const lcs = table(x, y);
-	const w = y.length + 1;
+	const rounds = reach(x, y);
+	if (!rounds) return [{ a0: at, a1: at + x.length, b0: at, b1: at + y.length }];
+	const off = x.length + y.length + 1;
 	const out: Hunk[] = [];
-	let i = 0;
-	let j = 0;
-	let open: Hunk | null = null;
-	while (i < x.length || j < y.length) {
-		if (i < x.length && j < y.length && x[i] === y[j]) {
-			if (open) out.push(open);
-			open = null;
-			i++;
-			j++;
-			continue;
-		}
-		open ??= { a0: at + i, a1: at + i, b0: at + j, b1: at + j };
-		const takeY =
-			j < y.length &&
-			(i === x.length || (lcs[i * w + j + 1] ?? 0) >= (lcs[(i + 1) * w + j] ?? 0));
-		if (takeY) open.b1 = at + ++j;
-		else open.a1 = at + ++i;
+	let i = x.length;
+	let j = y.length;
+	// Walked back from the end, so each edit lands just before the ones found so far.
+	for (let d = rounds.length - 1; d > 0; d--) {
+		const before = rounds[d] as Int32Array;
+		const k = i - j;
+		const down = fromAbove(before, off, k, d);
+		const pk = down ? k + 1 : k - 1;
+		const pi = before[off + pk] ?? 0;
+		const pj = pi - pk;
+		const h = {
+			a0: at + pi,
+			a1: at + pi + (down ? 0 : 1),
+			b0: at + pj,
+			b1: at + pj + (down ? 1 : 0),
+		};
+		const next = out[0];
+		if (next && next.a0 === h.a1 && next.b0 === h.b1) {
+			next.a0 = h.a0;
+			next.b0 = h.b0;
+		} else out.unshift(h);
+		i = pi;
+		j = pj;
 	}
-	if (open) out.push(open);
 	return out;
 }
 
