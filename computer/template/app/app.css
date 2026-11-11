@@ -4342,3 +4342,38 @@ textarea::placeholder {
 		transform: translateX(24px);
 	}
 }
+
+/* The phone's line naming this computer, which opens its list of computers */
+button.head-sub {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	align-self: flex-start;
+	max-width: 100%;
+	padding: 0;
+	border: 0;
+	background: none;
+	font-family: inherit;
+	line-height: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+#head #head-sub > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+#head #head-sub .ic {
+	flex: none;
+	width: 18px;
+	height: 18px;
+}
+/* A finger-sized target over a one-line label */
+button.head-sub::after {
+	content: "";
+	position: absolute;
+	inset: -10px -8px;
+}
+button.head-sub.asking {
+	color: var(--sun);
+}

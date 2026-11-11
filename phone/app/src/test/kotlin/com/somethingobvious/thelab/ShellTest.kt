@@ -8,6 +8,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ShellTest {
+    // What server.ts shows on the pairing page for the same key.
+    @Test fun checksTheKeyTheWayTheComputerDoes() {
+        assertEquals("4F52 9C69", keyCheck("BEl3cT8v7wQ_test-key"))
+    }
+
     @Test fun keepsThePageAwayFromAnsweringAndPairing() {
         for (p in listOf(
             "/answer", "/ANSWER", "/answer/", "//answer", "/./answer", "/memory/../answer",

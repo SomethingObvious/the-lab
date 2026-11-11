@@ -15,6 +15,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Log
+import android.webkit.CookieManager
+import android.webkit.WebStorage
 import android.widget.Toast
 import androidx.core.content.edit
 import androidx.core.graphics.scale
@@ -149,7 +151,8 @@ object Hub {
     // After a freeze, when no session can be trusted.
     fun redial() { for (c in computers.values) { c.tunnel.drop(); c.reconnectNow() } }
 
-    fun computer(id: String?) = id?.let { computers[it] } ?: on
+    // Null for one that was forgotten, so its old notification can't act on another.
+    fun computer(id: String?) = id?.let { computers[it] }?.takeIf { it.paired }
 
     // The one most worth a look on the status card: a question, then work under way.
     fun focus(): Computer {
@@ -187,7 +190,9 @@ object Hub {
     fun pair(url: String?, tunnel: Tunnel.Spec?, token: String) {
         val free = computers.getValue(MAIN).takeUnless { it.paired }
         val c = known(url, tunnel) ?: free ?: run {
-            val slot = (computers.values.maxOf { it.slot }) + 1
+            // Never a forgotten one's number, whose address its page's storage was kept under.
+            val slot = maxOf(computers.values.maxOf { it.slot }, prefs.getInt("lastSlot", 0)) + 1
+            prefs.edit { putInt("lastSlot", slot) }
             val made = Computer(slot)
             computers[made.id] = made
             saveList()
@@ -308,6 +313,8 @@ class Computer(val slot: Int) {
     private var flushing = false
     private var syncing = false
     private var started = false
+    // Goes up on every forget, so a design download that started before it is thrown away.
+    private var era = 0
     private var loaded = false
     private var connectWhenLoaded = false
     private val whenLoaded = ArrayList<() -> Unit>()
@@ -388,6 +395,12 @@ class Computer(val slot: Int) {
 
     // Everything of this computer's goes, on the phone only.
     fun wipe() {
+        era++
+        // Its page's own storage, so whatever pairs here next starts clean.
+        WebStorage.getInstance().deleteOrigin(origin)
+        val cookies = CookieManager.getInstance()
+        cookies.getCookie(origin)?.split(';')?.map { it.substringBefore('=').trim() }?.filter { it.isNotEmpty() }
+            ?.forEach { cookies.setCookie(origin, "$it=; Max-Age=0; Path=/") }
         retry?.let { main.removeCallbacks(it) }
         retry = null
         main.removeCallbacks(tryDirect)
@@ -860,6 +873,7 @@ class Computer(val slot: Int) {
         val base = url ?: return
         syncing = true
         val auth = "Bearer $token"
+        val from = era
         io.execute {
             val version = runCatching {
                 val req = Request.Builder().url("$base/design").header("Authorization", auth).build()
@@ -885,6 +899,10 @@ class Computer(val slot: Int) {
             }.onFailure { Log.w(TAG, "design sync failed", it) }.getOrNull()
             main.post {
                 syncing = false
+                if (from != era) {
+                    io.execute { File(dir, "design").deleteRecursively(); if (slot != 0) dir.deleteRecursively() }
+                    return@post
+                }
                 if (version != null) {
                     designFailures = 0
                     designVersion = version

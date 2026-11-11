@@ -308,15 +308,17 @@ class Tunnel {
             for (h in hosts) for (p in ports) runCatching { u.send(DatagramPacket(ask, ask.size, InetAddress.getByName(h), p)) }
             val found = LinkedHashSet<String>()
             val buf = ByteArray(64)
-            val end = System.nanoTime() + 800_000_000L
+            var end = System.nanoTime() + 800_000_000L
             while (System.nanoTime() < end) {
                 val pk = DatagramPacket(buf, buf.size)
                 try { u.receive(pk) } catch (_: SocketTimeoutException) { continue }
                 val text = String(pk.data, 0, pk.length)
                 val port = text.removePrefix("thelab! ").toIntOrNull()?.takeIf { text.startsWith("thelab! ") && it in 1..65535 } ?: continue
                 val at = "${pk.address.hostAddress}:$port"
-                // Only the paired computer knows the room, so the first answer will do.
-                if (ADDRESS.matches(at)) { found.add(at); break }
+                // Anyone on the Wi-Fi can answer, so every answer is kept and the
+                // handshake picks the real one. A short wait after the first is enough.
+                if (ADDRESS.matches(at) && found.add(at)) end = minOf(end, System.nanoTime() + 150_000_000L)
+                if (found.size >= 8) break
             }
             found.toList()
         }

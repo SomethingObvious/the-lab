@@ -202,6 +202,7 @@ Every saved event also has `id`, `at` (an ISO time) and `chat`, the conversation
 | `commands` | `items`, the slash commands he can type (`name`, `arg` when it takes one, `about`), skills included. On connect. |
 | `loaded` | No fields. The saved history has all arrived, so an empty list really is empty and not still loading. The phone sends it once per page load, the browser again after each reconnect. |
 | `outbox` | `items`, the messages still waiting to send (`cid`, `text`, `at`). |
+| `computers` | `active`, the id of the computer this page is for, and `items`, every computer paired with the phone (`id`, `name`, `state` like `link`'s, `working`, `waiting` when it needs his OK). Phone only, on load and on every change. |
 | `compose` | `text`, and `files` if any. Something he shared into The Lab from another app, or opened it from the tile, widget or assistant. Put it in the message box and focus it, without sending. |
 | `design` | `version`. The page reloads by itself right after. |
 | `insets` | `top`, `bottom`, `left`, `right`, `keyboard`. Already applied as the CSS variables. |

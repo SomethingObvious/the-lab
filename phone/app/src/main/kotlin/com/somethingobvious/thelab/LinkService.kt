@@ -491,7 +491,8 @@ class AnswerReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Hub.init(context)
         val ref = intent.getStringExtra("ref").orEmpty()
-        val c = Hub.computer(intent.getStringExtra("computer"))
+        if (intent.action == SWIPED) return Notifier.swipedAway()
+        val c = Hub.computer(intent.getStringExtra("computer")) ?: return
         val card = Notifier.card(c, ref)
         when (intent.action) {
             ALLOW, DENY -> {

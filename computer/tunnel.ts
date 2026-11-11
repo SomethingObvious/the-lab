@@ -72,6 +72,16 @@ const ignore = () => {
 
 const b64 = (b: Buffer) => b.toString("base64url");
 const raw = (s: string) => Buffer.from(s, "base64url");
+// A few letters from the key in the pairing code, which the pairing page and
+// the phone both show, so a code from anywhere else can be told apart. The
+// phone's keyCheck has to come out the same.
+export const keyCheck = (key: string) =>
+	createHash("sha256")
+		.update(key)
+		.digest("hex")
+		.slice(0, 8)
+		.toUpperCase()
+		.replace(/^(.{4})/, "$1 ");
 export const roomOf = (secret: string) =>
 	b64(createHash("sha256").update(secret).digest());
 

@@ -12,6 +12,7 @@
 //   node setup.ts phone        build the app, install it over USB and pair it
 //   node setup.ts iphone       on a Mac with Xcode, build the iPhone app and install it (--team TEAMID)
 //   node setup.ts pair         open a QR code on the computer that pairs the phone again
+//                              (--reset unpairs every phone first, for a lost phone or a code someone else saw)
 //   node setup.ts stop         stop the server, before an update replaces the source
 //   node setup.ts remove       stop the server and take it out of the sign-in items
 //   node setup.ts bundle      build the app as an .aab for Play Console internal testing
@@ -865,13 +866,17 @@ async function phone() {
 		);
 
 	say("Installing on the phone");
-	let inst = run(adb, ["-s", serial, "install", "-r", apk]);
+	const inst = run(adb, ["-s", serial, "install", "-r", apk]);
 	if (!inst.ok && /INSTALL_FAILED_UPDATE_INCOMPATIBLE/.test(inst.out)) {
-		// Signed with a different key (a rebuilt computer, or a test build), so it has to go and come back.
-		run(adb, ["-s", serial, "uninstall", PKG]);
-		inst = run(adb, ["-s", serial, "install", apk]);
-	}
-	if (!inst.ok) fail(`adb install failed: ${inst.out}`);
+		// Each computer signs the app with its own key, so this one came from
+		// another computer (or this one before a rebuild). Uninstalling it would
+		// wipe every other computer's pairing and history on the phone, so it
+		// stays and gets paired with this computer as well.
+		const had = /versionName=(\S+)/.exec(sh("dumpsys", "package", PKG).out)?.[1];
+		say(
+			`The phone already has The Lab${had ? ` ${had}` : ""}, installed from another computer, so it keeps that copy and adds this computer to it. That copy updates from the computer that installed it. If no other computer uses it, uninstall The Lab on the phone and run this step again.`,
+		);
+	} else if (!inst.ok) fail(`adb install failed: ${inst.out}`);
 
 	// A sideloaded app gets no profile from Play, so compile it ahead of time
 	// here, or every cold start runs in the interpreter for the first few days.
@@ -913,7 +918,7 @@ async function phone() {
 	// A phone already paired with another computer only switches once he says so.
 	if (paired.out.includes("confirm on the phone"))
 		say(
-			"The phone was paired with another computer, so it's asking first. Tap Switch on the phone to pair it with this one.",
+			"The phone is already paired with another computer, so it's asking first. Tap Add on the phone, and the other computer stays paired as it was.",
 		);
 	await firewall(adb, serial, opened, port + 1);
 	say(
@@ -1056,6 +1061,7 @@ async function check() {
 // Opens a page on the computer with a QR code. Scanned with the phone's camera,
 // it pairs The Lab again without the cable.
 async function pair() {
+	if (process.argv.includes("--reset")) await resetPairing();
 	const { port, token } = config();
 	if (!(await health()))
 		fail("The server is not running. Run `node setup.ts computer` first.");
@@ -1068,6 +1074,27 @@ async function pair() {
 	show(link);
 	say(
 		`The pairing code is open in the browser. On the phone, point the camera at the code and tap the link it finds. It works once and lasts 10 minutes.${config().relay ? "" : " With no relay set up, the phone has to be on the same Wi-Fi as this computer, now and later."}`,
+	);
+}
+
+// Every phone shares the one token and tunnel key, so a lost phone, or a code
+// someone else saw, is only shut out by making new ones. Every phone then has
+// to pair again.
+async function resetPairing() {
+	stopServer();
+	setConfig({ token: randomBytes(32).toString("base64url") });
+	// The old token and key would otherwise live on in these copies.
+	for (const f of [
+		"config.json.good",
+		"config.json.bad",
+		"tunnel.json",
+		"tunnel.json.bad",
+		"push-tokens.json",
+	])
+		rmSync(join(LAB, f), { force: true });
+	await computer();
+	say(
+		"Every phone is unpaired now and has to scan the new code. Close The Lab's window and open it again, as it still holds the old key.",
 	);
 }
 

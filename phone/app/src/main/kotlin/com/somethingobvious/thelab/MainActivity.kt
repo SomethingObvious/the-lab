@@ -12,11 +12,15 @@ import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.widget.Toast
 import android.content.ActivityNotFoundException
+import android.content.ContentResolver
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import android.text.SpannableStringBuilder
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -71,6 +75,9 @@ class MainActivity : Activity() {
     private var rescueReason: String? = null
     private var ready = false
     private var picking: String? = null
+    private var picker: JavaScriptReplyProxy? = null
+    private var pickedFor: Computer? = null
+    private var listener: JavaScriptReplyProxy? = null
     private var listening: String? = null
     private var voice: TextToSpeech? = null
     // Only <lab-ask> knows it, so only it can answer an Allow card.
@@ -249,6 +256,10 @@ class MainActivity : Activity() {
         val uris = ArrayList<Uri>()
         if (intent.action == Intent.ACTION_SEND_MULTIPLE) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.addAll(it) }
         else intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)?.let { uris.add(it) }
+        // Any app can send this, and The Lab opens the stream with its own
+        // rights, so a file:// path or its own provider would hand over its
+        // private files, every computer's key among them.
+        uris.retainAll { it.scheme == ContentResolver.SCHEME_CONTENT && it.authority != "$packageName.files" }
         if (uris.isEmpty()) return toCompose(JSONObject().put("kind", "compose").put("text", text))
         Toast.makeText(this, "Sending to the computer", Toast.LENGTH_SHORT).show()
         uploadAll(uris, "Couldn't send that to the computer.") { out, error ->
@@ -281,12 +292,19 @@ class MainActivity : Activity() {
         val base = uri.getQueryParameter("u")?.trimEnd('/')
         if (tunnel == null && (base == null || base.toUri().scheme != "https")) return Toast.makeText(this, "That pairing link isn't from The Lab.", Toast.LENGTH_LONG).show()
         val host = tunnel?.let { t -> t.relay?.toUri()?.host ?: "your Wi-Fi" } ?: base?.toUri()?.host ?: return
+        val known = Hub.known(if (tunnel != null) null else base, tunnel)
+        val how = if (tunnel != null) "straight over Wi-Fi when it can and through $host otherwise" else "through $host"
+        val (title, text) = when {
+            known != null -> "Pair ${known.name} Again?" to "This phone already has ${known.name}. Pairing again gives it a new key and keeps its history."
+            Hub.paired -> "Add This Computer?" to "The Lab will talk to the computer that showed this code, $how. The computers you already have stay as they are."
+            else -> "Pair With This Computer?" to "The Lab will talk to the computer that showed this code, $how."
+        }
+        val check = tunnel?.let { " The computer's screen shows ${keyCheck(uri.getQueryParameter("k").orEmpty())} under the code, and it has to match." }.orEmpty()
         AlertDialog.Builder(this)
-            .setTitle("Pair With This Computer?")
-            .setMessage(if (tunnel != null) "The Lab will talk to the computer that showed this code, straight over Wi-Fi when it can and through $host otherwise. Only say yes if you just scanned the code on your own computer."
-                else "The Lab will talk to $host from now on. Only say yes if you just scanned the code on your own computer.")
+            .setTitle(title)
+            .setMessage("$text$check Only say yes if you just scanned the code on your own computer.")
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Pair") { _, _ ->
+            .setPositiveButton(if (known == null && Hub.paired) "Add" else "Pair") { _, _ ->
                 Hub.claim(base, tunnel, code) { err ->
                     Toast.makeText(this, err ?: "Paired with the computer.", Toast.LENGTH_LONG).show()
                     if (err == null) { LinkService.start(this); rescueReason = null; load() }
@@ -296,7 +314,7 @@ class MainActivity : Activity() {
     }
 
     // The computer's checks, then this phone's own.
-    private fun check(id: String) {
+    private fun check(id: String, asker: JavaScriptReplyProxy) {
         Hub.on.request("GET", "/check", null) { text, err ->
             val items = text?.let { runCatching { JSONObject(it).getJSONArray("items") }.getOrNull() }
                 ?: JSONArray().put(JSONObject().put("ok", false).put("title", "Can't reach the computer")
@@ -316,7 +334,7 @@ class MainActivity : Activity() {
             }
             else if (vpn) items.put(JSONObject().put("ok", true).put("title", "Tailscale is running on this phone"))
             else items.put(JSONObject().put("ok", false).put("title", "Tailscale is off on this phone").put("detail", "The phone can only reach the computer through Tailscale.").put("fix", "tailscale"))
-            answer(id, JSONObject().put("items", items).toString())
+            answer(id, JSONObject().put("items", items).toString(), to = asker)
         }
     }
 
@@ -373,21 +391,51 @@ class MainActivity : Activity() {
     // whatever the agent has made of this computer's design.
     private fun chooseComputer() {
         val all = Hub.pairedComputers
-        val names = all.map { c -> "${c.name}${if (c === Hub.on) " (this one)" else ""}\n${if (c.waiting) "Needs your OK" else if (c.working) "Working" else if (c.link.optString("state") == "online") "Ready" else "Can't reach it right now"}" }
+        if (all.isEmpty()) return addComputer()
+        val dim = obtainStyledAttributes(intArrayOf(android.R.attr.textColorSecondary)).run { getColor(0, Color.GRAY).also { recycle() } }
+        val rows = all.map<Computer, CharSequence> { c ->
+            val state = stateOf(c)
+            SpannableStringBuilder(nameOf(c, all)).append("\n").append(state, RelativeSizeSpan(0.82f), 0).apply {
+                setSpan(ForegroundColorSpan(dim), length - state.length, length, 0)
+            }
+        }
         AlertDialog.Builder(this)
             .setTitle("Your Computers")
-            .setItems(names.toTypedArray()) { _, i -> Hub.switchTo(all[i].id) }
-            .setNeutralButton("Add Another") { _, _ ->
-                AlertDialog.Builder(this).setTitle("Add a Computer")
-                    .setMessage("Set up The Lab on the other computer, or ask its agent to show the pairing code, then point this phone's camera at the code. The computers you already have stay as they are.")
-                    .setPositiveButton("OK", null).show()
+            .setSingleChoiceItems(rows.toTypedArray(), all.indexOf(Hub.on)) { d, i ->
+                d.dismiss()
+                Hub.switchTo(all[i].id)
             }
-            .apply { if (all.isNotEmpty()) setNegativeButton("Forget This One") { _, _ -> confirmForget() } }
+            .setPositiveButton("Add Another") { _, _ -> addComputer() }
+            .setNegativeButton("Close", null)
+            .setNeutralButton("Forget One") { _, _ ->
+                if (all.size == 1) confirmForget(all[0])
+                else AlertDialog.Builder(this).setTitle("Forget Which Computer?")
+                    .setItems(all.map { nameOf(it, all) }.toTypedArray()) { _, i -> confirmForget(all[i]) }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
             .show()
     }
 
-    private fun confirmForget() {
-        val c = Hub.on
+    // Two computers can carry the same name, so the list numbers them.
+    private fun nameOf(c: Computer, all: List<Computer>) =
+        if (all.count { it.name == c.name } > 1) "${c.name} (${all.indexOf(c) + 1})" else c.name
+
+    private fun stateOf(c: Computer) = when {
+        c.waiting -> "Needs your OK"
+        c.working -> "Working"
+        c.link.optString("state") == "online" -> "Ready"
+        c.link.optString("state") == "connecting" -> "Connecting"
+        else -> "Can't reach it right now"
+    }
+
+    private fun addComputer() {
+        AlertDialog.Builder(this).setTitle("Add a Computer")
+            .setMessage("On the other computer, open The Lab and choose Pair a Phone in the menu, or set The Lab up there first. Then point this phone's camera at the code it shows and tap the link. The computers you already have stay as they are.")
+            .setPositiveButton("OK", null).show()
+    }
+
+    private fun confirmForget(c: Computer) {
         AlertDialog.Builder(this).setTitle("Forget ${c.name}?")
             .setMessage("This phone's copy of its history and any unsent messages go. Nothing changes on the computer, and you can pair it again later.")
             .setNegativeButton("Cancel", null)
@@ -457,12 +505,12 @@ class MainActivity : Activity() {
         val computer = Hub.on
         val loader = WebViewAssetLoader.Builder()
             .setDomain(computer.host)
-            .addPathHandler("/app/", WebViewAssetLoader.InternalStoragePathHandler(this, Hub.on.designDir.apply { mkdirs() }))
+            .addPathHandler("/app/", WebViewAssetLoader.InternalStoragePathHandler(this, computer.designDir.apply { mkdirs() }))
             .addPathHandler("/shell/", WebViewAssetLoader.AssetsPathHandler(this))
             .addPathHandler("/files/") { path ->
                 // lab.fileUrl(url, { w }) asks for /files/w360/name.
                 val sized = Regex("^w(\\d{2,4})/(.+)$").find(path)
-                val f = (if (sized != null) Hub.on.thumb(sized.groupValues[2], sized.groupValues[1].toInt().coerceIn(48, 2048)) else Hub.on.fetchFile(path))
+                val f = (if (sized != null) computer.thumb(sized.groupValues[2], sized.groupValues[1].toInt().coerceIn(48, 2048)) else computer.fetchFile(path))
                     ?: return@addPathHandler null
                 WebResourceResponse(mime(f.name), null, FileInputStream(f))
             }
@@ -615,9 +663,9 @@ class MainActivity : Activity() {
             }
             "saveShortcuts" -> {
                 val id = m.optString("id")
-                Hub.on.saveShortcuts(m.optJSONArray("items") ?: JSONArray()) { ok -> answer(id, ok) }
+                Hub.on.saveShortcuts(m.optJSONArray("items") ?: JSONArray()) { ok -> answer(id, ok, to = reply) }
             }
-            "attach" -> pick(m.optString("id"), m.optString("kind"))
+            "attach" -> pick(m.optString("id"), m.optString("kind"), reply)
             "stop" -> Hub.on.stop { ok -> if (!ok) send(JSONObject().put("kind", "stopFailed")) }
             "askInfo", "askAnswer" -> asked(m, reply)
             "call" -> {
@@ -625,9 +673,9 @@ class MainActivity : Activity() {
                 val method = m.optString("method", "GET").uppercase().takeIf { it == "GET" || it == "POST" } ?: return answer(id, null, "Only GET and POST go to the computer.")
                 val path = m.optString("path")
                 if (closedToPage(path)) return answer(id, null, "The page can't use that route. Questions are answered on their own card, and pairing happens on the phone.")
-                Hub.on.request(method, path, m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err) }
+                Hub.on.request(method, path, m.optString("body").ifBlank { null }) { text, err -> answer(id, text, err, reply) }
             }
-            "check" -> check(m.optString("id"))
+            "check" -> check(m.optString("id"), reply)
             "undo" -> Hub.on.undoDesign { ok ->
                 send(JSONObject().put("kind", "undone").put("ok", ok))
                 if (ok) { rescueReason = null }
@@ -652,7 +700,7 @@ class MainActivity : Activity() {
             "theme" -> applyTheme(m)
             "back" -> wantsBack(m.optBoolean("on"))
             "open" -> open(m.optString("url"))
-            "listen" -> listen(m.optString("id"))
+            "listen" -> listen(m.optString("id"), reply)
             "speak" -> speak(m.optString("text"))
             "hush" -> voice?.stop()
             "fix" -> fix(m.optString("fix"))
@@ -660,7 +708,7 @@ class MainActivity : Activity() {
                 getSharedPreferences("lab", MODE_PRIVATE).edit { putString("statusCard", it) }
                 LinkService.refresh()
             }
-            "retry" -> Hub.reconnectNow()
+            "retry" -> if (Hub.on.link.optString("state") != "online") Hub.on.reconnectNow()
             "chooseComputer" -> chooseComputer()
         }
     }
@@ -779,22 +827,27 @@ class MainActivity : Activity() {
     }
 
     // Answers a promise the page is waiting on.
-    private fun answer(id: String, value: Any?, error: String? = null) {
+    // Only while the page that asked is still the one on screen. Every page
+    // numbers its requests from 1, so a late answer for another computer's
+    // page would otherwise land on this one's.
+    private fun answer(id: String, value: Any?, error: String? = null, to: JavaScriptReplyProxy? = port) {
+        if (to == null || to !== port) return
         val r = JSONObject().put("reply", id)
         if (error != null) r.put("error", error) else r.put("value", value)
-        send(r)
+        post(to, r.toString())
     }
 
     // The system's own speech screen, so the mic never runs without him seeing
     // it, whatever the page does, and the app needs no microphone permission.
-    private fun listen(id: String) {
-        listening?.let { answer(it, "") }
+    private fun listen(id: String, asker: JavaScriptReplyProxy) {
+        listening?.let { answer(it, "", to = listener) }
         listening = id
+        listener = asker
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         try { startActivityForResult(intent, LISTEN) } catch (_: ActivityNotFoundException) {
             listening = null
-            answer(id, null, "There's nothing on this phone that can turn speech into text.")
+            answer(id, null, "There's nothing on this phone that can turn speech into text.", asker)
         }
     }
 
@@ -813,9 +866,11 @@ class MainActivity : Activity() {
         voice = made
     }
 
-    private fun pick(id: String, kind: String) {
-        picking?.let { answer(it, JSONArray()) }
+    private fun pick(id: String, kind: String, asker: JavaScriptReplyProxy) {
+        picking?.let { answer(it, JSONArray(), to = picker) }
         picking = id
+        picker = asker
+        pickedFor = Hub.on
         val photos = kind == "photos"
         val intent = if (photos) {
             Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*").putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, 10)
@@ -825,7 +880,7 @@ class MainActivity : Activity() {
         }
         try { startActivityForResult(intent, PICK) } catch (_: ActivityNotFoundException) {
             picking = null
-            answer(id, null, "There's nothing on this phone that can pick files.")
+            answer(id, null, "There's nothing on this phone that can pick files.", asker)
         }
     }
 
@@ -835,27 +890,29 @@ class MainActivity : Activity() {
             val id = listening ?: return
             listening = null
             val heard = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
-            return answer(id, if (resultCode == RESULT_OK) heard.orEmpty() else "")
+            return answer(id, if (resultCode == RESULT_OK) heard.orEmpty() else "", to = listener)
         }
         if (requestCode != PICK) return super.onActivityResult(requestCode, resultCode, data)
         val id = picking
         if (id == null && !pickedBefore) return
         picking = null
         pickedBefore = false
+        // Picked for one computer, so they aren't sent to another he switched to meanwhile.
+        if (pickedFor != null && pickedFor !== Hub.on) return
         val uris = ArrayList<Uri>()
         if (resultCode == RESULT_OK && data != null) {
             val clip = data.clipData
             if (clip != null) for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri) else data.data?.let { uris.add(it) }
         }
         if (uris.isEmpty()) {
-            if (id != null) answer(id, JSONArray())
+            if (id != null) answer(id, JSONArray(), to = picker)
             return
         }
         uploadAll(uris, "Couldn't attach that.") { out, error ->
             when {
-                id != null && out.length() == 0 && error != null -> answer(id, null, error)
+                id != null && out.length() == 0 && error != null -> answer(id, null, error, picker)
                 id != null -> {
-                    answer(id, out)
+                    answer(id, out, to = picker)
                     if (error != null) Toast.makeText(this, error, Toast.LENGTH_LONG).show()
                 }
                 // The page that asked was rebuilt, so the files go to the message box like a share.
@@ -886,7 +943,10 @@ class MainActivity : Activity() {
         }
     }
 
+    // Pairing only starts from the camera or another app, never from a
+    // computer's own page, which could otherwise slip in a computer of its own.
     private fun openExternal(uri: Uri) {
+        if (uri.scheme.equals("thelab", ignoreCase = true)) return
         try { startActivity(Intent(Intent.ACTION_VIEW, uri)) } catch (_: ActivityNotFoundException) {}
     }
 
@@ -977,3 +1037,7 @@ private fun unescape(s: String): String? {
     }
     return String(out.toByteArray(), Charsets.UTF_8)
 }
+
+// The same as keyCheck in server.ts, for him to compare with the pairing page.
+internal fun keyCheck(key: String) = MessageDigest.getInstance("SHA-256").digest(key.toByteArray())
+    .take(4).joinToString("") { "%02X".format(it) }.let { "${it.take(4)} ${it.drop(4)}" }

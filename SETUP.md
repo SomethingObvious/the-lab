@@ -126,7 +126,9 @@ He can turn USB debugging back off afterwards if he likes, though leaving it on 
 
 If the phone ever loses its pairing (a new phone, or the app was reinstalled), run `node setup.ts pair`. It opens a QR code on the computer that works once for 10 minutes. He points the phone's camera at it, taps the link it finds and then Pair, and no cable is needed. The link opens The Lab directly, so nothing in it goes through the relay. It only works once The Lab is on the phone, so a new phone still needs `node setup.ts phone` over the cable first.
 
-One phone can hold several computers. Run this setup on the other computer as well, and the phone asks whether to add it, with the first computer left as it was. Both stay connected at once, each with its own design and history, and he switches between them under Your Computers in the menu or by long-pressing the app icon. A computer can have up to 8 phones.
+One phone can hold several computers. Run this setup on the other computer as well, and the phone asks whether to add it, with the first computer left as it was. Both stay connected at once, each with its own design and history, and he switches between them by tapping the computer's name under the title, under Your Computers in the menu, or by long-pressing the app icon. When the phone asks to pair, it shows a short check like `4F52 9C69` that the pairing page shows too, and he only says yes if they match. A computer can have up to 8 phones.
+
+If a phone is lost, or a pairing turns up that he didn't make (the server says so in a notice), run `node setup.ts pair --reset` in `~/.thelab/source/computer`. It gives the computer a new key and unpairs every phone, so each one he still has needs `node setup.ts pair` again.
 
 ### The iPhone Code (Not Recommended)
 

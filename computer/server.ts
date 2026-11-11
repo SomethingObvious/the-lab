@@ -49,7 +49,7 @@ import {
 } from "./schedule.ts";
 import { cleanSettings, DEFAULTS, type Settings } from "./settings.ts";
 import { launchers } from "./trash.ts";
-import { startTunnel } from "./tunnel.ts";
+import { keyCheck, startTunnel } from "./tunnel.ts";
 import {
 	apply,
 	bad,
@@ -1228,6 +1228,16 @@ async function serve() {
 					lab.state.login = login(req);
 					lab.save();
 				}
+				// A code someone else saw pairs their phone just as well, so
+				// every pairing is said out loud.
+				const when = new Date().toLocaleTimeString([], {
+					hour: "numeric",
+					minute: "2-digit",
+				});
+				lab.store.add({
+					kind: "notice",
+					text: `A phone paired with this computer at ${when}. If that wasn't you, run node setup.ts pair --reset in ~/.thelab/source/computer, which unpairs every phone.`,
+				});
 				return json(res, 200, { token });
 			},
 		],
@@ -1255,6 +1265,11 @@ async function serve() {
 			? `${readFileSync(urlFile, "utf8").trim()}/pair?c=${code("scan", 10 * 60_000)}`
 			: pairLink(code("claim", 10 * 60_000));
 		const img = `data:image/svg+xml;base64,${Buffer.from(qrSvg(link)).toString("base64")}`;
+		// The phone shows the same few letters from the key in the code, so a
+		// link from anywhere else can be told apart.
+		const match = tailscale
+			? ""
+			: `<p>The phone shows <b>${keyCheck(tunnel.spec().key)}</b> when it asks to pair. Only pair if it matches.</p>`;
 		const how = relay
 			? "Tap the link the camera finds and The Lab opens."
 			: tailscale
@@ -1264,7 +1279,7 @@ async function serve() {
 			res,
 			200,
 			"Pair a Phone",
-			`<h1>Point the Phone's Camera at This</h1><p>${how} The code works once and lasts 10 minutes.</p><img src="${img}" alt="Pairing code for The Lab, for the phone's camera"><p><a class="btn" href="/pair-phone">New Code</a></p>`,
+			`<h1>Point the Phone's Camera at This</h1><p>${how} The code works once and lasts 10 minutes. A phone that already has The Lab for another computer adds this one beside it.</p><img src="${img}" alt="Pairing code for The Lab, for the phone's camera">${match}<p><a class="btn" href="/pair-phone">New Code</a></p>`,
 		);
 	};
 

@@ -323,6 +323,16 @@ let booted = false;
 // The Lab's own window on the computer, which gets a title bar and a side panel.
 const desk = lab.platform === "desktop";
 let phone = null;
+// The phone's paired computers, { active, items }, from the phone itself.
+let computers = null;
+// On the phone, the line naming this computer opens the phone's own list of them.
+if (lab.chooseComputer) {
+	const b = document.createElement("button");
+	b.type = "button";
+	b.className = "head-sub";
+	b.id = "head-sub";
+	$("head-sub").replaceWith(b);
+}
 
 // Conversations. Every stored event names the one it belongs to, and the
 // page draws one at a time from `history`, so switching is a redraw.
@@ -637,6 +647,10 @@ function showEvent(e) {
 		case "phone":
 			phone = e;
 			drawHub();
+			return;
+		case "computers":
+			computers = e;
+			drawGlance();
 			return;
 		case "window":
 			drawWindow(e);
@@ -1491,7 +1505,19 @@ function drawGlance() {
 				: link.state === "unpaired"
 					? "Not paired"
 					: "Offline";
-	setText($("head-sub"), mac ? `${mac.name} · ${where}` : where);
+	const label = mac ? `${mac.name} · ${where}` : where;
+	const sub = $("head-sub");
+	if (sub.tagName === "BUTTON") {
+		// Another computer waiting on him matters more than this one's state,
+		// and its card is one tap away in the list.
+		const asking = computers?.items?.find(
+			(c) => c.waiting && c.id !== computers.active,
+		);
+		const shown = asking ? `${asking.name} needs your OK` : label;
+		sub.classList.toggle("asking", Boolean(asking));
+		sub.innerHTML = `<span>${esc(shown)}</span>${icon("swap")}`;
+		sub.setAttribute("aria-label", `${shown}. Your Computers`);
+	} else setText(sub, label);
 	$("fold-head").setAttribute(
 		"aria-label",
 		hidden ? "Show the Top Bar" : "Hide the Top Bar",
@@ -3786,6 +3812,8 @@ function clickById(id) {
 			return openMenu();
 		case "open-chats":
 			return openChats();
+		case "head-sub":
+			return lab.chooseComputer?.();
 		case "new-chat":
 			return newChat();
 		case "close-files":

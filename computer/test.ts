@@ -37,6 +37,7 @@ import {
 import { cleanSettings, DEFAULTS } from "./settings.ts";
 import { title } from "./steps.ts";
 import { trash } from "./trash.ts";
+import { keyCheck } from "./tunnel.ts";
 import { fitTemplate, hunks, merge3, syncHome } from "./update.ts";
 
 // The value a test expects to be there, failing the test when it isn't.
@@ -1139,6 +1140,11 @@ test("a change to app/ can't add lint findings over the version the phone has", 
 	writeFileSync(script, `${clean}// TODO tidy this\n`);
 	assert.match(checkApp(app) ?? "", /an unfinished note/);
 	rmSync(root, { recursive: true, force: true });
+});
+
+test("the pairing page and the phone check the key the same way", () => {
+	// ShellTest.kt pins the phone's side to the same value.
+	assert.equal(keyCheck("BEl3cT8v7wQ_test-key"), "4F52 9C69");
 });
 
 test("the line diff rebuilds the other side and keeps it small", () => {
