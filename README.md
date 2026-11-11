@@ -66,7 +66,7 @@ You need a Mac or a Windows 10 or 11 PC, an Android phone, a USB-C cable and one
 
    ```
    Set up The Lab on this computer and my Android phone, following
-   https://github.com/SomethingObvious/the-lab/blob/v1.3.0/SETUP.md
+   https://github.com/SomethingObvious/the-lab/blob/v1.3.1/SETUP.md
    ```
 
 3. Allow it to run commands when it asks. Setup takes about half an hour, and most of that is downloads.

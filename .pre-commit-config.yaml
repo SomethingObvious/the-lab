@@ -65,7 +65,7 @@ repos:
       - id: biome
         name: Biome
         language: system
-        entry: npx biome check --no-errors-on-unmatched --files-ignore-unknown=true
+        entry: npx biome check --error-on-warnings --no-errors-on-unmatched --files-ignore-unknown=true
         types_or: [javascript, ts, html, css, json]
       - id: oxlint
         name: oxlint

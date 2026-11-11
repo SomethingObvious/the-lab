@@ -87,6 +87,26 @@
 			}
 		},
 		{
+			"includes": ["iphone/check.mjs"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noConsole": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["iphone/Tests/engine.cjs"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"useStrictMode": "off"
+					}
+				}
+			}
+		},
+		{
 			"includes": ["computer/setup.ts"],
 			"linter": {
 				"rules": {

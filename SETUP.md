@@ -45,8 +45,8 @@ curl.exe -fsSLO "https://nodejs.org/dist/latest-v24.x/$file"; tar -xf $file; Rem
 Node is then `node.exe` in the `node-v24...` folder it unpacked. Use that Node for every command below. Then fetch the source at the release tag and install its packages:
 
 ```sh
-cd ~/.thelab && curl -fsSL https://github.com/SomethingObvious/the-lab/archive/refs/tags/v1.3.0.tar.gz | tar -xz
-rm -rf source && mv the-lab-1.3.0 source
+cd ~/.thelab && curl -fsSL https://github.com/SomethingObvious/the-lab/archive/refs/tags/v1.3.1.tar.gz | tar -xz
+rm -rf source && mv the-lab-1.3.1 source
 cd source/computer && npm ci
 ```
 

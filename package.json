@@ -3,7 +3,7 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"lint": "biome ci . && oxlint --deny-warnings && npm --prefix computer run check",
+		"lint": "biome ci --error-on-warnings . && oxlint --deny-warnings && npm --prefix computer run check",
 		"fix": "biome check --write ."
 	},
 	"devDependencies": {
