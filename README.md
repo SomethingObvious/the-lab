@@ -53,7 +53,7 @@ Ask for something regular ("every weekday at 8, tell me what's on my calendar") 
 
 The Lab also has its own window, in the Start menu on Windows and in Applications on a Mac. It shows the same app as the phone with the conversations down the side. It is a native window around the system's own web view, built during setup, so it comes to about 125 MB with nothing to download.
 
-The server keeps itself up to date. Twice a day it checks this repository for a newer release, tests it and swaps it in while the agent is idle, and it puts the old version back if the new one won't stay up.
+The server keeps itself up to date. Twice a day it checks this repository for a newer release, tests it and swaps it in while the agent is idle, and it puts the old version back if the new one won't stay up. Then it builds the phone app again, and the phone offers to install it from wherever it is, which Android asks you to confirm.
 
 ## Setting It Up
 
@@ -66,7 +66,7 @@ You need a Mac or a Windows 10 or 11 PC, an Android phone, a USB-C cable and one
 
    ```
    Set up The Lab on this computer and my Android phone, following
-   https://github.com/SomethingObvious/the-lab/blob/v1.3.1/SETUP.md
+   https://github.com/SomethingObvious/the-lab/blob/v1.4.0/SETUP.md
    ```
 
 3. Allow it to run commands when it asks. Setup takes about half an hour, and most of that is downloads.

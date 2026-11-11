@@ -138,6 +138,7 @@ The page talks to the phone and the server only through `window.lab`, which is t
 | `lab.undoDesign()` | Restores the previous version of `app/`. |
 | `lab.open(url)` | Opens a link, or a file from a `file` event, in the right app on the phone. |
 | `lab.fileUrl(url, { w })` | Turns a file's `url` into one an `<img>` can load. With `w`, it's a smaller copy whose short side is at least `w` pixels, so use about twice the CSS size for thumbnails. |
+| `lab.updateApp()` | Offers the newer phone app a computer has ready, the same as the prompt the phone shows by itself. Only there when the `computers` event has `update`. |
 | `lab.chooseComputer()` | Opens the phone's own list of paired computers, where he switches, adds or forgets one. Missing except on the phone. Each computer has its own design, so this one only changes what this computer's page shows. |
 | `lab.fix(fix)` | Opens whatever fixes a `link` problem or a Check My Setup item (`fix` comes from the event or the item). |
 | `lab.retry()` | Tries to reconnect now. |
@@ -202,7 +203,8 @@ Every saved event also has `id`, `at` (an ISO time) and `chat`, the conversation
 | `commands` | `items`, the slash commands he can type (`name`, `arg` when it takes one, `about`), skills included. On connect. |
 | `loaded` | No fields. The saved history has all arrived, so an empty list really is empty and not still loading. The phone sends it once per page load, the browser again after each reconnect. |
 | `outbox` | `items`, the messages still waiting to send (`cid`, `text`, `at`). |
-| `computers` | `active`, the id of the computer this page is for, and `items`, every computer paired with the phone (`id`, `name`, `state` like `link`'s, `working`, `waiting` when it needs his OK). Phone only, on load and on every change. |
+| `computers` | `active`, the id of the computer this page is for, and `items`, every computer paired with the phone (`id`, `name`, `state` like `link`'s, `working`, `waiting` when it needs his OK), and `update`, the version of a newer phone app one of them has ready. Phone only, on load and on every change. |
+| `app` | `version`, `size`, `sha256`, `cert`. The phone app this computer built for the phone to update itself from. The phone handles it, so the page can ignore it. |
 | `compose` | `text`, and `files` if any. Something he shared into The Lab from another app, or opened it from the tile, widget or assistant. Put it in the message box and focus it, without sending. |
 | `design` | `version`. The page reloads by itself right after. |
 | `insets` | `top`, `bottom`, `left`, `right`, `keyboard`. Already applied as the CSS variables. |

@@ -10,6 +10,7 @@
 //   node setup.ts relay        put up the relay on Cloudflare, or --url to use one that's already up
 //   node setup.ts tailscale    HTTPS address for the phone through tailscale serve, if he has Tailscale
 //   node setup.ts phone        build the app, install it over USB and pair it
+//   node setup.ts apk          build the app for phones set up from here to update themselves (the server runs it)
 //   node setup.ts iphone       on a Mac with Xcode, build the iPhone app and install it (--team TEAMID)
 //   node setup.ts pair         open a QR code on the computer that pairs the phone again
 //                              (--reset unpairs every phone first, for a lost phone or a code someone else saw)
@@ -825,35 +826,9 @@ async function phone() {
 	const adb = join(sdk, "platform-tools", WIN ? "adb.exe" : "adb");
 
 	const store = keystore(javaHome);
-	const project = join(REPO, "phone");
-	writeFileSync(join(project, "local.properties"), sdkLine(sdk));
 	say("Building the app");
-	const gradlew = join(project, WIN ? "gradlew.bat" : "gradlew");
-	if (!WIN) chmodSync(gradlew, 0o755);
-	const g = batch(gradlew, [
-		"assembleRelease",
-		"--console=plain",
-		"-q",
-		`-Plab.keystore=${store.file}`,
-		`-Plab.keystorePassword=${store.password}`,
-	]);
-	const build = spawnSync(g.file, g.args, {
-		cwd: project,
-		env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk },
-		stdio: "inherit",
-		windowsVerbatimArguments: g.windowsVerbatimArguments,
-	});
-	if (build.status !== 0)
-		fail("The app build failed. The Gradle output above says why.");
-	const apk = join(
-		project,
-		"app",
-		"build",
-		"outputs",
-		"apk",
-		"release",
-		"app-release.apk",
-	);
+	const apk = buildApp(javaHome, sdk, store, false);
+	publishApp(apk, javaHome, store);
 
 	// After the downloads and the build, so he has had all that time to get
 	// developer mode on.
@@ -926,6 +901,94 @@ async function phone() {
 			? "The app is installed, paired and open on the phone. It reaches this computer straight over Wi-Fi at home and through the relay everywhere else."
 			: "The app is installed, paired and open on the phone. Without a relay it only reaches this computer on the same Wi-Fi, so run `node setup.ts relay` next.",
 	);
+}
+
+type Store = { file: string; password: string };
+
+function buildApp(javaHome: string, sdk: string, store: Store, quiet: boolean): string {
+	const project = join(REPO, "phone");
+	writeFileSync(join(project, "local.properties"), sdkLine(sdk));
+	const gradlew = join(project, WIN ? "gradlew.bat" : "gradlew");
+	if (!WIN) chmodSync(gradlew, 0o755);
+	const g = batch(gradlew, [
+		"assembleRelease",
+		"--console=plain",
+		"-q",
+		// Nobody is waiting on a build the server starts, so it doesn't leave a
+		// daemon holding a gigabyte or so afterwards.
+		...(quiet ? ["--no-daemon"] : []),
+		`-Plab.keystore=${store.file}`,
+		`-Plab.keystorePassword=${store.password}`,
+	]);
+	const build = spawnSync(g.file, g.args, {
+		cwd: project,
+		env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk },
+		stdio: quiet ? "pipe" : "inherit",
+		encoding: "utf8",
+		windowsVerbatimArguments: g.windowsVerbatimArguments,
+	});
+	if (build.status !== 0)
+		fail(
+			quiet
+				? `The app build failed: ${`${build.stdout ?? ""}${build.stderr ?? ""}`.trim().slice(-1500)}`
+				: "The app build failed. The Gradle output above says why.",
+		);
+	return join(project, "app", "build", "outputs", "apk", "release", "app-release.apk");
+}
+
+// Where the server hands the app to phones that update themselves. A phone
+// only takes it when the certificate matches the one its own copy was signed
+// with, so a phone set up from another computer is never offered this one.
+function publishApp(apk: string, javaHome: string, store: Store) {
+	const pem = run(join(javaHome, "bin", WIN ? "keytool.exe" : "keytool"), [
+		"-exportcert",
+		"-rfc",
+		"-alias",
+		"lab",
+		"-keystore",
+		store.file,
+		"-storepass",
+		store.password,
+	]);
+	const body = /-----BEGIN CERTIFICATE-----([\s\S]+?)-----END CERTIFICATE-----/.exec(
+		pem.out,
+	)?.[1];
+	if (!(pem.ok && body))
+		fail(`keytool couldn't read the signing certificate: ${pem.out}`);
+	const data = readFileSync(apk);
+	const dir = join(LAB, "phone-app");
+	mkdirSync(dir, { recursive: true });
+	// Swapped in whole, since the server may be sending the old one right now.
+	writeFileSync(join(dir, "app.apk.part"), data);
+	renameSync(join(dir, "app.apk.part"), join(dir, "app.apk"));
+	const { version } = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")) as {
+		version: string;
+	};
+	writeFileSync(
+		join(dir, "app.json"),
+		JSON.stringify({
+			version,
+			size: data.length,
+			sha256: createHash("sha256").update(data).digest("hex"),
+			cert: createHash("sha256")
+				.update(Buffer.from(body.replace(/\s/g, ""), "base64"))
+				.digest("hex"),
+		}),
+	);
+}
+
+// The server runs this after an update, so a phone set up from this computer
+// can update itself. Only this computer holds the key its copy was signed with.
+async function buildForPhones() {
+	if (!existsSync(join(LAB, "phone.jks")))
+		return say(
+			"No phone was set up from this computer, so there's no app to build here.",
+		);
+	const javaHome = await jdk();
+	const sdk = await androidSdk(javaHome);
+	const store = keystore(javaHome);
+	publishApp(buildApp(javaHome, sdk, store, true), javaHome, store);
+	say("The app is built, and phones set up from this computer can update to it.");
 }
 
 const ipNumber = (ip: string) => ip.split(".").reduce((n, x) => n * 256 + Number(x), 0);
@@ -1479,6 +1542,7 @@ const steps: Record<string, () => Promise<void>> = {
 	relay,
 	tailscale: async () => tailscale(),
 	phone,
+	apk: buildForPhones,
 	iphone,
 	pair,
 	stop,

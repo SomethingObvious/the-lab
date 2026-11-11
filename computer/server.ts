@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { constants, homedir, setPriority } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import process, { env } from "node:process";
 import { pipeline } from "node:stream";
@@ -558,6 +558,61 @@ async function serve() {
 		});
 	}
 
+	// The phone app built again after an update, for a phone set up from this
+	// computer to update itself from. Only here is the key its copy was signed
+	// with. A build that failed waits a day before the next try.
+	const phoneApp = join(Dir, "phone-app");
+	const appInfo = () => {
+		try {
+			return JSON.parse(readFileSync(join(phoneApp, "app.json"), "utf8")) as {
+				version: string;
+			};
+		} catch {
+			return null;
+		}
+	};
+	const appNow = () => ({ kind: "app" as const, ...appInfo() });
+	const appTried = join(phoneApp, "tried");
+	if (
+		existsSync(join(Dir, "phone.jks")) &&
+		appInfo()?.version !== pkg.version &&
+		!(
+			existsSync(appTried) &&
+			readFileSync(appTried, "utf8") === pkg.version &&
+			statSync(appTried).mtimeMs > Date.now() - 86_400_000
+		)
+	) {
+		mkdirSync(phoneApp, { recursive: true });
+		writeFileSync(appTried, pkg.version);
+		const build = spawn(
+			process.execPath,
+			[join(SOURCE, "computer", "setup.ts"), "apk", "--quiet"],
+			{
+				cwd: join(SOURCE, "computer"),
+				windowsHide: true,
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		);
+		// Gradle and Java inherit this, so the build never slows the agent or a game.
+		if (build.pid)
+			try {
+				setPriority(build.pid, constants.priority.PRIORITY_LOW);
+			} catch {
+				// The build still works at normal priority, just less politely.
+			}
+		let said = "";
+		build.stdout.on("data", (d) => {
+			said = (said + String(d)).slice(-4000);
+		});
+		build.stderr.on("data", (d) => {
+			said = (said + String(d)).slice(-4000);
+		});
+		build.on("close", (status) => {
+			if (status === 0) lab.store.live(appNow());
+			else console.error(`phone app build: ${said.trim()}`);
+		});
+	}
+
 	// A change to app/ that can't run stays on the computer. The agent hears why,
 	// and he hears about it once the turn is over.
 	let told = "";
@@ -961,7 +1016,7 @@ async function serve() {
 			"x-accel-buffering": "no",
 		});
 		res.write(
-			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow(), lab.chatList(), commandList()] })}\n\n`,
+			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow(), lab.chatList(), commandList(), ...(appInfo() ? [appNow()] : [])] })}\n\n`,
 		);
 		const phone = /okhttp|cfnetwork/i.test(req.headers["user-agent"] ?? "");
 		if (phone && ++phones === 1) lab.store.live(phoneNow());
@@ -1779,6 +1834,17 @@ async function serve() {
 			},
 		],
 		["GET /design", (_req, res) => json(res, 200, design.bundle())],
+		[
+			"GET /phone/app.apk",
+			(_req, res) => {
+				const apk = join(phoneApp, "app.apk");
+				if (!existsSync(apk))
+					return json(res, 404, { error: "This computer hasn't built the phone app." });
+				return sendFile(res, apk, {
+					"content-type": "application/vnd.android.package-archive",
+				});
+			},
+		],
 		[
 			"POST /design/undo",
 			(_req, res) => json(res, design.undo() ? 200 : 409, { version: design.version }),

@@ -92,6 +92,8 @@ object Hub {
     val resetListeners = LinkedHashSet<() -> Unit>()
     // A different computer is on screen now, so the page has to start over with its design.
     val switchListeners = LinkedHashSet<() -> Unit>()
+    // A computer has a newer app for this phone.
+    val updateListeners = LinkedHashSet<() -> Unit>()
     private var network: Network? = null
     // Whether the default network has a VPN and is validated, the two changes worth redialing for.
     private var shape: Pair<Boolean, Boolean>? = null
@@ -164,6 +166,7 @@ object Hub {
         val items = JSONArray()
         for (c in pairedComputers) items.put(JSONObject().put("id", c.id).put("name", c.name).put("state", c.link.optString("state")).put("working", c.working).put("waiting", c.waiting))
         return JSONObject().put("kind", "computers").put("active", on.id).put("items", items)
+            .apply { AppUpdate.best()?.let { put("update", it.second.optString("version")) } }
     }
 
     // Something the list or the status card shows has changed.
@@ -627,7 +630,8 @@ class Computer(val slot: Int) {
         live[kind] = e
         prefs.edit { putString("live:$kind", e.toString()) }
         emit(e)
-        if (kind == "mac") Hub.emit(Hub.computersEvent())
+        if (kind == "mac" || kind == "app") Hub.emit(Hub.computersEvent())
+        if (kind == "app") for (l in Hub.updateListeners.toList()) l()
     }
 
     private fun setStatus(s: JSONObject) {
@@ -933,6 +937,19 @@ class Computer(val slot: Int) {
             }
             out
         }.getOrNull()
+    }
+
+    // Blocking, for the app update.
+    fun download(path: String, out: File): Boolean {
+        val base = url ?: return false
+        return runCatching {
+            val req = Request.Builder().url("$base$path").header("Authorization", "Bearer $token").build()
+            client.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) return false
+                out.outputStream().use { r.body.byteStream().copyTo(it) }
+            }
+            true
+        }.getOrDefault(false)
     }
 
     // Blocking. A copy of an image whose short side is at least w pixels, so a

@@ -84,6 +84,8 @@ class MainActivity : Activity() {
     private var askKey = ""
     private val askScript by lazy { assets.open("ask.js").bufferedReader().use { it.readText() } }
     private var pairDialog: AlertDialog? = null
+    private var updateDialog: AlertDialog? = null
+    private val onUpdate: () -> Unit = { offerUpdate() }
     private var insets = JSONObject().put("kind", "insets")
     private var fold = JSONObject().put("kind", "fold").put("posture", JSONObject.NULL).put("hinge", JSONObject.NULL)
     private var imeMoving = false
@@ -342,6 +344,7 @@ class MainActivity : Activity() {
         super.onStart()
         layout.addWindowLayoutInfoListener(this, mainExecutor, onLayout)
         visible = true
+        Hub.updateListeners.add(onUpdate)
         if (web == null) { stale = false; build() }
         else if (stale) { stale = false; load() }
         else if (showingApp && !ready) { frame.removeCallbacks(watchdog); frame.postDelayed(watchdog, patience) }
@@ -349,6 +352,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         visible = false
+        Hub.updateListeners.remove(onUpdate)
         frame.removeCallbacks(watchdog)
         layout.removeWindowLayoutInfoListener(onLayout)
         super.onStop()
@@ -361,8 +365,44 @@ class MainActivity : Activity() {
         if (Hub.pendingPair != null) confirmPair()
         else if (Hub.paired) {
             Hub.reconnectNow()
-            nudge()
+            if (!offerUpdate()) nudge()
         }
+    }
+
+    // On opening, at most once a day per version unless he asks from the menu.
+    private fun offerUpdate(asked: Boolean = false): Boolean {
+        val (c, a) = AppUpdate.best() ?: run {
+            if (asked) Toast.makeText(this, "This is already the newest app your computers have.", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        val v = a.optString("version")
+        val prefs = getSharedPreferences("lab", MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val later = prefs.getString("updateLater", null) == v && now - prefs.getLong("updateLaterAt", 0) < 24 * 60 * 60_000L
+        if ((later && !asked) || updateDialog?.isShowing == true || pairDialog?.isShowing == true) return false
+        updateDialog = AlertDialog.Builder(this)
+            .setTitle("Update The Lab?")
+            .setMessage("${c.name} has The Lab $v ready, and this phone has ${BuildConfig.VERSION_NAME}. Android asks you to confirm the install, and your computers and history stay as they are.")
+            .setNegativeButton("Later") { _, _ -> prefs.edit { putString("updateLater", v); putLong("updateLaterAt", now) } }
+            .setPositiveButton("Update") { _, _ -> startUpdate(c, a) }
+            .show()
+        return true
+    }
+
+    private fun startUpdate(c: Computer, a: JSONObject) {
+        if (!packageManager.canRequestPackageInstalls()) {
+            AlertDialog.Builder(this)
+                .setTitle("Let The Lab Install Updates?")
+                .setMessage("Android asks once whether The Lab may install its own updates. On the next screen, turn on Allow from this source, then come back here.")
+                .setNegativeButton("Not Now", null)
+                .setPositiveButton("Open Settings") { _, _ ->
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:$packageName".toUri()))
+                }
+                .show()
+            return
+        }
+        Toast.makeText(this, "Getting The Lab ${a.optString("version")} from ${c.name}", Toast.LENGTH_SHORT).show()
+        AppUpdate.install(c, a) { err -> if (err != null) Toast.makeText(this, err, Toast.LENGTH_LONG).show() }
     }
 
     // A pairing that came in by broadcast for a different computer than this
@@ -710,6 +750,7 @@ class MainActivity : Activity() {
             }
             "retry" -> if (Hub.on.link.optString("state") != "online") Hub.on.reconnectNow()
             "chooseComputer" -> chooseComputer()
+            "updateApp" -> offerUpdate(asked = true)
         }
     }
 

@@ -73,6 +73,7 @@ export type Live =
 				| "settings"
 				| "reach"
 				| "update"
+				| "app"
 				| "phone"
 				| "chats"
 				| "commands";
@@ -1848,7 +1849,7 @@ export class Lab {
 		this.gone = false;
 		const lab = createSdkMcpServer({
 			name: "lab",
-			version: "1.3.1",
+			version: "1.4.0",
 			tools: [
 				defineTool(
 					"send_to_phone",

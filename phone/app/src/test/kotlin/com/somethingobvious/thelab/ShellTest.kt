@@ -8,6 +8,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ShellTest {
+    @Test fun comparesVersionsByNumberNotText() {
+        assertTrue(newerVersion("1.10.0", "1.9.2"))
+        assertTrue(newerVersion("1.4", "1.3.9"))
+        assertFalse(newerVersion("1.3.1", "1.3.1"))
+        assertFalse(newerVersion("1.3.0", "1.3.1"))
+        assertFalse(newerVersion("", "1.3.1"))
+    }
+
     // What server.ts shows on the pairing page for the same key.
     @Test fun checksTheKeyTheWayTheComputerDoes() {
         assertEquals("4F52 9C69", keyCheck("BEl3cT8v7wQ_test-key"))
