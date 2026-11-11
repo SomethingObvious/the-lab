@@ -32,6 +32,7 @@ import {
 	realpathSync,
 	renameSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -641,7 +642,7 @@ function extract(archive: string, into: string) {
 	rmSync(archive, { force: true });
 }
 
-async function jdk(): Promise<string> {
+async function jdk(offline = false): Promise<string> {
 	const given = process.env["JAVA_HOME"];
 	if (given && existsSync(join(given, "bin", WIN ? "javac.exe" : "javac")))
 		return given;
@@ -656,6 +657,7 @@ async function jdk(): Promise<string> {
 	};
 	const found = find();
 	if (found) return found;
+	if (offline) fail("There's no Java build kit here, so the app can't be built.");
 	const os = MAC ? "mac" : WIN ? "windows" : "linux";
 	const arch = process.arch === "arm64" ? "aarch64" : "x64";
 	say("Downloading a Java 21 build kit (about 200 MB)");
@@ -674,9 +676,16 @@ async function jdk(): Promise<string> {
 	return find() ?? fail("The Java download unpacked into an unexpected layout.");
 }
 
-async function androidSdk(javaHome: string): Promise<string> {
+async function androidSdk(javaHome: string, offline = false): Promise<string> {
 	const given = process.env["ANDROID_HOME"];
 	const sdk = given && existsSync(given) ? given : join(TOOLS, "android");
+	if (
+		["platforms/android-37.2", "build-tools/36.0.0", "platform-tools"].every((p) =>
+			existsSync(join(sdk, p)),
+		)
+	)
+		return sdk;
+	if (offline) fail(`The Android SDK at ${sdk} is missing parts the app needs.`);
 	const bin = (name: string) =>
 		join(sdk, "cmdline-tools", "latest", "bin", WIN ? `${name}.bat` : name);
 	if (!existsSync(bin("sdkmanager"))) {
@@ -827,8 +836,9 @@ async function phone() {
 
 	const store = keystore(javaHome);
 	say("Building the app");
-	const apk = buildApp(javaHome, sdk, store, false);
-	publishApp(apk, javaHome, store);
+	const version = labVersion();
+	const apk = buildApp(javaHome, sdk, store, version, false);
+	publishApp(apk, javaHome, store, version);
 
 	// After the downloads and the build, so he has had all that time to get
 	// developer mode on.
@@ -905,7 +915,17 @@ async function phone() {
 
 type Store = { file: string; password: string };
 
-function buildApp(javaHome: string, sdk: string, store: Store, quiet: boolean): string {
+const labVersion = () =>
+	(JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")) as { version: string })
+		.version;
+
+function buildApp(
+	javaHome: string,
+	sdk: string,
+	store: Store,
+	version: string,
+	quiet: boolean,
+): string {
 	const project = join(REPO, "phone");
 	writeFileSync(join(project, "local.properties"), sdkLine(sdk));
 	const gradlew = join(project, WIN ? "gradlew.bat" : "gradlew");
@@ -919,12 +939,14 @@ function buildApp(javaHome: string, sdk: string, store: Store, quiet: boolean): 
 		...(quiet ? ["--no-daemon"] : []),
 		`-Plab.keystore=${store.file}`,
 		`-Plab.keystorePassword=${store.password}`,
+		`-Plab.versionName=${version}`,
 	]);
 	const build = spawnSync(g.file, g.args, {
 		cwd: project,
 		env: { ...process.env, JAVA_HOME: javaHome, ANDROID_HOME: sdk },
 		stdio: quiet ? "pipe" : "inherit",
 		encoding: "utf8",
+		maxBuffer: 64 * 1024 * 1024,
 		windowsVerbatimArguments: g.windowsVerbatimArguments,
 	});
 	if (build.status !== 0)
@@ -939,7 +961,10 @@ function buildApp(javaHome: string, sdk: string, store: Store, quiet: boolean): 
 // Where the server hands the app to phones that update themselves. A phone
 // only takes it when the certificate matches the one its own copy was signed
 // with, so a phone set up from another computer is never offered this one.
-function publishApp(apk: string, javaHome: string, store: Store) {
+function publishApp(apk: string, javaHome: string, store: Store, version: string) {
+	// An update landed during the build, so this copy is already out of date.
+	if (labVersion() !== version)
+		fail(`The Lab changed from ${version} to ${labVersion()} during the build.`);
 	const pem = run(join(javaHome, "bin", WIN ? "keytool.exe" : "keytool"), [
 		"-exportcert",
 		"-rfc",
@@ -961,11 +986,8 @@ function publishApp(apk: string, javaHome: string, store: Store) {
 	// Swapped in whole, since the server may be sending the old one right now.
 	writeFileSync(join(dir, "app.apk.part"), data);
 	renameSync(join(dir, "app.apk.part"), join(dir, "app.apk"));
-	const { version } = JSON.parse(readFileSync(join(HERE, "package.json"), "utf8")) as {
-		version: string;
-	};
 	writeFileSync(
-		join(dir, "app.json"),
+		join(dir, "app.json.part"),
 		JSON.stringify({
 			version,
 			size: data.length,
@@ -975,6 +997,7 @@ function publishApp(apk: string, javaHome: string, store: Store) {
 				.digest("hex"),
 		}),
 	);
+	renameSync(join(dir, "app.json.part"), join(dir, "app.json"));
 }
 
 // The server runs this after an update, so a phone set up from this computer
@@ -984,11 +1007,39 @@ async function buildForPhones() {
 		return say(
 			"No phone was set up from this computer, so there's no app to build here.",
 		);
-	const javaHome = await jdk();
-	const sdk = await androidSdk(javaHome);
+	const dir = join(LAB, "phone-app");
+	mkdirSync(dir, { recursive: true });
+	const lock = join(dir, "building");
+	if (!takeLock(lock)) return say("The app is already being built.");
+	process.on("exit", () => rmSync(lock, { force: true }));
+	// The server starts this unattended, so it only uses tools that are already here.
+	const javaHome = await jdk(true);
+	const sdk = await androidSdk(javaHome, true);
 	const store = keystore(javaHome);
-	publishApp(buildApp(javaHome, sdk, store, true), javaHome, store);
+	const version = labVersion();
+	publishApp(buildApp(javaHome, sdk, store, version, true), javaHome, store, version);
 	say("The app is built, and phones set up from this computer can update to it.");
+}
+
+// Taken unless another build is still alive. A lock more than two hours old
+// is taken anyway, since its pid may belong to something else by now.
+function takeLock(file: string): boolean {
+	try {
+		writeFileSync(file, String(process.pid), { flag: "wx" });
+		return true;
+	} catch {
+		const pid = Number(readFileSync(file, "utf8"));
+		let alive = false;
+		try {
+			process.kill(pid, 0);
+			alive = true;
+		} catch (e) {
+			alive = (e as NodeJS.ErrnoException).code === "EPERM";
+		}
+		if (alive && statSync(file).mtimeMs > Date.now() - 2 * 3_600_000) return false;
+		writeFileSync(file, String(process.pid));
+		return true;
+	}
 }
 
 const ipNumber = (ip: string) => ip.split(".").reduce((n, x) => n * 256 + Number(x), 0);

@@ -8,8 +8,10 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
-    <!-- Updates come from the computer that set the phone up, and Android asks him each time. -->
+    <!-- Updates come from the computer that set the phone up. Android asks him the first time only. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Lets an app updating itself skip Android's prompt once he has allowed it to install. -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <application
         android:name=".App"

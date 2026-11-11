@@ -152,6 +152,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Hub.init(this)
+        updatedNotice()
         WindowCompat.setDecorFitsSystemWindows(window, false)
         frame = FrameLayout(this)
         setContentView(frame)
@@ -361,12 +362,25 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         Hub.foreground = true
+        AppUpdate.held = false
         Notifier.clearReplies(this, Hub.on)
-        if (Hub.pendingPair != null) confirmPair()
+        val ask = AppUpdate.confirm
+        AppUpdate.confirm = null
+        if (ask != null) startActivity(ask.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        else if (Hub.pendingPair != null) confirmPair()
         else if (Hub.paired) {
             Hub.reconnectNow()
             if (!offerUpdate()) nudge()
         }
+    }
+
+    // An update can come in while he's away, so he hears about it the next time he opens the app.
+    private fun updatedNotice() {
+        val prefs = getSharedPreferences("lab", MODE_PRIVATE)
+        val was = prefs.getString("ranVersion", null)
+        if (was == BuildConfig.VERSION_NAME) return
+        prefs.edit { putString("ranVersion", BuildConfig.VERSION_NAME) }
+        if (was != null) Toast.makeText(this, "The Lab updated to ${BuildConfig.VERSION_NAME}.", Toast.LENGTH_LONG).show()
     }
 
     // On opening, at most once a day per version unless he asks from the menu.
@@ -376,14 +390,13 @@ class MainActivity : Activity() {
             return false
         }
         val v = a.optString("version")
-        val prefs = getSharedPreferences("lab", MODE_PRIVATE)
-        val now = System.currentTimeMillis()
-        val later = prefs.getString("updateLater", null) == v && now - prefs.getLong("updateLaterAt", 0) < 24 * 60 * 60_000L
-        if ((later && !asked) || updateDialog?.isShowing == true || pairDialog?.isShowing == true) return false
+        if ((AppUpdate.putOff(v) && !asked) || updateDialog?.isShowing == true || pairDialog?.isShowing == true) return false
         updateDialog = AlertDialog.Builder(this)
             .setTitle("Update The Lab?")
-            .setMessage("${c.name} has The Lab $v ready, and this phone has ${BuildConfig.VERSION_NAME}. Android asks you to confirm the install, and your computers and history stay as they are.")
-            .setNegativeButton("Later") { _, _ -> prefs.edit { putString("updateLater", v); putLong("updateLaterAt", now) } }
+            .setMessage("${c.name} has The Lab $v ready, and this phone has ${BuildConfig.VERSION_NAME}. It takes a few seconds and keeps your computers and history. After this, updates install by themselves while you're not using The Lab, unless they're turned off in Settings.")
+            .setNegativeButton("Later") { _, _ -> AppUpdate.later(v) }
+            // Back or a tap outside means not now, the same as Later.
+            .setOnCancelListener { AppUpdate.later(v) }
             .setPositiveButton("Update") { _, _ -> startUpdate(c, a) }
             .show()
         return true
@@ -518,6 +531,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         Hub.foreground = false
+        AppUpdate.left()
         super.onPause()
     }
 
@@ -884,6 +898,7 @@ class MainActivity : Activity() {
         listening?.let { answer(it, "", to = listener) }
         listening = id
         listener = asker
+        AppUpdate.held = true
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
         try { startActivityForResult(intent, LISTEN) } catch (_: ActivityNotFoundException) {
@@ -912,6 +927,7 @@ class MainActivity : Activity() {
         picking = id
         picker = asker
         pickedFor = Hub.on
+        AppUpdate.held = true
         val photos = kind == "photos"
         val intent = if (photos) {
             Intent(MediaStore.ACTION_PICK_IMAGES).setType("image/*").putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, 10)

@@ -536,31 +536,44 @@ async function serve() {
 	}
 	// An update that changed the window's code builds it again. If the window
 	// is open the build waits for the next start.
-	if (desktopStale(SOURCE, Dir)) {
+	// A setup step run in the background, with the end of what it said kept for the log.
+	const inBackground = (step: string, low: boolean, done?: (ok: boolean) => void) => {
 		const build = spawn(
 			process.execPath,
-			[join(SOURCE, "computer", "setup.ts"), "desktop", "--quiet"],
+			[join(SOURCE, "computer", "setup.ts"), step, "--quiet"],
 			{
 				cwd: join(SOURCE, "computer"),
 				windowsHide: true,
 				stdio: ["ignore", "pipe", "pipe"],
 			},
 		);
+		// Gradle and Java inherit this, so the build never slows the agent or a game.
+		if (low && build.pid)
+			try {
+				setPriority(build.pid, constants.priority.PRIORITY_LOW);
+			} catch {
+				// The build still works at normal priority, just less politely.
+			}
 		let said = "";
-		build.stdout.on("data", (d) => {
-			said += d;
-		});
-		build.stderr.on("data", (d) => {
-			said += d;
+		const keep = (d: Buffer) => {
+			said = (said + String(d)).slice(-4000);
+		};
+		build.stdout.on("data", keep);
+		build.stderr.on("data", keep);
+		build.on("error", (e) => {
+			console.error(`${step} build: ${e.message}`);
 		});
 		build.on("close", (status) => {
-			if (status !== 0) console.error(`desktop window build: ${said.trim()}`);
+			if (status !== 0) console.error(`${step} build: ${said.trim()}`);
+			done?.(status === 0);
 		});
-	}
+	};
+	if (desktopStale(SOURCE, Dir)) inBackground("desktop", false);
 
 	// The phone app built again after an update, for a phone set up from this
 	// computer to update itself from. Only here is the key its copy was signed
-	// with. A build that failed waits a day before the next try.
+	// with. A build that failed waits a day before the next try, and the check
+	// runs hourly so a server that stays up for weeks still gets to it.
 	const phoneApp = join(Dir, "phone-app");
 	const appInfo = () => {
 		try {
@@ -573,45 +586,23 @@ async function serve() {
 	};
 	const appNow = () => ({ kind: "app" as const, ...appInfo() });
 	const appTried = join(phoneApp, "tried");
-	if (
-		existsSync(join(Dir, "phone.jks")) &&
-		appInfo()?.version !== pkg.version &&
-		!(
-			existsSync(appTried) &&
-			readFileSync(appTried, "utf8") === pkg.version &&
-			statSync(appTried).mtimeMs > Date.now() - 86_400_000
+	const buildPhoneApp = () => {
+		if (
+			!existsSync(join(Dir, "phone.jks")) ||
+			appInfo()?.version === pkg.version ||
+			(existsSync(appTried) &&
+				readFileSync(appTried, "utf8") === pkg.version &&
+				statSync(appTried).mtimeMs > Date.now() - 86_400_000)
 		)
-	) {
+			return;
 		mkdirSync(phoneApp, { recursive: true });
 		writeFileSync(appTried, pkg.version);
-		const build = spawn(
-			process.execPath,
-			[join(SOURCE, "computer", "setup.ts"), "apk", "--quiet"],
-			{
-				cwd: join(SOURCE, "computer"),
-				windowsHide: true,
-				stdio: ["ignore", "pipe", "pipe"],
-			},
-		);
-		// Gradle and Java inherit this, so the build never slows the agent or a game.
-		if (build.pid)
-			try {
-				setPriority(build.pid, constants.priority.PRIORITY_LOW);
-			} catch {
-				// The build still works at normal priority, just less politely.
-			}
-		let said = "";
-		build.stdout.on("data", (d) => {
-			said = (said + String(d)).slice(-4000);
+		inBackground("apk", true, (ok) => {
+			if (ok) lab.store.live(appNow());
 		});
-		build.stderr.on("data", (d) => {
-			said = (said + String(d)).slice(-4000);
-		});
-		build.on("close", (status) => {
-			if (status === 0) lab.store.live(appNow());
-			else console.error(`phone app build: ${said.trim()}`);
-		});
-	}
+	};
+	buildPhoneApp();
+	setInterval(buildPhoneApp, 3_600_000).unref();
 
 	// A change to app/ that can't run stays on the computer. The agent hears why,
 	// and he hears about it once the turn is over.
@@ -1016,7 +1007,7 @@ async function serve() {
 			"x-accel-buffering": "no",
 		});
 		res.write(
-			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow(), lab.chatList(), commandList(), ...(appInfo() ? [appNow()] : [])] })}\n\n`,
+			`retry: 3000\n\nevent: hello\ndata: ${JSON.stringify({ server: pkg.version, design: design.version, status: lab.status, last: lab.store.last, mac: macNow, shortcuts, live: [{ kind: "settings", values: settings }, reach(), phoneNow(), lab.chatList(), commandList(), appNow()] })}\n\n`,
 		);
 		const phone = /okhttp|cfnetwork/i.test(req.headers["user-agent"] ?? "");
 		if (phone && ++phones === 1) lab.store.live(phoneNow());

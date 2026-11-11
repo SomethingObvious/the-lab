@@ -14,7 +14,8 @@ android {
         targetSdk = 36
         // setup.ts bundle passes a rising number, which Play Console needs for each upload.
         versionCode = providers.gradleProperty("lab.versionCode").orNull?.toInt() ?: 1
-        versionName = "1.4.0"
+        // setup.ts passes the computer's version, so the two can't drift apart.
+        versionName = providers.gradleProperty("lab.versionName").orNull ?: "1.4.1"
         resValue("string", "tile", "Ask the computer")
         resValue("string", "widget_hint", "Message your computer")
     }

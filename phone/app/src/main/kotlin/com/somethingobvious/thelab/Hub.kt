@@ -79,7 +79,8 @@ object Hub {
         private set
     val paired get() = computers.values.any { it.paired }
     val pairedComputers get() = computers.values.filter { it.paired }
-    var foreground = false
+    // Read off the main thread by an update that's about to install.
+    @Volatile var foreground = false
     // Text or files shared in, held until the design is up and ready to take them.
     val composing = ArrayList<JSONObject>()
     // A pairing broadcast for a computer it doesn't know, held in memory until he says yes on the phone.
@@ -173,6 +174,8 @@ object Hub {
     fun changed() {
         emit(computersEvent())
         LinkService.refresh()
+        // A task that just finished may be what an update was waiting for.
+        AppUpdate.maybeAuto()
     }
 
     fun switchTo(id: String) {
@@ -263,6 +266,7 @@ object Hub {
     private val opens = Executors.newSingleThreadExecutor()
     fun soon(r: Runnable) = opens.execute(r)
     fun onMain(delay: Long = 0, r: Runnable) = main.postDelayed(r, delay)
+    fun offMain(r: Runnable) = main.removeCallbacks(r)
 }
 
 // One paired computer: its stream, cached history, outbox and downloaded
@@ -631,7 +635,10 @@ class Computer(val slot: Int) {
         prefs.edit { putString("live:$kind", e.toString()) }
         emit(e)
         if (kind == "mac" || kind == "app") Hub.emit(Hub.computersEvent())
-        if (kind == "app") for (l in Hub.updateListeners.toList()) l()
+        if (kind == "app") {
+            for (l in Hub.updateListeners.toList()) l()
+            AppUpdate.maybeAuto()
+        }
     }
 
     private fun setStatus(s: JSONObject) {

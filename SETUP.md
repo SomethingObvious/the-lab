@@ -45,8 +45,8 @@ curl.exe -fsSLO "https://nodejs.org/dist/latest-v24.x/$file"; tar -xf $file; Rem
 Node is then `node.exe` in the `node-v24...` folder it unpacked. Use that Node for every command below. Then fetch the source at the release tag and install its packages:
 
 ```sh
-cd ~/.thelab && curl -fsSL https://github.com/SomethingObvious/the-lab/archive/refs/tags/v1.4.0.tar.gz | tar -xz
-rm -rf source && mv the-lab-1.4.0 source
+cd ~/.thelab && curl -fsSL https://github.com/SomethingObvious/the-lab/archive/refs/tags/v1.4.1.tar.gz | tar -xz
+rm -rf source && mv the-lab-1.4.1 source
 cd source/computer && npm ci
 ```
 
@@ -168,9 +168,9 @@ On Android he can also make The Lab the phone's assistant (Settings, Apps, Defau
 
 ## Updating
 
-The server updates itself, with no agent involved. After an update it also builds the Android app again at low priority (`node setup.ts apk`), and a phone set up from this computer offers to install it over the tunnel. He taps Update and then Install, and the first time Android asks him to allow installs from The Lab. A phone set up from another computer only takes updates from that one, since each computer signs the app with its own key. Twice a day it asks GitHub for the newest release tag. A newer one gets merged with whatever was changed in `~/.thelab/source` since the last release, three ways and line by line, so a fix made here survives the update. Then it runs the tests on the merged copy at low priority, swaps it in while the agent is idle and restarts. If the new version stops three times before it settles, whenever that happens, the supervisor puts the old one back and won't try that version again. A restart he asked for, or another program holding the port, doesn't count. The same merge runs over `~/TheLab`, so new template sections reach his `CLAUDE.md` and his app without losing his changes. Anything that can't merge cleanly stays as he had it, with the new version beside it in `~/TheLab/.lab-update/` for the agent to bring together.
+The server updates itself, with no agent involved. After an update it also builds the Android app again at low priority (`node setup.ts apk`), and a phone set up from this computer offers to install it over the tunnel. The first time, he taps Update and Android asks him to allow installs from The Lab. After that, updates install by themselves once he has been out of the app for two minutes and no computer is working, unless he tapped Later or turned off Install Updates Automatically, and the app says so the next time he opens it. A phone set up from another computer only takes updates from that one, since each computer signs the app with its own key. Twice a day it asks GitHub for the newest release tag. A newer one gets merged with whatever was changed in `~/.thelab/source` since the last release, three ways and line by line, so a fix made here survives the update. Then it runs the tests on the merged copy at low priority, swaps it in while the agent is idle and restarts. If the new version stops three times before it settles, whenever that happens, the supervisor puts the old one back and won't try that version again. A restart he asked for, or another program holding the port, doesn't count. The same merge runs over `~/TheLab`, so new template sections reach his `CLAUDE.md` and his app without losing his changes. Anything that can't merge cleanly stays as he had it, with the new version beside it in `~/TheLab/.lab-update/` for the agent to bring together.
 
-He can check or install from Settings, Updates on the phone, and turn off installing by itself there too. The one thing an update can't do alone is the phone app. If anything under `phone/` changed, plug the phone in and run `node setup.ts phone` again. It keeps its history and pairing.
+He can check or install from Settings, Updates on the phone, and turn off installing by itself there too. A phone set up from another computer, or before 1.4.0, can't take the phone app from this one. Plug it in and run `node setup.ts phone` once, which keeps its history and pairing, and later updates come over the tunnel.
 
 ## When The Lab's Own Code Is Wrong
 
