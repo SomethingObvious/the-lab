@@ -5,4 +5,4 @@ useDefault = true
 # those hashes look like keys to gitleaks.
 [[allowlists]]
 description = "detect-secrets baseline"
-paths = ['''^\.secrets\.baseline$''']
+paths = ['''^\.config/secrets\.baseline$''']
